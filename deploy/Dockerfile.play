@@ -1,0 +1,23 @@
+# Multi-stage build for the play service.
+FROM node:22-alpine AS build
+WORKDIR /app
+# install deps (workspaces) then copy sources
+COPY package.json package-lock.json ./
+COPY apps/play/package.json apps/play/
+RUN npm ci --no-audit --no-fund
+COPY apps/play apps/play
+
+# runtime: drop to non-root, keep only what we run
+FROM node:22-alpine
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/apps/play ./apps/play
+COPY --from=build /app/package.json ./
+# the admin console is static files inside apps/play/public
+RUN addgroup -S gc && adduser -S gc -G gc && chown -R gc:gc /app
+USER gc
+EXPOSE 8787
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "apps/play/src/index.js"]

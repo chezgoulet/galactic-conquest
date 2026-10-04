@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "A grand land/air/space battle game. Everything is generated from code: the world, the ships, the score.",
+  "workspaces": [
+    "apps/play"
+  ],
   "scripts": {
     "start": "node server/server.js",
     "vendor:three": "node tools/vendor-three.cjs",
     "build": "node tools/build.cjs && node tools/build-web.cjs",
     "test": "node test/load-check.cjs && node --test test/*.test.cjs",
     "test:ui": "node test/ui.smoke.cjs",
+    "test:online": "npm run test -w apps/play",
     "play:dev": "npm run dev -w apps/play",
     "play:test": "npm test -w apps/play",
     "admin": "npm run admin -w apps/play"
@@ -18,9 +22,7 @@
   },
   "devDependencies": {
     "esbuild": "0.25.12",
+    "playwright": "^1.62.1",
     "three": "0.186.0"
-  },
-  "dependencies": {
-    "playwright": "^1.62.1"
   }
 }

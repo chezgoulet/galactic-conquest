@@ -1,0 +1,108 @@
+name: galactic-conquest
+
+services:
+  # TLS termination + static game + reverse proxy. Caddy auto-provisions certs.
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@${DOMAIN}}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ${GAME_DIR:-..}:/srv:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # The online play service: API + WS signalling + admin console.
+  play:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.play
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "8787"
+      HOST: 0.0.0.0
+      TRUST_PROXY: "1"
+      DATABASE_URL: postgres://gc:${POSTGRES_PASSWORD:-gcpassword}@db:5432/gc
+      TURN_URLS: "turn:turn.${DOMAIN}:3478?transport=udp,turn:turn.${DOMAIN}:5349?transport=tls"
+      TURN_DOMAIN: turn.${DOMAIN}
+      PUBLIC_URL: https://${DOMAIN}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    expose: ["8787"]
+
+  # Postgres. The play service is the only writer; it is the settlement ledger.
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gcpassword}
+      POSTGRES_DB: gc
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gc -d gc"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # TURN relay. Every online match relays through it (no STUN-only fallback),
+  # so NAT traversal is uniform. Uses a static auth secret; the play service
+  # mints REST credentials with it. The coturn image's entrypoint reads the
+  # TURNSERVER_* env; TLS cert is read from the Caddy data volume (see OPERATIONS).
+  turn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TURNSERVER_USE_AUTH_SECRET: "1"
+      TURNSERVER_STATIC_AUTH_SECRET: ${TURN_SECRET}
+      TURNSERVER_REALM: turn.${DOMAIN}
+      TURNSERVER_MIN_PORT: "49160"
+      TURNSERVER_MAX_PORT: "49400"
+      TURNSERVER_NO_MULTI: "1"
+      TURNSERVER_EXTRA: "--no-dns-reverse --no-multicast-ping --fingerprint"
+    volumes:
+      - caddy_data:/caddy:ro
+
+  # Backups: pg_dump -Fc -> verify -> age-encrypt -> keep 8 local -> rclone.
+  # Writes an ops heartbeat the play service alerts on if stale.
+  backup:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backup
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://gc:${POSTGRES_PASSWORD:-gcpassword}@db:5432/gc
+      AGE_RECIPIENT: ${AGE_RECIPIENT:-}
+      RCLONE_DEST: ${RCLONE_DEST:-}
+      BACKUP_INTERVAL_H: ${BACKUP_INTERVAL_H:-6}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - backups:/backups
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  backups:

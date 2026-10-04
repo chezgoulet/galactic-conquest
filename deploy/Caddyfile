@@ -1,0 +1,58 @@
+# Caddy config for Galactic Conquest.
+#   apex (DOMAIN)      -> static game (the land/air/space battle)
+#   play.DOMAIN        -> the play service (API + /ws + /admin)
+#   turn.DOMAIN        -> TLS cert holder for the coturn service (host networking)
+#
+# Logs redact IPs, cookies and auth-bearing query params.
+
+{
+	email {$ACME_EMAIL}
+	# admin API on loopback only (default); keep it off the public interface
+	admin localhost:2019
+}
+
+$DOMAIN {
+	root * /srv
+	encode zstd gzip
+
+	# security headers
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+
+	@api path /api/* /ws /healthz /metrics /admin/* /approve
+	reverse_proxy @api play:8787
+
+	# everything else is the static game
+	file_server
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100MB
+			roll_keep 5
+		}
+		format json
+	}
+}
+
+play.$DOMAIN {
+	reverse_proxy play:8787
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+	}
+	log {
+		output file /var/log/caddy/play-access.log { roll_size 100MB; roll_keep 5 }
+		format json
+	}
+}
+
+# cert holder for turn (coturn runs on the host network and reads the cert)
+turn.$DOMAIN {
+	tls {
+		# force an LE cert so coturn can pick it up from the caddy data volume
+		issuer letsencrypt
+	}
+	respond "ok" 200
+}

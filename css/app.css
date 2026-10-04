@@ -238,6 +238,12 @@ button.gc-btn:disabled { opacity: .4; cursor: default; }
  .mp-col { display: flex; flex-direction: column; gap: 10px; }
  .mp-sep { display: flex; align-items: center; gap: 14px; color: var(--dim); font-size: 11px; letter-spacing: 4px; text-transform: uppercase; margin: 6px 0; } .mp-sep::before, .mp-sep::after { content: ""; height: 1px; background: var(--line); flex: 1; }
  .mp-row2 { display: flex; gap: 10px; } .mp-row2 > * { flex: 1; }
- .mp-hostbox { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); background: rgba(12, 18, 30, .5); }
+  .mp-hostbox { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); background: rgba(12, 18, 30, .5); }
+  .mp-tabs { display: flex; gap: 6px; margin-bottom: 12px; } .mp-tab { flex: 1; background: #0c1424; color: var(--dim); border: 1px solid var(--line); padding: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; cursor: pointer; border-radius: 8px; } .mp-tab.active { color: #fff; border-color: var(--accent); background: rgba(88, 160, 255, .12); }
+  .mp-row3 { display: flex; gap: 10px; } .mp-row3 > * { flex: 1; }
+  .mp-o-roster { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; } .mp-o-guest { display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border: 1px solid var(--line); background: rgba(12, 18, 30, .5); } .mp-o-guest i { font-style: normal; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; } .mp-o-guest i.rdy { color: var(--ok); } .mp-o-guest i.wait { color: var(--warn); } .mp-o-guest.dim { color: var(--dim); }
+  .mp-o-hostname { color: var(--dim); font-size: 13px; } .mp-o-hostname b { color: var(--text); }
+  .mp-chk { display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .mp-input { min-width: 0; } select.mp-input { cursor: pointer; }
 
 @media (max-width: 1100px) { .d-wrap { grid-template-columns: 220px 1fr 200px; gap: 12px; } .m-biomes { grid-template-columns: repeat(2, 1fr); } .g-wrap { grid-template-columns: 1fr 320px; } .h-tbar { width: 130px; } }

@@ -182,6 +182,12 @@
       this.relay.on('peer', (m) => { if (m.open) this.onPeer(m); });
       this.relay.on('left', (m) => this.onLeft(m));
       this._last = 0;
+      // adopt peers that opened during the lobby (online): they already have a
+      // live DataChannel but were never registered with a World. Re-emit them so
+      // onPeer assigns a faction/pid and (re)sends the meta.
+      for (const p of (this.relay.peers ? this.relay.peers.values() : [])) {
+        if (p.isGuest && p.dc && p.dc.readyState === 'open' && !this._guests.has(p.id)) this.onPeer({ id: p.id, name: p.name, open: true });
+      }
     }
 
     guest(game) {

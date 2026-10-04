@@ -2420,6 +2420,12 @@
       this.relay.on('peer', (m) => { if (m.open) this.onPeer(m); });
       this.relay.on('left', (m) => this.onLeft(m));
       this._last = 0;
+      // adopt peers that opened during the lobby (online): they already have a
+      // live DataChannel but were never registered with a World. Re-emit them so
+      // onPeer assigns a faction/pid and (re)sends the meta.
+      for (const p of (this.relay.peers ? this.relay.peers.values() : [])) {
+        if (p.isGuest && p.dc && p.dc.readyState === 'open' && !this._guests.has(p.id)) this.onPeer({ id: p.id, name: p.name, open: true });
+      }
     }
 
     guest(game) {
@@ -2480,6 +2486,118 @@
   E.Net = { SNAP_MS, LAG_FULL, pack, unitFrom, route, RemoteWorld, NetSession };
 })(window.E = window.E || {});
 
+// ---- js/net/online.js ----
+// Online play: sign in to the play service, then host / join / quick-match a
+// lobby over the service WebSocket. The match itself is host-authoritative P2P
+// (same E.Relay + E.Net as LAN) — the service only introduces players, vouches
+// for them with a signed match ticket, and reconciles the result for Elo.
+//
+// The service URL is configurable (defaults to the play subdomain or
+// localhost:8787 in dev). Auth uses a Bearer token (returned in the login
+// response) so the cross-origin game client does not depend on cookies.
+(function (E) {
+  'use strict';
+
+  // browser globals, guarded so the client also loads in a Node test harness
+  const _loc = (typeof location !== 'undefined') ? location : { protocol: 'file:', host: '', href: '' };
+  const _ls = (typeof localStorage !== 'undefined') ? localStorage : { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+  const _fetch = (typeof fetch !== 'undefined') ? fetch : null;
+
+  const LS_TOKEN = 'gc_online_token', LS_USER = 'gc_online_user', LS_URL = 'gc_online_url';
+
+  function defaultServiceUrl() {
+    const stored = _ls.getItem(LS_URL);
+    if (stored) return stored.replace(/\/$/, '');
+    if (_loc.protocol === 'https:') {
+      // production: the game is on the apex domain, the API on play.<domain>
+      return 'https://play.' + _loc.host;
+    }
+    if (_loc.protocol === 'http:') return 'http://' + _loc.host; // same-origin (play service serving the game)
+    return 'http://localhost:8787'; // file://
+  }
+
+  function api(baseUrl, path, method, body, token) {
+    if (!_fetch) return Promise.reject(new Error('no fetch'));
+    return _fetch(baseUrl + path, {
+      method: method || 'GET',
+      headers: Object.assign({ 'content-type': 'application/json' }, token ? { authorization: 'Bearer ' + token } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    }).then((r) => r.json().then((d) => ({ ok: r.ok, status: r.status, d })));
+  }
+
+  class OnlineClient {
+    constructor() {
+      this.baseUrl = defaultServiceUrl();
+      this.token = _ls.getItem(LS_TOKEN) || null;
+      try { this.user = JSON.parse(_ls.getItem(LS_USER) || 'null'); } catch { this.user = null; }
+      this.relay = null;
+      this.role = null; this.room = null;
+      this.roster = new Map(); // id -> {name, ready, rating}
+      this.ticket = null; this.match = null; this.ranked = false;
+      this._handlers = {};
+    }
+    on(ev, fn) { (this._handlers[ev] = this._handlers[ev] || []).push(fn); return this; }
+    emit(ev, m) { (this._handlers[ev] || []).forEach((f) => { try { f(m); } catch (e) { console.error(e); } }); }
+    setUrl(u) { this.baseUrl = String(u || '').replace(/\/$/, ''); _ls.setItem(LS_URL, this.baseUrl); }
+
+    // ── account ────────────────────────────────────────────────
+    login(email, password, name) {
+      return api(this.baseUrl, '/api/auth/login', 'POST', { email, password, name: name || this.name() }, this.token)
+        .then((r) => {
+          if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'login failed');
+          this._save(r.d);
+          return r.d;
+        });
+    }
+    signup(email, password, name) {
+      return api(this.baseUrl, '/api/auth/signup', 'POST', { email, password, name: name || 'Commander' })
+        .then((r) => {
+          if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'signup failed');
+          this._save(r.d);
+          return r.d;
+        });
+    }
+    name() { return (this.user && this.user.name) || 'Commander'; }
+    _save(d) { this.token = d.token; this.user = d.user || this.user; _ls.setItem(LS_TOKEN, this.token); _ls.setItem(LS_USER, JSON.stringify(this.user)); }
+    logout() { this.token = null; this.user = null; _ls.removeItem(LS_TOKEN); _ls.removeItem(LS_USER); }
+
+    // ── connection ─────────────────────────────────────────────
+    connect() {
+      const relay = new E.Relay();
+      this.relay = relay;
+      relay.on('hosted', (m) => { this.role = 'host'; this.room = m.room; this.roster.set(0, { name: this.name(), ready: true, host: true }); this.emit('hosted', m); this.emit('lobby', this._lobby()); });
+      relay.on('joined', (m) => { this.role = 'guest'; this.room = m.room; this.roster.set(0, { name: m.hostName || 'Host', ready: true, host: true }); this.roster.set(m.id, { name: this.name(), ready: false }); this._selfId = m.id; this.emit('joined', m); this.emit('lobby', this._lobby()); });
+      relay.on('peer', (m) => { if (m.open) { this.roster.set(m.id, { name: m.name, ready: false, rating: m.rating }); this.emit('lobby', this._lobby()); } });
+      relay.on('left', (m) => { this.roster.delete(m.id); this.emit('lobby', this._lobby()); });
+      relay.on('ready', (m) => { if (m.state) { for (const g of m.state.guests) this.roster.set(g.id, Object.assign(this.roster.get(g.id) || {}, { name: this.roster.get(g.id) && this.roster.get(g.id).name, ready: g.ready })); } this.emit('lobby', this._lobby()); });
+      relay.on('ticket', (m) => { this.ticket = m.ticket; this.match = m.match; this.ranked = !!m.ranked; this.emit('ticket', m); });
+      relay.on('closed', () => this.emit('closed'));
+      relay.on('error', (m) => this.emit('error', m));
+      relay.on('sigclose', () => this.emit('sigclose'));
+      return relay.connect(this.baseUrl + '/ws').then(() => relay.auth(this.token, '0.1.0', 'web')).then(() => { this.user = relay.user || this.user; this.emit('signed', { user: relay.user, ice: relay.ice.length }); return this; });
+    }
+    host(mode) { if (this.relay) this.relay.host(this.name(), { mode: mode || 'team' }); }
+    join(code, mode) { if (this.relay) this.relay.join(code, this.name(), { mode: mode || 'team' }); }
+    quick(mode) { if (this.relay) this.relay.queue(mode || 'team'); }
+    ready(on) { if (this.relay) this.relay.ready(on); }
+    start(rated) { if (this.relay) this.relay.start(rated); }
+    // post the match result for reconciliation + Elo (both players call this)
+    claim(result, team) {
+      if (!this.ticket) return Promise.reject(new Error('no ticket'));
+      return api(this.baseUrl, '/api/match/claim', 'POST', { ticket: this.ticket, match: this.match, result: result || null, team: team || null }, this.token)
+        .then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'claim failed'); return r.d; });
+    }
+    _lobby() {
+      const guests = [...this.roster.entries()].filter(([id]) => id !== 0).map(([id, g]) => ({ id, name: g.name, ready: !!g.ready, rating: g.rating }));
+      const host = this.roster.get(0) || { name: this.name() };
+      return { role: this.role, room: this.room, host: host.name, guests, allReady: guests.length === 0 || guests.every((g) => g.ready) };
+    }
+    close() { if (this.relay) { try { this.relay.close(); } catch {} this.relay = null; } this.role = null; this.room = null; this.roster.clear(); this.ticket = null; }
+  }
+
+  E.Online = { OnlineClient, defaultServiceUrl };
+})(window.E = window.E || {});
+
 // ---- js/net/relay.js ----
 // Peer-to-peer transport. A signaling server (the LAN host or the online
 // service) introduces the players; every game message then travels over WebRTC
@@ -2504,6 +2622,7 @@
       this.peers = new Map();
       this.ice = [];
       this.seq = 0;
+      this.user = null; this.ticketKeys = {}; this.config = {}; this._auth = null;
     }
     static defaultUrl() {
       if (location.protocol === 'http:' || location.protocol === 'https:')
@@ -2534,13 +2653,32 @@
     }
     host(name, extra) { this.raw(Object.assign({ op: 'host', name }, extra || {})); }
     join(room, name, extra) { this.raw(Object.assign({ op: 'join', room, name }, extra || {})); }
+    // online-only ops (the online service also handles these; the LAN server ignores unknown ops)
+    auth(token, version, platform) {
+      // returns a promise that resolves with the `hello` (user, ice, ticketKeys)
+      return new Promise((res, rej) => {
+        this._auth = { res, rej, to: setTimeout(() => { if (this._auth) { this._auth = null; rej(new Error('auth timeout')); } }, 8000) };
+        this.raw({ op: 'auth', token, version: version || '', platform: platform || (typeof navigator !== 'undefined' && navigator.platform) || 'web' });
+      });
+    }
+    ready(on) { this.raw({ op: 'ready', on: !!on }); }
+    start(rated) { this.raw({ op: 'start', rated: !!rated }); }
+    queue(mode) { this.raw({ op: 'queue', mode: mode || 'team' }); }
+    unqueue(mode) { this.raw({ op: 'unqueue', mode: mode || 'team' }); }
     hostOpen() { const p = this.peers.get(0); return !!(p && p.dc && p.dc.readyState === 'open'); }
 
     onSignal(m) {
       switch (m.op) {
-        case 'hosted': this.role = 'host'; this.id = 0; this.room = m.room; this.ice = m.ice || []; this.emit('hosted', m); break;
-        case 'joined': this.role = 'guest'; this.id = m.id; this.room = m.room; this.ice = m.ice || []; this.makePeer(0, m.hostName || 'Host', false); this.emit('joined', m); break;
+        case 'hello': // online service: authenticated (user, ice, ticketKeys)
+          this.user = m.user || null; this.ice = m.ice || []; this.ticketKeys = m.ticketKeys || {};
+          this.config = m.config || {}; this.maintenance = !!m.maintenance;
+          if (this._auth) { const a = this._auth; this._auth = null; clearTimeout(a.to); a.res(m); }
+          this.emit('signed', m); break;
+        case 'hosted': this.role = 'host'; this.id = 0; this.room = m.room; if (m.ice) this.ice = m.ice; this.emit('hosted', m); break;
+        case 'joined': this.role = 'guest'; this.id = m.id; this.room = m.room; if (m.ice) this.ice = m.ice; this.makePeer(0, m.hostName || 'Host', false); this.emit('joined', m); break;
         case 'peer': if (this.role === 'host') this.makePeer(m.id, m.name, true); break;
+        case 'ready': this.emit('ready', m); break;
+        case 'ticket': this.emit('ticket', m); break;
         case 'signal': this.onPeerSignal(m.from, m.data); break;
         case 'left': this.dropPeer(m.id); break;
         case 'closed': this.emit('closed', m); break;
@@ -2617,7 +2755,7 @@
     }
     maybeClosed() { if (!this.peers.size && this.role !== 'host') this.emit('close'); }
     dropPeer(id) { const p = this.peers.get(id); if (p) { try { p.pc.close(); } catch {} this.peers.delete(id); } this.emit('left', { id }); }
-    close() { for (const p of this.peers.values()) { try { p.pc.close(); } catch {} } this.peers.clear(); if (this.ws) this.ws.close(); }
+    close() { if (this._auth) { const a = this._auth; this._auth = null; clearTimeout(a.to); a.rej(new Error('closed')); } for (const p of this.peers.values()) { try { p.pc.close(); } catch {} } this.peers.clear(); if (this.ws) this.ws.close(); }
   }
 
   E.Relay = Relay;
@@ -4998,10 +5136,14 @@
 })(window.E = window.E || {});
 
 // ---- js/ui/lobby.js ----
-// Local multiplayer lobby: host a battle on this machine (LAN) or join by room
-// code. Uses the zero-dep signaling server (ws://host/ws) to introduce players,
-// then the match runs peer to peer over WebRTC (E.Relay). Host-authoritative:
-// the host runs the only World; guests send commands and render snapshots.
+// Multiplayer lobby: two modes.
+//   LAN    — zero-dep signaling server on the LAN; host-authoritative P2P.
+//   Online — sign in to the play service, host/join/quick-match a lobby, ready
+//            gate, then the SAME host-authoritative P2P match. The service signs
+//            a match ticket and reconciles the result for Elo.
+// Both share E.Relay (transport) and E.Net (host-authoritative session + the
+// guest's RemoteWorld). In online the battle World is only built at the moment
+// the host fires `start` (the `ticket` signal), so players wait in a lobby.
 (function (E) {
   'use strict';
 
@@ -5010,15 +5152,15 @@
       return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
     return 'ws://localhost:8080/ws';
   }
-  function pageUrl() {
-    return location.href.split('#')[0].replace(/\/$/, '');
-  }
+  function pageUrl() { return location.href.split('#')[0].replace(/\/$/, ''); }
+  const BIOMES = ['desert', 'tundra', 'jungle', 'urban', 'volcanic', 'ocean', 'cratered', 'gas'];
+  const biomeName = (b) => (E.biome(b) || {}).name || b;
 
   class Lobby {
-    constructor(root, menu) { this.root = root; this.menu = menu; this.relay = null; this.session = null; this.game = null; }
+    constructor(root, menu) { this.root = root; this.menu = menu; this.relay = null; this.session = null; this.game = null; this.oc = null; this.onlineRole = null; }
     _game() { this.game = window.GC.game; return this.game; }
 
-    // ── host ───────────────────────────────────────────────────
+    // ── LAN host ───────────────────────────────────────────────
     host(opts) {
       this._msg('Contacting the LAN server…');
       const relay = new E.Relay();
@@ -5040,7 +5182,7 @@
       relay.on('sigclose', () => this._err('Lost the LAN server'));
     }
 
-    // ── join ───────────────────────────────────────────────────
+    // ── LAN join ───────────────────────────────────────────────
     join(url, code, name) {
       this._msg('Contacting the server…');
       const relay = new E.Relay();
@@ -5048,36 +5190,134 @@
       const game = this._game();
       relay.connect(E.Relay.fromInput(url)).then(() => { relay.join(code, name); }).catch((e) => this._err('Could not reach server: ' + e.message));
       relay.on('joined', () => { this._msg('Connected. Waiting for the host to deploy…'); });
-      relay.on('msg', (m) => {
-        if (m.from !== 0) return;
-        let s; try { s = JSON.parse(m.data); } catch { return; }
-        if (s.t === 'meta' && !this.session) {
-          // Rebuild the world locally from the host's seed; the session streams the rest.
-          const remote = new E.Net.RemoteWorld({ biome: s.biome, seed: s.seed, scale: s.scale, faction: s.faction, name });
-          remote._pid = s.pid;
-          const net = { send: (c) => relay.toHost(JSON.stringify(c)) };
-          this.menu.hide();
-          game.start({ role: 'guest', relay, net, replica: remote, pid: s.pid, human: s.faction, biome: s.biome, seed: s.seed, scale: s.scale });
-          this.session = new E.Net.NetSession();
-          this.session.guest(game);
-          this._msg('In battle! You command the ' + (s.faction === 'aegis' ? 'Concord' : 'Pact') + '.');
-          E.bus.emit('lan:joined', { faction: s.faction });
-        }
-      });
+      relay.on('msg', (m) => { this._bootGuest(m, relay, name); });
       relay.on('error', (m) => this._err(m.msg || 'error'));
       relay.on('sigclose', () => this._err('Lost the LAN server'));
     }
 
-    _msg(text, bad) {
-      const m = this.root.querySelector('.mp-msg');
-      if (m) { m.textContent = text; m.classList.toggle('bad', !!bad); }
+    // boot the guest battle from a host `meta` (shared by LAN + online)
+    _bootGuest(m, relay, name) {
+      if (m.from !== 0) return;
+      let s; try { s = JSON.parse(m.data); } catch { return; }
+      if (s.t !== 'meta' || this.session) return;
+      const game = this._game();
+      const remote = new E.Net.RemoteWorld({ biome: s.biome, seed: s.seed, scale: s.scale, faction: s.faction, name });
+      remote._pid = s.pid;
+      const net = { send: (c) => relay.toHost(JSON.stringify(c)) };
+      this.menu.hide();
+      game.start({ role: 'guest', relay, net, replica: remote, pid: s.pid, human: s.faction, biome: s.biome, seed: s.seed, scale: s.scale });
+      this.session = new E.Net.NetSession();
+      this.session.guest(game);
+      if (this.oc) {
+        const oc = this.oc;
+        game.onEnd = (r) => { oc.claim(r.winner, s.faction).catch(() => {}); E.bus.emit('online:ended', r); };
+      }
+      E.bus.emit('lan:joined', { faction: s.faction });
     }
-    _err(msg) {
-      this._msg(msg, true);
-      const b = this.root.querySelector('.mp-leave'); if (b) b.hidden = false;
+
+    // ── Online ─────────────────────────────────────────────────
+    // Builds the online panel into `pane` and wires the OnlineClient.
+    online(pane) {
+      const oc = new E.Online.OnlineClient();
+      this.oc = oc;
+      const el = (s) => pane.querySelector(s);
+      const msg = (t, bad) => { const m = el('.mp-o-msg'); if (m) { m.textContent = t || ''; m.classList.toggle('bad', !!bad); } };
+
+      // account pane
+      el('.mp-o-url').value = oc.baseUrl;
+      const doLogin = (signup) => {
+        const email = el('.mp-o-email').value.trim();
+        const pass = el('.mp-o-pass').value;
+        const name = el('.mp-o-name').value.trim() || 'Commander';
+        if (!email || !pass) return msg('Enter email and password.', true);
+        el('.mp-o-url').value && oc.setUrl(el('.mp-o-url').value);
+        msg(signup ? 'Creating account…' : 'Signing in…');
+        (signup ? oc.signup(email, pass, name) : oc.login(email, pass, name))
+          .then(() => oc.connect())
+          .then(() => { oc.relay.on('msg', (m) => this._bootGuest(m, oc.relay, oc.name())); msg(''); showLobby(); })
+          .catch((e) => msg(e.message || 'sign-in failed', true));
+      };
+      el('.mp-o-login').addEventListener('click', () => doLogin(false));
+      el('.mp-o-signup').addEventListener('click', () => doLogin(true));
+
+      // lobby pane
+      const showLobby = () => { el('[data-opane="account"]').hidden = true; el('[data-opane="lobby"]').hidden = false; renderLobby(); };
+      const showAccount = () => { el('[data-opane="lobby"]').hidden = true; el('[data-opane="account"]').hidden = false; };
+
+      const renderLobby = () => {
+        const lb = oc._lobby();
+        el('.mp-o-room').textContent = lb.room || '—';
+        el('.mp-o-host').textContent = lb.host;
+        el('.mp-o-roster').innerHTML = lb.guests.length
+          ? lb.guests.map((g) => `<div class="mp-o-guest"><span>${esc(g.name)}</span><i class="${g.ready ? 'rdy' : 'wait'}">${g.ready ? 'READY' : 'waiting'}</i></div>`).join('')
+          : '<div class="mp-o-guest dim">no guests yet — share the code</div>';
+        const isHost = lb.role === 'host';
+        el('[data-host-ctl]').hidden = !isHost;
+        el('[data-guest-ctl]').hidden = !!isHost;
+        const start = el('.mp-o-start');
+        start.disabled = !(isHost && lb.allReady);
+        start.textContent = lb.allReady ? 'Start battle' : 'Waiting for ready…';
+        // guest ready button reflects state
+        const ready = el('.mp-o-ready');
+        const selfReady = lb.guests.some((g) => g.ready);
+        if (lb.role === 'guest') ready.textContent = selfReady ? 'Un-ready' : 'Ready';
+      };
+
+      oc.on('lobby', renderLobby);
+      oc.on('error', (m) => msg(m.msg || 'error', true));
+      oc.on('sigclose', () => msg('Lost the online service', true));
+
+      el('.mp-o-do-host').addEventListener('click', () => { oc.host('team'); });
+      el('.mp-o-join').addEventListener('click', () => {
+        const code = el('.mp-o-jcode').value.trim().toUpperCase();
+        if (!code) return msg('Enter a room code.', true);
+        oc.join(code);
+      });
+      el('.mp-o-quick').addEventListener('click', () => oc.quick('team'));
+      el('.mp-o-ready').addEventListener('click', () => {
+        const selfReady = oc._lobby().guests.some((g) => g.ready);
+        oc.ready(!selfReady);
+      });
+      el('.mp-o-start').addEventListener('click', () => {
+        const biome = el('.mp-o-biome').value;
+        oc._pending = { biome, seed: (Math.random() * 1e9) | 0 };
+        oc.start(!!el('.mp-o-ranked').checked);
+      });
+
+      // GO: the host fires start -> everyone gets a ticket -> boot the battle
+      oc.on('ticket', (m) => {
+        if (oc._lobby().role === 'host') this._onlineHostGo(oc, m);
+        // guest: the host's NetSession sends `meta`; _bootGuest boots the game
+      });
+
+      el('.mp-o-leave').addEventListener('click', () => { this.leave(); });
+
+      // if already signed in, go straight to the lobby
+      if (oc.token) showLobby(); else showAccount();
     }
+
+    _onlineHostGo(oc, m) {
+      const p = oc._pending || { biome: 'desert', seed: (Math.random() * 1e9) | 0 };
+      const game = this._game();
+      this.menu.hide();
+      game.start({ role: 'host', relay: oc.relay, biome: p.biome, seed: p.seed, human: 'aegis' });
+      this.session = new E.Net.NetSession();
+      this.session.host(game);
+      // reconcile the result for Elo when the match ends
+      game.onEnd = (r) => {
+        oc.claim(r.winner, 'aegis').then((d) => {
+          const extra = d && d.status ? `<div class="r-xp">Match recorded · ${d.status}</div>` : '';
+          if (game.hud && game.hud.resultsExtra) game.hud.resultsExtra(extra);
+        }).catch(() => {});
+        E.bus.emit('online:ended', r);
+      };
+    }
+
+    _msg(text, bad) { const m = this.root.querySelector('.mp-msg'); if (m) { m.textContent = text; m.classList.toggle('bad', !!bad); } }
+    _err(msg) { this._msg(msg, true); const b = this.root.querySelector('.mp-leave'); if (b) b.hidden = false; }
     leave() {
       if (this.session) { this.session.stop(); this.session = null; }
+      if (this.oc) { try { this.oc.close(); } catch {} this.oc = null; }
       if (this.relay) { try { this.relay.close(); } catch {} this.relay = null; }
       if (this.game && this.game.stop) this.game.stop();
       if (this.menu && this.menu.show) this.menu.show();
@@ -5085,10 +5325,16 @@
     }
   }
 
-  // The menu's multiplayer screen: choose Host or Join.
+  function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  // The menu's multiplayer screen: LAN and Online tabs.
   function mount(root, menu) {
     root.innerHTML = `
-    <div class="mp-lan">
+    <div class="mp-tabs">
+      <button class="mp-tab mp-tab-lan" data-tab="lan">LAN</button>
+      <button class="mp-tab mp-tab-online" data-tab="online">Online</button>
+    </div>
+    <div data-pane="lan">
       <div class="mp-col">
         <div class="m-sec">Host a battle</div>
         <p class="mp-msg">Anyone on your network can join with the room code. Your browser runs the battle; friends see it live.</p>
@@ -5110,12 +5356,59 @@
         </div>
         <button class="gc-btn mp-join" style="width:100%;margin-top:12px">Join</button>
       </div>
-      <div class="mp-col" style="margin-top:4px">
-        <button class="gc-btn mp-leave" hidden>Leave battle</button>
+      <div class="mp-col" style="margin-top:4px"><button class="gc-btn mp-leave" hidden>Leave battle</button></div>
+    </div>
+    <div data-pane="online" hidden>
+      <div data-opane="account">
+        <div class="m-sec">Sign in</div>
+        <input class="mp-input mp-o-url" placeholder="https://play.example.com" />
+        <div class="mp-row3">
+          <input class="mp-input mp-o-email" placeholder="email" />
+          <input class="mp-input mp-o-pass" type="password" placeholder="password" />
+          <input class="mp-input mp-o-name" placeholder="callsign" />
+        </div>
+        <div class="mp-row2" style="margin-top:10px">
+          <button class="gc-btn primary mp-o-login">Sign in</button>
+          <button class="gc-btn mp-o-signup">Create account</button>
+        </div>
+        <p class="mp-msg mp-o-msg"></p>
+      </div>
+      <div data-opane="lobby" hidden>
+        <div class="m-sec">Lobby · room <b class="mp-o-room">—</b></div>
+        <div class="mp-o-hostname">Host: <b class="mp-o-host"></b></div>
+        <div class="mp-o-roster"></div>
+        <div class="mp-row2" data-host-ctl hidden style="margin-top:10px">
+          <select class="mp-input mp-o-biome">${BIOMES.map((b) => `<option value="${b}">${biomeName(b)}</option>`).join('')}</select>
+          <label class="mp-chk"><input type="checkbox" class="mp-o-ranked" /> ranked</label>
+        </div>
+        <div class="mp-row2" data-guest-ctl hidden style="margin-top:10px">
+          <button class="gc-btn mp-o-ready">Ready</button>
+        </div>
+        <div class="mp-row2" style="margin-top:12px">
+          <button class="gc-btn primary mp-o-do-host" style="flex:1">Host</button>
+          <input class="mp-input mp-o-jcode" placeholder="CODE" style="letter-spacing:3px;flex:1" />
+          <button class="gc-btn mp-o-join" style="flex:0 0 auto">Join</button>
+        </div>
+        <div class="mp-row2" style="margin-top:10px">
+          <button class="gc-btn mp-o-quick" style="flex:1">Quick match</button>
+          <button class="gc-btn primary mp-o-start" disabled style="flex:1">Start battle</button>
+        </div>
+        <div class="mp-col" style="margin-top:10px"><button class="gc-btn mp-leave" hidden>Leave battle</button></div>
       </div>
     </div>`;
+
     const lobby = new Lobby(root, menu);
     const opts = Object.assign({ biome: 'desert', seed: (E.RNG(1).i(1e9)), human: (menu && menu.profile && menu.profile.human) || 'aegis' }, (menu && menu.mpOpts) || {});
+
+    // tabs
+    const showTab = (t) => {
+      root.querySelector('[data-pane="lan"]').hidden = t !== 'lan';
+      root.querySelector('[data-pane="online"]').hidden = t !== 'online';
+      root.querySelectorAll('.mp-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+    };
+    root.querySelector('.mp-tab-lan').addEventListener('click', () => showTab('lan'));
+    root.querySelector('.mp-tab-online').addEventListener('click', () => showTab('online'));
+
     root.querySelector('.mp-host').addEventListener('click', () => lobby.host(opts));
     root.querySelector('.mp-join').addEventListener('click', () => {
       const url = root.querySelector('.mp-jurl').value.trim();
@@ -5124,7 +5417,10 @@
       if (!code) { root.querySelector('.mp-jcode').style.borderColor = 'var(--danger)'; return; }
       lobby.join(url, code, name);
     });
-    root.querySelector('.mp-leave').addEventListener('click', () => lobby.leave());
+    root.querySelectorAll('.mp-leave').forEach((b) => b.addEventListener('click', () => lobby.leave()));
+
+    lobby.online(root.querySelector('[data-pane="online"]'));
+    showTab('lan');
   }
 
   E.LAN = { Lobby, mount, lanUrl, pageUrl };

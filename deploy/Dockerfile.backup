@@ -1,0 +1,6 @@
+# Backup job: pg_dump -Fc -> verify -> age-encrypt -> keep N local -> rclone.
+# Uses postgres:17 for pg_dump/pg_restore, plus age and rclone.
+FROM postgres:17-alpine
+RUN apk add --no-cache age rclone
+COPY deploy/backup.sh /backup.sh
+ENTRYPOINT ["/backup.sh"]

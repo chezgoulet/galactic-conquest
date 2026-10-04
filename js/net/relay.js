@@ -21,6 +21,7 @@
       this.peers = new Map();
       this.ice = [];
       this.seq = 0;
+      this.user = null; this.ticketKeys = {}; this.config = {}; this._auth = null;
     }
     static defaultUrl() {
       if (location.protocol === 'http:' || location.protocol === 'https:')
@@ -51,13 +52,32 @@
     }
     host(name, extra) { this.raw(Object.assign({ op: 'host', name }, extra || {})); }
     join(room, name, extra) { this.raw(Object.assign({ op: 'join', room, name }, extra || {})); }
+    // online-only ops (the online service also handles these; the LAN server ignores unknown ops)
+    auth(token, version, platform) {
+      // returns a promise that resolves with the `hello` (user, ice, ticketKeys)
+      return new Promise((res, rej) => {
+        this._auth = { res, rej, to: setTimeout(() => { if (this._auth) { this._auth = null; rej(new Error('auth timeout')); } }, 8000) };
+        this.raw({ op: 'auth', token, version: version || '', platform: platform || (typeof navigator !== 'undefined' && navigator.platform) || 'web' });
+      });
+    }
+    ready(on) { this.raw({ op: 'ready', on: !!on }); }
+    start(rated) { this.raw({ op: 'start', rated: !!rated }); }
+    queue(mode) { this.raw({ op: 'queue', mode: mode || 'team' }); }
+    unqueue(mode) { this.raw({ op: 'unqueue', mode: mode || 'team' }); }
     hostOpen() { const p = this.peers.get(0); return !!(p && p.dc && p.dc.readyState === 'open'); }
 
     onSignal(m) {
       switch (m.op) {
-        case 'hosted': this.role = 'host'; this.id = 0; this.room = m.room; this.ice = m.ice || []; this.emit('hosted', m); break;
-        case 'joined': this.role = 'guest'; this.id = m.id; this.room = m.room; this.ice = m.ice || []; this.makePeer(0, m.hostName || 'Host', false); this.emit('joined', m); break;
+        case 'hello': // online service: authenticated (user, ice, ticketKeys)
+          this.user = m.user || null; this.ice = m.ice || []; this.ticketKeys = m.ticketKeys || {};
+          this.config = m.config || {}; this.maintenance = !!m.maintenance;
+          if (this._auth) { const a = this._auth; this._auth = null; clearTimeout(a.to); a.res(m); }
+          this.emit('signed', m); break;
+        case 'hosted': this.role = 'host'; this.id = 0; this.room = m.room; if (m.ice) this.ice = m.ice; this.emit('hosted', m); break;
+        case 'joined': this.role = 'guest'; this.id = m.id; this.room = m.room; if (m.ice) this.ice = m.ice; this.makePeer(0, m.hostName || 'Host', false); this.emit('joined', m); break;
         case 'peer': if (this.role === 'host') this.makePeer(m.id, m.name, true); break;
+        case 'ready': this.emit('ready', m); break;
+        case 'ticket': this.emit('ticket', m); break;
         case 'signal': this.onPeerSignal(m.from, m.data); break;
         case 'left': this.dropPeer(m.id); break;
         case 'closed': this.emit('closed', m); break;
@@ -134,7 +154,7 @@
     }
     maybeClosed() { if (!this.peers.size && this.role !== 'host') this.emit('close'); }
     dropPeer(id) { const p = this.peers.get(id); if (p) { try { p.pc.close(); } catch {} this.peers.delete(id); } this.emit('left', { id }); }
-    close() { for (const p of this.peers.values()) { try { p.pc.close(); } catch {} } this.peers.clear(); if (this.ws) this.ws.close(); }
+    close() { if (this._auth) { const a = this._auth; this._auth = null; clearTimeout(a.to); a.rej(new Error('closed')); } for (const p of this.peers.values()) { try { p.pc.close(); } catch {} } this.peers.clear(); if (this.ws) this.ws.close(); }
   }
 
   E.Relay = Relay;
