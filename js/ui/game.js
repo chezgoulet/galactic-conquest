@@ -1,6 +1,13 @@
 // The game controller: owns the world, the renderer, input, and the loop.
-// M0 wires a playable preview (move around a planet, possess units, switch
-// view modes). M1+ adds command, combat, objectives and the full HUD.
+// M1 adds the battle controls:
+//   Left-click      select nearest own unit at cursor (ground)
+//   Left-drag       box-select own units
+//   Right-click     command the selection (attack-move to that point)
+//   F               possess the nearest own unit (board it)
+//   Esc / C         release possession / back to commander view
+//   WASD            move (possessed) or orbit (commander)
+//   Mouse           look (fps / vehicle / ship)
+//   Left-click while possessing on foot   fire
 (function (E) {
   'use strict';
 
@@ -13,24 +20,23 @@
       this.running = false;
       this.acc = new E.Accumulator(30);
       this.last = 0;
-      this._lastFrame = performance.now();
       this.HUD = null;
       this._bound = false;
+      this._sel = null;
     }
 
     start(opts) {
       opts = opts || {};
-      this.world = new E.World({ biome: opts.biome, seed: opts.seed, scale: opts.scale });
+      this.world = new E.World({ biome: opts.biome, seed: opts.seed, scale: opts.scale, human: opts.human || 'aegis' });
       this.renderer = new E.Renderer(this.canvas);
       this.renderer.setPlanet(this.world.planet);
-      // focus the player's starting capital so we open in the air
-      this.world.controllerMode = 'commander';
       this.buildHud();
       this.bindInput();
       this.running = true;
       this.last = performance.now();
       this._raf = requestAnimationFrame(this.frame);
       E.bus.emit('game:start', this);
+      return this;
     }
 
     frame = (now) => {
@@ -41,68 +47,125 @@
       this.pollInput();
       this.acc.add(dt);
       this.acc.pump((h) => this.world.tick(h));
+      // drain sim events into FX + audio later
+      this.world.drainEvents();
       this.renderer.update(dt, this.world.t, this.world);
       if (this.HUD) this.HUD.update(this.world, this.renderer);
       this._raf = requestAnimationFrame(this.frame);
     };
 
+    // world point from a screen pixel (ray to ground plane)
+    pick(x, y) {
+      const cam = this.renderer.camera.cam;
+      const nd = { x: (x / window.innerWidth) * 2 - 1, y: -(y / window.innerHeight) * 2 + 1 };
+      const ray = new E.THREE.Raycaster();
+      ray.setFromCamera(nd, cam);
+      // intersect ground plane y=0 (approx; terrain height refined by caller)
+      const origin = ray.ray.origin, dir = ray.ray.direction;
+      if (Math.abs(dir.y) < 1e-5) return null;
+      const t = -origin.y / dir.y;
+      if (t < 0) return null;
+      const px = origin.x + dir.x * t, pz = origin.z + dir.z * t;
+      return { x: px, y: this.world.groundY(px, pz), z: pz };
+    }
+
     pollInput() {
       const k = this.keys, w = this.world;
-      let ix = 0, iz = 0;
-      if (k.has('w') || k.has('arrowup')) ix += 1;
-      if (k.has('s') || k.has('arrowdown')) ix -= 1;
-      if (k.has('d')) iz += 1;
-      if (k.has('a')) iz -= 1;
-      const boost = k.has('shift') ? 2 : 1;
-      w.playerInput.x = ix * boost;
-      w.playerInput.y = iz * boost;
-      // commander view: orbit with the arrows
-      if (w.controllerMode === 'commander') {
+      let ix = 0, iy = 0;
+      if (k.has('w')) ix += 1;
+      if (k.has('s')) ix -= 1;
+      if (k.has('d')) iy += 1;
+      if (k.has('a')) iy -= 1;
+      const boost = k.has('shift') ? 1.8 : 1;
+      w.setInput({ x: ix * boost, y: iy * boost });
+      if (w.mode() === 'commander') {
         if (k.has('arrowleft')) this.renderer.camera.cmdYaw += 0.02;
         if (k.has('arrowright')) this.renderer.camera.cmdYaw -= 0.02;
-        if (k.has('arrowup')) this.renderer.camera.cmdDist -= 3;
-        if (k.has('arrowdown')) this.renderer.camera.cmdDist += 3;
+        if (k.has('arrowup')) this.renderer.camera.cmdDist = Math.max(40, this.renderer.camera.cmdDist - 4);
+        if (k.has('arrowdown')) this.renderer.camera.cmdDist = Math.min(1200, this.renderer.camera.cmdDist + 4);
+        // commander auto-orbits slowly
+        if (!k.has('arrowleft') && !k.has('arrowright')) this.renderer.camera.cmdYaw += 0.0015;
       }
     }
 
-    // mouse-look while pointer-locked (fps / vehicle)
     onMouseMove(e) {
       const cam = this.renderer.camera, w = this.world;
-      if (w.controllerMode !== 'commander' && document.pointerLockElement === this.canvas) {
+      if (w.mode() !== 'commander' && document.pointerLockElement === this.canvas) {
         cam.look(-e.movementX * 0.0022, -e.movementY * 0.0022);
-        // in fps, the unit faces the camera's yaw
-        const u = w.focusedUnit();
-        if (u && w.controllerMode === 'fps') u.yaw = cam.lookYaw;
+        w.setLook(cam.lookYaw);
+        this._mx = e.clientX; this._my = e.clientY;
       }
     }
 
     lockPointer() { if (document.pointerLockElement !== this.canvas) this.canvas.requestPointerLock(); }
+    unlock() { if (document.pointerLockElement) document.exitPointerLock(); }
 
     keydown(e) {
       const k = e.key.toLowerCase();
       this.keys.add(k);
       const w = this.world;
-      if (k === 'f' || k === 'e') this.cyclePossession();
-      if (k === 'escape' || k === 'q') { if (document.pointerLockElement) document.exitPointerLock(); else w.release(); }
-      if (k === 'c') w.controllerMode === 'commander' ? this.cyclePossession() : w.release();
-      if (k === 'v' && w.controllerMode === 'fps') { /* fps stays */ }
+      if (k === 'f') this.possessNext();
+      if (k === 'escape') { if (document.pointerLockElement) this.unlock(); else { w.release(); w.select([]); } }
+      if (k === 'c') { w.mode() === 'commander' ? this.possessNext() : (w.release(), w.select([])); }
+      if (k === 'v' && w.mode() === 'commander') this.focusSelected();
+      if (k === 'r') this.toggleSelectMode();
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
     }
     keyup(e) { this.keys.delete(e.key.toLowerCase()); }
 
-    // Cycle through own units to possess; start from the closest.
-    cyclePossession() {
-      const w = this.world, pu = w.playerUnit;
-      const mine = w.units.filter(u => u.alive && (u.team === pu.team));
+    focusSelected() {
+      const sel = this.world.selected;
+      if (sel.length) this.world.focus(sel[0].id);
+    }
+
+    possessNext() {
+      const w = this.world;
+      const mine = w.units.filter(u => u.alive && u.team === w.human);
       if (!mine.length) return;
-      // nearest first
-      const px = pu.pos.x, pz = pu.pos.z;
-      mine.sort((a, b) => E.dist2v(pu.pos, a.pos) - E.dist2v(pu.pos, b.pos));
-      const cur = w.focusedId;
+      const ref = w.playerUnit ? w.playerUnit.pos : { x: 0, z: 0 };
+      mine.sort((a, b) => E.distXZ2(ref, a.pos) - E.distXZ2(ref, b.pos));
+      const cur = w.possessedId;
       const i = mine.findIndex(u => u.id === cur);
       const next = mine[(i + 1) % mine.length];
       w.focus(next.id);
-      if (w.controllerMode === 'fps') this.lockPointer();
+      if (w.mode() === 'fps' || w.mode() === 'fighter') this.lockPointer();
+    }
+
+    onMouseDown(e) {
+      const w = this.world;
+      if (e.button === 0) {
+        if (w.mode() !== 'commander') { // firing
+          w.setInput({ fire: true });
+          this._fireHeld = true;
+          return;
+        }
+        const p = this.pick(e.clientX, e.clientY);
+        if (p) {
+          // box select if shift, else nearest
+          if (this._sel === null) { this._sel = { x0: e.clientX, y0: e.clientY, shift: e.shiftKey }; this._selActive = true; }
+          else {
+            if (e.shiftKey) this.boxSelect(e);
+            else { const u = E.SIM.selectNearest(w, p, 40); w.select(u ? [u] : []); }
+            this._sel = null;
+          }
+        }
+      } else if (e.button === 2) {
+        // right-click: command selection (attack-move) or focus single
+        const p = this.pick(e.clientX, e.clientY);
+        if (p) {
+          if (w.selected.length) w.order(w.selected, 'attack', { pos: p });
+          else { const u = E.SIM.selectNearest(w, p, 40); if (u) { w.select([u]); w.order([u], 'attack', { pos: p }); } }
+        }
+      }
+    }
+    onMouseUp(e) {
+      if (this._fireHeld) { this.world.setInput({ fire: false }); this._fireHeld = false; }
+      if (this._selActive && e.button === 0) { this._selActive = false; this._sel = null; }
+    }
+    boxSelect(e) {
+      const a = this.pick(this._sel ? this._sel.x0 : e.clientX, this._sel ? this._sel.y0 : e.clientY);
+      const b = this.pick(e.clientX, e.clientY);
+      if (a && b) this.world.select(E.SIM.selectBox(this.world, a, b));
     }
 
     bindInput() {
@@ -110,10 +173,10 @@
       window.addEventListener('keydown', (e) => this.keydown(e));
       window.addEventListener('keyup', (e) => this.keyup(e));
       window.addEventListener('mousemove', (e) => this.onMouseMove(e));
-      this.canvas.addEventListener('click', () => {
-        const w = this.world;
-        if (w.controllerMode === 'fps' || w.controllerMode === 'vehicle') this.lockPointer();
-      });
+      window.addEventListener('mousedown', (e) => this.onMouseDown(e));
+      window.addEventListener('mouseup', (e) => this.onMouseUp(e));
+      window.addEventListener('contextmenu', (e) => e.preventDefault());
+      this.canvas.addEventListener('click', () => { if (this.world.mode() === 'commander') this.lockPointer && this.unlock(); });
     }
 
     buildHud() {
@@ -121,34 +184,37 @@
       if (!root) return;
       root.innerHTML = `
         <div id="gc-top" class="gc-top"></div>
+        <div class="gc-crosshair" id="gc-cross" style="display:none"></div>
         <div id="gc-help" class="gc-help">
-          <b>Galactic Conquest</b> &nbsp; W A S D move · Mouse look · <b>F</b> possess next unit · <b>C</b>/<b>Esc</b> release ·
-          <b>←→</b> orbit · <b>↑↓</b> zoom
+          <b>Galactic Conquest</b> · Left-click select · Left-drag box · Right-click attack-move · <b>F</b> board · <b>V</b> drive selected · <b>C/Esc</b> release · <b>↑↓←→</b> orbit · WASD move
         </div>`;
-      this.HUD = { top: document.getElementById('gc-top'), update: (w, r) => {
-        const pu = w.playerUnit;
-        const m = w.controllerMode;
-        const u = w.focusedUnit();
-        this.HUD.top.innerHTML =
-          `<span class="gc-chip gc-${w.planet.biome}">${w.planet.biomeDef.name} · ${w.planet.biomeDef.theme}</span>` +
-          `<span class="gc-chip">You: <b>${w.playerUnit.faction === 'aegis' ? 'Concord' : 'Pact'}</b></span>` +
-          `<span class="gc-chip gc-mode">${m.toUpperCase()}${u ? ' · ' + u.type + ' ' + (u.hp|0) + 'hp' : ''}</span>` +
-          `<span class="gc-chip">${w.units.length} units</span>`;
-      } };
+      this.HUD = {
+        top: document.getElementById('gc-top'),
+        cross: document.getElementById('gc-cross'),
+        update: (w, r) => {
+          const m = w.mode();
+          const u = w.focusedUnit();
+          this.HUD.cross.style.display = (m === 'fps' || m === 'fighter') ? 'block' : 'none';
+          const objs = w.objectives;
+          const aegisCap = objs.filter(o => o.owner === 'aegis').length;
+          const verdantCap = objs.filter(o => o.owner === 'verdant').length;
+          this.HUD.top.innerHTML =
+            `<span class="gc-chip gc-${w.planet.biome}">${w.planet.biomeDef.name} · ${w.planet.biomeDef.theme}</span>` +
+            `<span class="gc-chip">You: <b>${w.human === 'aegis' ? 'Concord' : 'Pact'}</b></span>` +
+            `<span class="gc-chip gc-mode">${m.toUpperCase()}${u ? ' · ' + u.type + ' ' + (u.hp | 0) + '/' + u.maxHp : ''}</span>` +
+            `<span class="gc-chip">Obj <b class="aegis">${aegisCap}</b> : <b class="verdant">${verdantCap}</b></span>` +
+            `<span class="gc-chip">${w.selected.length ? w.selected.length + ' selected' : (w.units.length) + ' units'}</span>` +
+            (w.winner ? `<span class="gc-chip" style="border-color:var(--ok)">VICTORY: ${w.winner.toUpperCase()}</span>` : '');
+        }
+      };
     }
 
-    stop() {
-      this.running = false;
-      cancelAnimationFrame(this._raf);
-      if (document.pointerLockElement) document.exitPointerLock();
-    }
+    stop() { this.running = false; cancelAnimationFrame(this._raf); this.unlock(); }
   }
 
   E.Game = Game;
   E.boot = function (opts) {
     const canvas = document.getElementById('view');
-    const g = new E.Game(canvas);
-    g.start(opts || {});
-    return g;
+    return new E.Game(canvas).start(opts || {});
   };
 })(window.E = window.E || {});

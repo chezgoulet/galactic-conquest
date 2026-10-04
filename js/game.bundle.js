@@ -174,6 +174,9 @@
   E.dist2 = (ax, ay, bx, by) => { const dx = bx - ax, dy = by - ay; return Math.hypot(dx, dy); };
   E.dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
   E.dist2v = (a, b) => { const dx = b.x - a.x, dy = b.y - a.y; return dx * dx + dy * dy; };
+  // horizontal (x,z) distances — the ground plane. y is altitude.
+  E.distXZ = (a, b) => Math.hypot(b.x - a.x, b.z - a.z);
+  E.distXZ2 = (a, b) => { const dx = b.x - a.x, dz = b.z - a.z; return dx * dx + dz * dz; };
   E.len = (x, y) => Math.hypot(x, y);
 
   E.deepCopy = (o) => {
@@ -276,12 +279,12 @@
     tundra: {
       name: 'Kethara', class: 'ice', theme: 'Tundra',
       desc: 'Frozen plains under a bruised sky. Fog rolls across the ice and cuts visibility to a fraction of a screen.',
-      palette: { low: rgb('#b7c2d0'), mid: rgb('#8fa3ba'), high: rgb('#dfe7ef'), fog: rgb('#7f97b0'), sky: rgb('#9db2ca'), skyHi: rgb('#c4d4e6') },
-      sun: { color: rgb('#dfe9ff'), dir: [0.4, 0.35, -0.5], strength: 0.7 },
+      palette: { low: rgb('#9aa8bb'), mid: rgb('#7f92ab'), high: rgb('#c3cedb'), fog: rgb('#5f7a94'), sky: rgb('#5f7488'), skyHi: rgb('#8fa9c0') },
+      sun: { color: rgb('#cfe0ff'), dir: [0.4, 0.5, -0.4], strength: 0.85 },
       amp: { low: 0.25, mid: 0.5, high: 1.2, rough: 0.5, ridged: 0.2 },
       water: { level: 0.0, color: rgb('#bcd4e6'), cover: 0.05 },
       cover: { rocks: 0.1, ice: 0.5, trees: 0.02, buildings: 0.0 },
-      challenge: { name: 'Ice Fog', desc: 'Thick fog: visibility ~900m, enemy sensors degraded.', fog: 1400, visDeg: 0.4 },
+      challenge: { name: 'Ice Fog', desc: 'Thick fog: visibility cut, enemy sensors degraded.', fog: 2400, visDeg: 0.4 },
       weather: { kind: 'snow', density: 0.5, speed: 0.4, wind: 6 },
       sound: { wind: 0.4 },
     },
@@ -489,43 +492,43 @@
 
   // Infantry: on-foot, small radius, the player can be one of these.
   E.INFANTRY = {
-    rifle:  { name: 'Line', hp: 100, speed: 8, viewH: 1.7, scale: 1.0, r: 0.7,
-              weapon: { dmg: 9, rate: 3.5, range: 120, spread: 0.02, auto: true, sfx: 'rifle' }, role: 'rifle', weight: 4 },
-    heavy:  { name: 'Bulwark', hp: 240, speed: 5.5, viewH: 1.9, scale: 1.1, r: 0.9,
-              weapon: { dmg: 22, rate: 1.4, range: 160, spread: 0.01, auto: true, sfx: 'heavy' }, role: 'heavy', weight: 2 },
-    medic:  { name: 'Mender', hp: 90, speed: 8, viewH: 1.6, scale: 1.0, r: 0.6,
-              weapon: { dmg: 5, rate: 2.5, range: 60, spread: 0.03, auto: true, sfx: 'rifle' }, heals: 14, role: 'medic', weight: 1 },
-    recon:  { name: 'Scout', hp: 80, speed: 12, viewH: 1.6, scale: 0.95, r: 0.55,
-              weapon: { dmg: 6, rate: 4.5, range: 90, spread: 0.02, auto: true, sfx: 'rifle' }, scout: 1.5, role: 'recon', weight: 2 },
+    rifle:  { name: 'Line', hp: 100, speed: 34, viewH: 1.7, scale: 1.0, r: 0.7,
+              weapon: { dmg: 9, rate: 3.5, range: 180, spread: 0.02, auto: true, sfx: 'rifle' }, role: 'rifle', weight: 4 },
+    heavy:  { name: 'Bulwark', hp: 240, speed: 24, viewH: 1.9, scale: 1.1, r: 0.9,
+              weapon: { dmg: 22, rate: 1.4, range: 240, spread: 0.01, auto: true, sfx: 'heavy' }, role: 'heavy', weight: 2 },
+    medic:  { name: 'Mender', hp: 90, speed: 34, viewH: 1.6, scale: 1.0, r: 0.6,
+              weapon: { dmg: 5, rate: 2.5, range: 90, spread: 0.03, auto: true, sfx: 'rifle' }, heals: 14, role: 'medic', weight: 1 },
+    recon:  { name: 'Scout', hp: 80, speed: 55, viewH: 1.6, scale: 0.95, r: 0.55,
+              weapon: { dmg: 6, rate: 4.5, range: 150, spread: 0.02, auto: true, sfx: 'rifle' }, scout: 1.5, role: 'recon', weight: 2 },
   };
 
   // Ground vehicles: commandeerable (board to drive) or AI-ordered.
   E.VEHICLES = {
-    skiff: { name: 'Skiff', layer: 'ground', hp: 320, speed: 42, accel: 30, turn: 2.6, r: 4.5, viewH: 3.2,
-             weapon: { dmg: 7, rate: 6, range: 180, spread: 0.03, auto: true, sfx: 'cannon' }, seats: 4, role: 'scout',
+    skiff: { name: 'Skiff', layer: 'ground', hp: 320, speed: 180, accel: 30, turn: 2.6, r: 4.5, viewH: 3.2,
+             weapon: { dmg: 7, rate: 6, range: 320, spread: 0.03, auto: true, sfx: 'cannon' }, seats: 4, role: 'scout',
              desc: 'Fast scout skiff. Quick and lightly armed.' },
-    gunship: { name: 'Bulwark', layer: 'ground', hp: 720, speed: 26, accel: 20, turn: 1.7, r: 7, viewH: 5,
-             weapon: { dmg: 20, rate: 2.2, range: 260, spread: 0.015, auto: true, sfx: 'cannon' }, seats: 5, role: 'gunship',
+    gunship: { name: 'Bulwark', layer: 'ground', hp: 720, speed: 110, accel: 20, turn: 1.7, r: 7, viewH: 5,
+             weapon: { dmg: 20, rate: 2.2, range: 420, spread: 0.015, auto: true, sfx: 'cannon' }, seats: 5, role: 'gunship',
              desc: 'Medium gunship with a heavy rotary cannon.' },
-    siege: { name: 'Juggernaut', layer: 'ground', hp: 1500, speed: 14, accel: 12, turn: 1.1, r: 10, viewH: 7,
-             weapon: { dmg: 60, rate: 0.8, range: 320, spread: 0.008, auto: false, sfx: 'siege' }, seats: 6, role: 'siege',
+    siege: { name: 'Juggernaut', layer: 'ground', hp: 1500, speed: 60, accel: 12, turn: 1.1, r: 10, viewH: 7,
+             weapon: { dmg: 60, rate: 0.8, range: 520, spread: 0.008, auto: false, sfx: 'siege' }, seats: 6, role: 'siege',
              desc: 'Slow siege platform. Massive single-shot cannons.' },
     // hover gunship (can hop to low air)
-    hornet: { name: 'Hornet', layer: 'ground', hp: 480, speed: 55, hover: 30, accel: 40, turn: 3.2, r: 5, viewH: 4,
-             weapon: { dmg: 9, rate: 8, range: 200, spread: 0.02, auto: true, sfx: 'cannon' }, seats: 3, role: 'hover',
+    hornet: { name: 'Hornet', layer: 'ground', hp: 480, speed: 220, hover: 30, accel: 40, turn: 3.2, r: 5, viewH: 4,
+             weapon: { dmg: 9, rate: 8, range: 340, spread: 0.02, auto: true, sfx: 'cannon' }, seats: 3, role: 'hover',
              desc: 'Hover gunship. Fast, can climb to low altitude.' },
   };
 
   // Fighters: air + space. Launched from capitals, can dogfight on the surface too.
   E.FIGHTERS = {
-    interceptor: { name: 'Lancer', layer: 'air', hp: 160, speed: 150, accel: 90, turn: 4.5, r: 3, viewH: 2.5,
-                   weapon: { dmg: 8, rate: 8, range: 160, spread: 0.02, auto: true, sfx: 'lance' }, role: 'interceptor',
+    interceptor: { name: 'Lancer', layer: 'air', hp: 160, speed: 520, accel: 90, turn: 4.5, r: 3, viewH: 2.5,
+                   weapon: { dmg: 8, rate: 8, range: 260, spread: 0.02, auto: true, sfx: 'lance' }, role: 'interceptor',
                    desc: 'Fast interceptor. Capital-killer missiles.' },
-    gunship: { name: 'Mauler', layer: 'air', hp: 260, speed: 110, accel: 60, turn: 3.0, r: 4, viewH: 3,
-               weapon: { dmg: 14, rate: 3, range: 200, spread: 0.02, auto: true, sfx: 'cannon' }, role: 'gunship',
+    gunship: { name: 'Mauler', layer: 'air', hp: 260, speed: 400, accel: 60, turn: 3.0, r: 4, viewH: 3,
+               weapon: { dmg: 14, rate: 3, range: 300, spread: 0.02, auto: true, sfx: 'cannon' }, role: 'gunship',
                desc: 'Heavy gunship fighter. Punches hard, turns slow.' },
-    strike: { name: 'Reaver', layer: 'air', hp: 120, speed: 135, accel: 75, turn: 5.0, r: 2.6, viewH: 2.2,
-              weapon: { dmg: 6, rate: 10, range: 140, spread: 0.025, auto: true, sfx: 'lance' }, role: 'strike',
+    strike: { name: 'Reaver', layer: 'air', hp: 120, speed: 460, accel: 75, turn: 5.0, r: 2.6, viewH: 2.2,
+              weapon: { dmg: 6, rate: 10, range: 220, spread: 0.025, auto: true, sfx: 'lance' }, role: 'strike',
               desc: 'Strike craft. Fast, fragile, swarms in pairs.' },
   };
 
@@ -581,6 +584,295 @@
     const T = layer === 'ground' ? E.VEHICLES : layer === 'air' ? E.FIGHTERS : layer === 'space' ? E.CAPITALS : E.INFANTRY;
     const u = T[key]; return u ? u.name : key;
   };
+})(window.E = window.E || {});
+
+// ---- js/sim/sim.js ----
+// The simulation rules: movement, AI, combat (projectiles + damage + shields),
+// objective capture, and win conditions. Pure and deterministic — draws only from
+// world.rng, reads/writes world state, and emits world.events (drained by the
+// renderer for FX). The World owns the state; this owns the rules.
+(function (E) {
+  'use strict';
+
+  function weaponOf(u) {
+    const T = u.kind === 'infantry' ? E.INFANTRY : u.kind === 'vehicle' ? E.VEHICLES : u.kind === 'fighter' ? E.FIGHTERS : E.CAPITALS;
+    const def = (T[u.type] || T.rifle || {});
+    return def.weapon || { dmg: 5, rate: 2, range: 100, spread: 0.02, sfx: 'rifle' };
+  }
+  function detectRange(u) {
+    return u.kind === 'capital' ? 1200 : u.kind === 'fighter' ? 340 : u.kind === 'vehicle' ? 300 : (u.role === 'recon' ? 220 : 140);
+  }
+  function airAlt(u) { return u.kind === 'capital' ? 520 : 130; }
+  function isAir(u) { return u.kind === 'fighter' || u.kind === 'capital'; }
+
+  function nearestEnemy(w, u, range) {
+    let best = null, bd = range * range;
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      const d = E.distXZ2(u.pos, e.pos);
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+  function nearestObjective(w, u, team) {
+    let best = null, bd = Infinity;
+    for (const o of w.objectives) {
+      if (o.owner === team) continue; // capture enemy or neutral
+      const d = E.distXZ2(u.pos, o.pos);
+      if (d < bd) { bd = d; best = o; }
+    }
+    return best;
+  }
+
+  // ── control ──────────────────────────────────────────────────
+  function control(u, w, dt) {
+    if (!u.alive) return;
+    if (w.possessedId === u.id) { possessed(u, w, dt); return; }
+    if (u.order && u.order.type === 'hold') { // hold position
+      u.fireT = Math.max(0, u.fireT - dt);
+      const e = nearestEnemy(w, u, detectRange(u));
+      if (e) fireAt(u, w, e);
+      return;
+    }
+    ai(u, w, dt);
+  }
+
+  function possessed(u, w, dt) {
+    const inp = w.playerInput;
+    const sp = u.speed;
+    const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
+    // forward/back + strafe
+    let dx = (fx * inp.x) + (-fz * inp.y * -1);
+    let dz = (fz * inp.x) + (fx * inp.y * -1);
+    // normalize-ish strafe: right = +y
+    const rx = Math.cos(u.yaw), rz = -Math.sin(u.yaw);
+    dx = fx * inp.x + rx * inp.y;
+    dz = fz * inp.x + rz * inp.y;
+    const l = Math.hypot(dx, dz) || 1;
+    if (l > 0.001) {
+      u.pos.x += (dx / l) * sp * dt;
+      u.pos.z += (dz / l) * sp * dt;
+    }
+    // face
+    u.yaw = w.playerLookYaw !== undefined ? w.playerLookYaw : u.yaw;
+    // altitude
+    const targetY = isAir(u) ? w.groundY(u.pos.x, u.pos.z) + airAlt(u) : w.groundY(u.pos.x, u.pos.z);
+    u.pos.y += (targetY - u.pos.y) * Math.min(1, dt * (isAir(u) ? 2 : 6));
+    // fire: auto at nearest enemy in range, or at crosshair
+    u.fireT = Math.max(0, u.fireT - dt);
+    const e = nearestEnemy(w, u, detectRange(u));
+    if (e && inp.fire !== false) fireAt(u, w, e);
+  }
+
+  function ai(u, w, dt) {
+    const range = weaponOf(u).range || 100;
+    const det = detectRange(u);
+    const enemy = nearestEnemy(w, u, det);
+    // objective to push (enemy or neutral)
+    const obj = nearestObjective(w, u, u.team);
+    // target point
+    let tx, tz;
+    if (enemy) { tx = enemy.pos.x; tz = enemy.pos.z; }
+    else if (obj) { tx = obj.pos.x; tz = obj.pos.z; }
+    else { // advance to enemy HQ
+      const hq = w.objectives.find(o => o.role === 'hq' && o.owner !== u.team);
+      if (!hq) return;
+      tx = hq.pos.x; tz = hq.pos.z;
+    }
+    const dx = tx - u.pos.x, dz = tz - u.pos.z;
+    const dist = Math.hypot(dx, dz);
+    const stopR = obj && (Math.abs(tx - obj.pos.x) < 2 && Math.abs(tz - obj.pos.z) < 2) ? obj.radius * 0.7 : 0;
+    // move toward target
+    if (dist > (stopR + 2)) {
+      const desired = Math.atan2(dx, dz);
+      u.yaw = E.lerpAngle(u.yaw, desired, Math.min(1, u.turn * dt));
+      const sp = u.speed * (enemy && dist < range * 0.6 ? 0.5 : 1); // slow when engaging
+      u.pos.x += Math.sin(u.yaw) * sp * dt;
+      u.pos.z += Math.cos(u.yaw) * sp * dt;
+    }
+    // altitude
+    const targetY = isAir(u) ? w.groundY(u.pos.x, u.pos.z) + airAlt(u) + Math.sin(w.t + u.id) * 20 : w.groundY(u.pos.x, u.pos.z);
+    u.pos.y += (targetY - u.pos.y) * Math.min(1, dt * (isAir(u) ? 1.5 : 6));
+    // fire
+    u.fireT = Math.max(0, u.fireT - dt);
+    if (enemy && dist < range) fireAt(u, w, enemy);
+    else if (obj && dist < obj.radius) fireAt(u, w, null, obj); // shoot the objective
+  }
+
+  // ── weapons ──────────────────────────────────────────────────
+  function fireAt(u, w, enemy, obj) {
+    if (u.fireT > 0) return;
+    const wp = weaponOf(u);
+    u.fireT = 1 / (wp.rate || 2);
+    u.aim = u.yaw;
+    const muzzle = E.V3.make(u.pos.x + Math.sin(u.yaw) * u.r * 1.5, u.pos.y + u.viewH * 0.7, u.pos.z + Math.cos(u.yaw) * u.r * 1.5);
+    let dir;
+    if (obj) dir = E.V3.normalize(E.V3.sub(obj.pos, muzzle));
+    else if (enemy) dir = E.V3.normalize(E.V3.sub(enemy.pos, muzzle));
+    else dir = E.V3.normalize(E.V3.make(Math.sin(u.yaw), 0, Math.cos(u.yaw)));
+    const sp = wp.spread || 0.02;
+    dir.x += (w.rng.next() - 0.5) * sp * 2; dir.y += (w.rng.next() - 0.5) * sp; dir.z += (w.rng.next() - 0.5) * sp * 2;
+    E.V3.normalize(dir);
+    const spd = (wp.speed || 150) * (u.kind === 'fighter' ? 1.3 : 1);
+    w.projectiles.push({
+      pos: muzzle, dir, speed: spd, dmg: wp.dmg, team: u.team, life: (wp.range || 120) / spd + 1.5,
+      color: E.faction(u.faction).palette.engine, faction: u.faction, kind: wp.kind || 'bullet', r: 1.2,
+    });
+    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: u.faction, kind: wp.kind });
+  }
+
+  // ── combat ───────────────────────────────────────────────────
+  function applyDamage(w, target, dmg, source) {
+    if (!target.alive) return;
+    // shield first
+    if (target.maxShield > 0 && target.shield > 0) {
+      const s = Math.min(target.shield, dmg);
+      target.shield -= s; dmg -= s;
+      if (s > 0.5) w.events.push({ type: 'shieldhit', pos: target.pos, team: target.team });
+    }
+    target.hp -= dmg;
+    if (dmg > 0.5) w.events.push({ type: 'hit', pos: { x: target.pos.x, y: target.pos.y + target.viewH * 0.5, z: target.pos.z }, dmg: Math.round(dmg), team: target.team, faction: source ? source.team : 'neutral' });
+    if (target.hp <= 0) {
+      target.alive = false;
+      target.hp = 0;
+      w.events.push({ type: 'death', pos: { x: target.pos.x, y: target.pos.y, z: target.pos.z }, kind: target.kind, faction: target.faction });
+      if (w.possessedId === target.id) { w.possessedId = null; w.events.push({ type: 'possessedDead' }); }
+      if (source && source.team) { source.kills = (source.kills || 0) + 1; w.stats.kills[source.team] = (w.stats.kills[source.team] || 0) + 1; }
+    }
+  }
+
+  function updateProjectiles(w, dt) {
+    for (let i = w.projectiles.length - 1; i >= 0; i--) {
+      const p = w.projectiles[i];
+      p.pos.x += p.dir.x * p.speed * dt; p.pos.y += p.dir.y * p.speed * dt; p.pos.z += p.dir.z * p.speed * dt;
+      p.life -= dt;
+      let dead = p.life <= 0;
+      // hit test vs enemy units
+      if (!dead) {
+        for (const e of w.units) {
+          if (!e.alive || e.team === p.team) continue;
+          const dx = e.pos.x - p.pos.x, dy = (e.pos.y + e.viewH * 0.5) - p.pos.y, dz = e.pos.z - p.pos.z;
+          if (dx * dx + dy * dy + dz * dz < (e.r + p.r) * (e.r + p.r)) {
+            applyDamage(w, e, p.dmg, { team: p.team }); dead = true; break;
+          }
+        }
+        // hit enemy objectives
+        if (!dead) {
+          for (const o of w.objectives) {
+            if (o.owner === p.team) continue;
+            const dx = o.pos.x - p.pos.x, dz = o.pos.z - p.pos.z, dy = (o.pos.y) - p.pos.y;
+            if (dx * dx + dy * dy + dz * dz < (o.radius + p.r) * (o.radius + p.r)) {
+              o.hp -= p.dmg; if (o.hp <= 0) { o.hp = 0; o.owner = p.team; w.events.push({ type: 'objectiveDestroyed', pos: o.pos, role: o.role }); }
+              dead = true; break;
+            }
+          }
+        }
+      }
+      if (dead) { w.events.push({ type: 'impact', pos: { x: p.pos.x, y: p.pos.y, z: p.pos.z }, faction: p.faction, kind: p.kind }); w.projectiles.splice(i, 1); }
+    }
+  }
+
+  // shield regen
+  function regen(w, dt) {
+    const thin = w.planet.biomeDef.challenge && w.planet.biomeDef.challenge.thinAir ? 0.6 : 1;
+    for (const u of w.units) {
+      if (!u.alive || u.maxShield <= 0) continue;
+      // only regen out of combat (no recent hit)
+      u.regenT = (u.regenT || 0) + dt;
+      if (u.regenT > 3) u.shield = Math.min(u.maxShield, u.shield + u.maxShield * 0.15 * thin * dt);
+    }
+  }
+
+  // ── objectives ───────────────────────────────────────────────
+  function updateObjectives(w, dt) {
+    for (const o of w.objectives) {
+      let a = 0, b = 0;
+      for (const u of w.units) {
+        if (!u.alive) continue;
+        const d = E.distXZ2(u.pos, o.pos);
+        if (d < o.radius * o.radius) { if (u.team === 'aegis') a++; else if (u.team === 'verdant') b++; }
+      }
+      if (a > 0 && b > 0) continue; // contested
+      const team = a > 0 ? 'aegis' : b > 0 ? 'verdant' : null;
+      if (!team) { // decay to owner
+        if (o.owner) { o.progress += ((o.owner === 'aegis' ? 1 : 0) - o.progress) * Math.min(1, dt * 0.2); }
+        continue;
+      }
+      if (team === o.owner) { o.progress = 1; continue; }
+      const before = o.owner;
+      o.progress += dt / (o.hold || 15);
+      if (o.progress >= 1) {
+        o.progress = 1; o.owner = team; o.hp = o.maxHp;
+        w.events.push({ type: 'objectiveCaptured', pos: o.pos, team, role: o.role, prev: before });
+      }
+    }
+  }
+
+  function checkWin(w) {
+    if (w.winner) return;
+    const hqs = w.objectives.filter(o => o.role === 'hq');
+    const aegisHQ = hqs.find(o => o.x < 0) || hqs[0];
+    const verdantHQ = hqs.find(o => o.x >= 0) || hqs[1];
+    if (verdantHQ && verdantHQ.owner === 'aegis') w.winner = 'aegis';
+    else if (aegisHQ && aegisHQ.owner === 'verdant') w.winner = 'verdant';
+    if (w.winner) w.events.push({ type: 'gameOver', winner: w.winner });
+  }
+
+  // ── intensity (drives music) ─────────────────────────────────
+  function intensity(w) {
+    let engaged = 0, total = 0;
+    for (const u of w.units) { if (u.alive) { total++; if (u._engaged) engaged++; } }
+    const near = (w.projectiles.length / 60) * 0.5;
+    const obj = 0.2;
+    return E.clamp01((engaged / Math.max(1, total)) * 0.7 + near + obj * 0.3);
+  }
+
+  // ── main step ────────────────────────────────────────────────
+  function update(w, dt) {
+    if (w.winner) { // keep FX going but freeze the battle
+      updateProjectiles(w, dt); w.intensity = 0; return;
+    }
+    w.t += dt; w.tickN++;
+    // control + movement
+    for (const u of w.units) {
+      if (!u.alive) continue;
+      u._engaged = false;
+      control(u, w, dt);
+    }
+    // mark engaged (has a recent target) for intensity
+    for (const u of w.units) if (u.alive && nearestEnemy(w, u, detectRange(u))) u._engaged = true;
+    updateProjectiles(w, dt);
+    regen(w, dt);
+    updateObjectives(w, dt);
+    checkWin(w);
+    w.intensity = intensity(w);
+  }
+
+  // ── player commands (the "light command" surface) ────────────
+  function myUnits(w, kind) {
+    return w.units.filter(u => u.alive && u.team === w.human && (!kind || u.kind === kind));
+  }
+  function selectNearest(w, pos, maxD) {
+    let best = null, bd = maxD * maxD;
+    for (const u of myUnits(w)) { const d = E.distXZ2(pos, u.pos); if (d < bd) { bd = d; best = u; } }
+    return best;
+  }
+  function selectBox(w, a, b) {
+    const set = new Set();
+    const minx = Math.min(a.x, b.x), maxx = Math.max(a.x, b.x), minz = Math.min(a.z, b.z), maxz = Math.max(a.z, b.z);
+    for (const u of myUnits(w)) if (u.pos.x >= minx && u.pos.x <= maxx && u.pos.z >= minz && u.pos.z <= maxz) set.add(u);
+    return [...set];
+  }
+  function command(w, sel, type, arg) {
+    for (const u of (sel || myUnits(w))) { u.order = { type, pos: arg && arg.pos ? E.V3.clone(arg.pos) : null, unit: arg && arg.unit ? arg.unit : null }; }
+    w.events.push({ type: 'command', n: (sel || myUnits(w)).length, type });
+  }
+
+  E.SIM = Object.assign(E.SIM || {}, {
+    update, weaponOf, nearestEnemy, intensity,
+    myUnits, selectNearest, selectBox, command,
+    applyDamage, fireAt,
+  });
 })(window.E = window.E || {});
 
 // ---- js/sim/terrain.js ----
@@ -655,29 +947,41 @@
 })(window.E = window.E || {});
 
 // ---- js/sim/world.js ----
-// The World: owns planet, players, units, and the tick. This is the lean M0
-// core that M1 (units/combat/objectives/AI) and M2 (space/capitals) expand into
-// the full deterministic sim. Units are plain objects read by the renderer.
+// The World: owns the match state and serializes it. Pure and deterministic —
+// it draws only from this.rng and never touches THREE or the DOM. Rendering,
+// audio and networking read its state and submit commands (focus, command,
+// input) which it applies. M1: surface battle with infantry, vehicles, fighters,
+// objectives, combat and bots; M2 adds capitals + orbital space.
 (function (E) {
   'use strict';
 
   class World {
     constructor(opts) {
-      this.planet = E.makePlanet(opts.biome || 'tundra', opts.seed !== undefined ? opts.seed : (E.RNG(1).i(1e9)), opts.scale || 1);
+      opts = opts || {};
+      this.human = opts.human || 'aegis';
+      this.planet = E.makePlanet(opts.biome || 'tundra', opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9), opts.scale || 1);
       this.terrain = E.makeTerrain(this.planet);
+      this.rng = E.RNG((this.planet.seed * 7919 + 17) | 0);
       this.units = [];
-      this.players = [];
+      this.projectiles = [];
+      this.objectives = [];
       this.nextId = 1;
-      this.t = 0;
-      this.tickN = 0;
-      this.controllerMode = 'commander';
-      this.focusedId = null;
-      this.playerInput = { x: 0, y: 0, yaw: 0, pitch: 0, fire: false };
-      this.spawnForce('aegis', { x: -2200, z: 0 });
-      this.spawnForce('verdant', { x: 2200, z: 0 });
-      this.playerUnit = this.units[0];
-      this.focusedId = this.playerUnit.id;
+      this.t = 0; this.tickN = 0;
+      this.possessedId = null;
+      this.winner = null;
+      this.intensity = 0;
+      this.stats = { kills: { aegis: 0, verdant: 0 }, captures: { aegis: 0, verdant: 0 } };
+      this.events = [];
+      this.playerInput = { x: 0, y: 0, fire: false };
+      this.playerLookYaw = 0;
+      this.selected = [];
+      this.buildObjectives();
+      this.spawnForce('aegis', { x: -2000, z: 0 });
+      this.spawnForce('verdant', { x: 2000, z: 0 });
+      this.playerUnit = this.units.find(u => u.team === this.human) || this.units[0];
     }
+
+    groundY(x, z) { return this.terrain.height(x, z); }
 
     unit(kind, faction, type, role, pos) {
       const T = kind === 'infantry' ? E.INFANTRY : kind === 'vehicle' ? E.VEHICLES : kind === 'fighter' ? E.FIGHTERS : E.CAPITALS;
@@ -685,79 +989,98 @@
       const u = {
         id: this.nextId++, kind, faction, type, role: role || (def.role || type),
         pos: { x: pos.x, y: this.groundY(pos.x, pos.z), z: pos.z },
-        vel: { x: 0, y: 0, z: 0 },
         yaw: 0, aim: 0,
-        hp: def.hp || 100, maxHp: def.hp || 100, shield: 0, maxShield: 0,
+        hp: def.hp || 100, maxHp: def.hp || 100,
+        shield: 0, maxShield: (kind === 'capital' ? 12000 : kind === 'vehicle' ? 200 : 0) * (this.planet.biomeDef.challenge && this.planet.biomeDef.challenge.thinAir ? 0.6 : 1),
         speed: def.speed || 8, turn: def.turn || 3,
         viewH: def.viewH || 1.7, r: def.r || 1,
-        alive: true, team: faction, // owned: 0 = AI, else player index
-        owner: null, target: null, orders: [],
+        alive: true, team: faction, kills: 0,
+        fireT: 0, regenT: 99, _engaged: false, order: null,
       };
       this.units.push(u);
       return u;
     }
 
-    groundY(x, z) { return this.terrain.height(x, z); }
-
     spawnForce(faction, base) {
       const F = E.FORCE_DEFAULT;
-      // infantry squad
-      for (const [role, n] of Object.entries({ rifle: F.rifle, recon: F.recon, medic: F.medic })) {
-        for (let i = 0; i < n; i++) {
-          const a = E.RNG(this.nextId * 7).angle(), d = E.RNG(this.nextId * 13).f(10, 60);
-          this.unit('infantry', faction, role, role, { x: base.x + Math.cos(a) * d, z: base.z + Math.sin(a) * d });
-        }
-      }
-      // vehicles
-      for (const [type, n] of Object.entries(F.vehicle)) {
-        for (let i = 0; i < n; i++) this.unit('vehicle', faction, type, F.vehicle[type] ? 'gunship' : 'scout', { x: base.x + E.RNG(this.nextId * 3).f(-40, 40), z: base.z + E.RNG(this.nextId * 5).f(-40, 40) });
-      }
-      // a few fighters in low orbit (visible in the air)
-      for (const [type, n] of Object.entries(F.fighter)) {
-        for (let i = 0; i < n; i++) {
-          const u = this.unit('fighter', faction, type, type, { x: base.x + E.RNG(this.nextId * 11).f(-300, 300), z: base.z + E.RNG(this.nextId * 17).f(-300, 300) });
-          u.pos.y = this.groundY(u.pos.x, u.pos.z) + 200 + E.RNG(this.nextId * 23).f(0, 200);
-        }
-      }
-      // starting capital in the air
+      const rr = (n) => { const a = this.rng.angle(), d = this.rng.f(10, 70); return { x: base.x + Math.cos(a) * d, z: base.z + Math.sin(a) * d }; };
+      for (const [role, n] of Object.entries({ rifle: F.rifle, recon: F.recon, medic: F.medic }))
+        for (let i = 0; i < n; i++) this.unit('infantry', faction, role, role, rr());
+      for (const [type, n] of Object.entries(F.vehicle))
+        for (let i = 0; i < n; i++) this.unit('vehicle', faction, type, 'gunship', rr());
+      for (const [type, n] of Object.entries(F.fighter))
+        for (let i = 0; i < n; i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
+      // A bot "capital" in the air for each side (the player's can be boarded).
       const cap = this.unit('capital', faction, F.capital, 'cruiser', { x: base.x, z: base.z });
-      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 500;
-      const gr = E.RNG(this.nextId * 31);
-      cap.genome = { r: gr.f(0.9, 1.15) };
-      cap.aim = faction === 'aegis' ? Math.PI : 0;
-      cap.yaw = cap.aim;
+      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 520;
+      cap.genome = { r: this.rng.f(0.9, 1.15) };
+      cap.yaw = cap.aim = faction === 'aegis' ? Math.PI : 0;
+      // medic healers are assigned to the nearest own units
+      this.medics = this.units.filter(u => u.role === 'medic');
+      return cap;
+    }
+
+    buildObjectives() {
+      const R = this.rng;
+      const O = E.STRUCTURES;
+      const mk = (role, x, z, y) => {
+        const def = O[role];
+        const o = { id: this.nextId++, role, team: role === 'hq' ? (x < 0 ? 'aegis' : 'verdant') : null,
+          pos: { x, y: this.groundY(x, z), z }, radius: def.r * 1.4, hp: def.hp, maxHp: def.hp,
+          hold: def.hold || 15, owner: def.role === 'hq' ? (x < 0 ? 'aegis' : 'verdant') : null,
+          progress: def.role === 'hq' ? 1 : 0, alive: true };
+        this.objectives.push(o);
+        return o;
+      };
+      // two HQs (one per side), destroyable -> the main win condition
+      mk('hq', -2350, 0, 0);
+      mk('hq', 2350, 0, 0);
+      // neutral power + depot per side to hold
+      mk('power', -1400, R.f(-600, 600), 0);
+      mk('power', 1400, R.f(-600, 600), 0);
+      mk('depot', -800, R.f(-800, 800), 0);
+      mk('depot', 800, R.f(-800, 800), 0);
+      // a central power core both fight over
+      mk('power', R.f(-200, 200), R.f(-400, 400), 0);
+      // space objectives (stations/gateway) appear in M2; reserve the air here
+      if (this.planet.biome !== 'gas') {
+        const st = mk('station', R.f(-400, 400), R.f(-900, 900), 0);
+        st.pos.y = this.groundY(st.pos.x, st.pos.z) + 700; // an orbital station
+      }
     }
 
     unitList() { return this.units; }
-    focusedUnit() { return this.units.find(u => u.id === this.focusedId) || null; }
     byId(id) { return this.units.find(u => u.id === id); }
+    focusedUnit() { return this.possessedId != null ? this.byId(this.possessedId) : null; }
+    playerUnit() { return this.playerUnit; }
 
-    // M0 preview tick: the possessed unit follows local input; others hover.
-    // M1 replaces this with the full deterministic combat/AI tick.
-    tick(dt) {
-      this.t += dt; this.tickN++;
-      const pu = this.playerUnit;
-      if (pu && this.controllerMode !== 'commander' && pu.alive) {
-        const speed = pu.speed;
-        const fx = Math.sin(pu.yaw) * this.playerInput.x + Math.cos(pu.yaw) * this.playerInput.y;
-        const fz = Math.cos(pu.yaw) * this.playerInput.x - Math.sin(pu.yaw) * this.playerInput.y;
-        pu.pos.x += fx * speed * dt; pu.pos.z += fz * speed * dt;
-        pu.pos.y += (this.groundY(pu.pos.x, pu.pos.z) + (pu.kind === 'fighter' ? 8 : pu.kind === 'capital' ? 40 : 0) - pu.pos.y) * Math.min(1, dt * 4);
-        if (this.playerInput.x || this.playerInput.y) pu.yaw = Math.atan2(fx, fz);
-      }
-      // bob the air units
-      for (const u of this.units) {
-        if (u.kind === 'fighter' || u.kind === 'capital') u.pos.y += Math.sin(this.t * 0.5 + u.id) * dt * 6;
-      }
-    }
-
+    // ── commands (submitted by local or remote players) ─────────
     focus(id) {
-      this.focusedId = id;
       const u = this.byId(id);
-      if (u) this.controllerMode = u.kind === 'infantry' ? 'fps' : u.kind === 'vehicle' ? 'vehicle' : u.kind === 'fighter' ? 'vehicle' : 'ship';
-      else this.controllerMode = 'commander';
+      if (u && u.alive) this.possessedId = id;
+      else this.possessedId = null;
     }
-    release() { this.focusedId = null; this.controllerMode = 'commander'; }
+    release() { this.possessedId = null; }
+    setInput(inp) { this.playerInput = Object.assign(this.playerInput, inp); }
+    setLook(yaw) { this.playerLookYaw = yaw; }
+    select(units) { this.selected = units; }
+    // 'move'/'attack' pos; 'follow' unit; 'hold'; 'select' handled by Game
+    order(sel, type, arg) { E.SIM.command(this, sel || this.selected || E.SIM.myUnits(this, null), type, arg); }
+
+    // which view mode the player is in
+    mode() {
+      const u = this.focusedUnit();
+      if (!u) return 'commander';
+      if (u.kind === 'infantry') return 'fps';
+      if (u.kind === 'vehicle') return 'vehicle';
+      if (u.kind === 'fighter') return 'fighter';
+      if (u.kind === 'capital') return 'ship';
+      return 'commander';
+    }
+
+    // one simulation step (fixed timestep). Pure: reads opts, writes this state.
+    tick(dt) { E.SIM.update(this, dt); }
+    drainEvents() { const e = this.events; this.events = []; return e; }
   }
 
   E.World = World;
@@ -784,6 +1107,9 @@
       this.lookPitch = 0;
       this.dist = 18;
       this.roll = 0;
+      this.cmdYaw = 0.8;      // orbit angle
+      this.cmdPitch = 1.0;    // elevation; + = above, looking down
+      this.cmdDist = 520;
       this._sm = { p: E.V3.make(), r: 0, d: 18 };
       this._tmp = E.V3.make();
       this._look = E.V3.make(0, 0, -1);
@@ -874,8 +1200,8 @@
       const cy = u ? (u.pos ? u.pos.y : u.y) : 0;
       const cz = u ? (u.pos ? u.pos.z : u.z) : 0;
       this.cmdYaw = (this.cmdYaw === undefined) ? t * 0.05 : this.cmdYaw;
-      this.cmdPitch = this.cmdPitch === undefined ? -0.6 : this.cmdPitch;
-      this.cmdDist = this.cmdDist === undefined ? 260 : this.cmdDist;
+      this.cmdPitch = this.cmdPitch === undefined ? 1.0 : this.cmdPitch;   // elevation; + = above, looking down
+      this.cmdDist = this.cmdDist === undefined ? 520 : this.cmdDist;
       const cp = Math.cos(this.cmdPitch), sp = Math.sin(this.cmdPitch);
       const eye = E.V3.make(
         cx + Math.sin(this.cmdYaw) * cp * this.cmdDist,
@@ -1311,8 +1637,13 @@
       // faction ring marker under ground units
       group.position.set(unit.pos.x, unit.pos.y, unit.pos.z);
       group.rotation.y = unit.yaw || 0;
+      // floating health bar (hidden at full health)
+      const bar = new E.THREE.Mesh(new E.THREE.PlaneGeometry(2, 0.35), new E.THREE.MeshBasicMaterial({ color: 0x22ff66, side: E.THREE.DoubleSide, transparent: true, depthTest: false }));
+      bar.position.y = (unit.viewH || 2) + 1.2; bar.renderOrder = 10;
+      bar.userData.baseW = 2;
+      group.add(bar);
       this.scene.units.add(group);
-      m = { group, kind: unit.kind, faction: unit.faction, role: unit.role, type: unit.type, prev: E.V3.make(unit.pos.x, unit.pos.y, unit.pos.z) };
+      m = { group, kind: unit.kind, faction: unit.faction, role: unit.role, type: unit.type, bar, prev: E.V3.make(unit.pos.x, unit.pos.y, unit.pos.z) };
       this.meshes.set(unit.id, m);
       return m;
     }
@@ -1335,20 +1666,50 @@
         g.position.x += (p.x - g.position.x) * k;
         g.position.y += (p.y - g.position.y) * k;
         g.position.z += (p.z - g.position.z) * k;
-        g.rotation.y += E.lerpAngle(g.rotation.y, u.yaw || 0, k);
+        g.rotation.y = E.lerpAngle(g.rotation.y, u.yaw || 0, k);
         prev.x = p.x; prev.y = p.y; prev.z = p.z;
-        // vehicle turret follows unit yaw (aim handled by sim aim offset later)
+        // vehicle turret follows unit aim
         if (g.userData.turret && !g.userData.turret.userData.locked) g.userData.turret.rotation.y = (u.aim || 0) - (u.yaw || 0);
-        // health bar scale
-        if (g.userData.hp && u.maxHp) {
+        // health bar: show only when damaged
+        if (m.bar && u.maxHp) {
           const f = E.clamp01(u.hp / u.maxHp);
-          g.userData.hp.scale.x = f;
-          g.userData.hp.position.x = (f - 1) * (g.userData.hp.userData.baseW || 2) * 0.5;
-          g.userData.hp.material.color.setRGB(1 - f * 0.5, f, 0.2);
+          const show = f < 0.999;
+          m.bar.visible = show;
+          if (show) {
+            m.bar.scale.x = f;
+            m.bar.position.x = (f - 1) * (m.bar.userData.baseW || 2) * 0.5;
+            m.bar.material.color.setRGB(1 - f * 0.6, f, 0.2);
+          }
         }
       }
       // remove stale
       for (const id of [...this.meshes.keys()]) if (!seen.has(id)) this.removeUnit(id);
+    }
+
+    // Objective beacons: a pillar + base ring, tinted by owner, height = progress.
+    syncObjectives(objectives, dt) {
+      if (!this.objGroup) { this.objGroup = new E.THREE.Group(); this.scene.hud3d.add(this.objGroup); this.obj = new Map(); }
+      const T = E.THREE, seen = new Set();
+      for (const o of objectives) {
+        seen.add(o.id);
+        let m = this.obj.get(o.id);
+        if (!m) {
+          const g = new T.Group();
+          const base = new T.Mesh(new T.TorusGeometry(o.radius, 1.2, 8, 32), new T.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.7, side: T.DoubleSide }));
+          base.rotation.x = Math.PI / 2; base.position.y = 1; g.add(base);
+          const pillar = new T.Mesh(new T.CylinderGeometry(2.5, 2.5, 400, 12, 1, true), new T.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.28, side: T.DoubleSide, depthWrite: false }));
+          pillar.position.y = 200; g.add(pillar);
+          g.position.set(o.pos.x, o.pos.y, o.pos.z);
+          this.objGroup.add(g);
+          m = { g, base, pillar };
+          this.obj.set(o.id, m);
+        }
+        const col = o.owner === 'aegis' ? new T.Color(0xff5a2b) : o.owner === 'verdant' ? new T.Color(0x3df0b0) : new T.Color(0x8fa8cc);
+        m.base.material.color.copy(col);
+        m.pillar.material.color.copy(col);
+        m.pillar.scale.y = 0.2 + (o.progress || 0) * 0.8;
+      }
+      for (const id of [...this.obj.keys()]) if (!seen.has(id)) { const m = this.obj.get(id); this.objGroup.remove(m.g); this.obj.delete(id); }
     }
 
     // Per-frame animation + camera + render.
@@ -1360,9 +1721,24 @@
       }
       if (world) {
         this.syncUnits(world.unitList(), dt);
-        this.camera.setMode(world.controllerMode, world.focusedUnit());
+        this.syncObjectives(world.objectives, dt);
+        // focus: possessed unit, else the centroid of my force
+        let focus = world.focusedUnit();
+        if (!focus && world.playerUnit && world.playerUnit.alive) {
+          let x = 0, z = 0, y = 0, n = 0;
+          for (const u of world.unitList()) if (u.alive && u.team === world.human) { x += u.pos.x; y += u.pos.y; z += u.pos.z; n++; }
+          if (n) focus = { id: 'force', pos: { x: x / n, y: y / n, z: z / n }, viewH: 10, yaw: 0 };
+        }
+        this.camera.setMode(world.mode(), focus);
       }
       this.camera.update(dt, t);
+      // never let the camera sink below the surface
+      if (this.terrain) {
+        const cp = this.camera.cam.position;
+        const minY = this.terrain.height(cp.x, cp.z) + 4;
+        if (cp.y < minY) cp.y = minY;
+      }
+      this.scene.setCameraAltitude(this.camera.cam.position.y);
       this.scene.render();
     }
   }
@@ -1433,6 +1809,7 @@
       const vis = (b.challenge && b.challenge.fog) || 3000;
       this.fog.far = Math.max(400, vis);
       this.fog.near = Math.max(30, vis * 0.08);
+      this._fogFar = this.fog.far; this._fogNear = this.fog.near;
       this.hemi.color.setRGB(pal.sky[0] / 255, pal.sky[1] / 255, pal.sky[2] / 255);
       this.hemi.groundColor.setRGB(pal.low[0] / 255, pal.low[1] / 255, pal.low[2] / 255);
       const s = b.sun || {};
@@ -1452,10 +1829,13 @@
       this.renderer.setSize(W, H, false);
     }
 
-    // fade fog out as the camera climbs into the air/space
+    // Fade ground fog as the camera climbs into air/space (clearer horizon up high).
     setCameraAltitude(alt) {
-      const t = E.clamp01(E.invLerp(800, 4000, alt));
-      this.scene.fog = t < 0.05 ? this.fog : null;
+      if (!this.scene.fog) return;
+      const t = E.clamp01(E.invLerp(60, 3000, alt));
+      const base = this._fogFar || this.fog.far;
+      this.fog.far = base * (1 + t * 6);      // horizon opens up with altitude
+      this.fog.near = (this._fogNear || this.fog.near) * (1 + t * 3);
     }
 
     // Quality governor: downgrades before a visible stutter, probes back up.
@@ -1573,8 +1953,15 @@
 
 // ---- js/ui/game.js ----
 // The game controller: owns the world, the renderer, input, and the loop.
-// M0 wires a playable preview (move around a planet, possess units, switch
-// view modes). M1+ adds command, combat, objectives and the full HUD.
+// M1 adds the battle controls:
+//   Left-click      select nearest own unit at cursor (ground)
+//   Left-drag       box-select own units
+//   Right-click     command the selection (attack-move to that point)
+//   F               possess the nearest own unit (board it)
+//   Esc / C         release possession / back to commander view
+//   WASD            move (possessed) or orbit (commander)
+//   Mouse           look (fps / vehicle / ship)
+//   Left-click while possessing on foot   fire
 (function (E) {
   'use strict';
 
@@ -1587,24 +1974,23 @@
       this.running = false;
       this.acc = new E.Accumulator(30);
       this.last = 0;
-      this._lastFrame = performance.now();
       this.HUD = null;
       this._bound = false;
+      this._sel = null;
     }
 
     start(opts) {
       opts = opts || {};
-      this.world = new E.World({ biome: opts.biome, seed: opts.seed, scale: opts.scale });
+      this.world = new E.World({ biome: opts.biome, seed: opts.seed, scale: opts.scale, human: opts.human || 'aegis' });
       this.renderer = new E.Renderer(this.canvas);
       this.renderer.setPlanet(this.world.planet);
-      // focus the player's starting capital so we open in the air
-      this.world.controllerMode = 'commander';
       this.buildHud();
       this.bindInput();
       this.running = true;
       this.last = performance.now();
       this._raf = requestAnimationFrame(this.frame);
       E.bus.emit('game:start', this);
+      return this;
     }
 
     frame = (now) => {
@@ -1615,68 +2001,125 @@
       this.pollInput();
       this.acc.add(dt);
       this.acc.pump((h) => this.world.tick(h));
+      // drain sim events into FX + audio later
+      this.world.drainEvents();
       this.renderer.update(dt, this.world.t, this.world);
       if (this.HUD) this.HUD.update(this.world, this.renderer);
       this._raf = requestAnimationFrame(this.frame);
     };
 
+    // world point from a screen pixel (ray to ground plane)
+    pick(x, y) {
+      const cam = this.renderer.camera.cam;
+      const nd = { x: (x / window.innerWidth) * 2 - 1, y: -(y / window.innerHeight) * 2 + 1 };
+      const ray = new E.THREE.Raycaster();
+      ray.setFromCamera(nd, cam);
+      // intersect ground plane y=0 (approx; terrain height refined by caller)
+      const origin = ray.ray.origin, dir = ray.ray.direction;
+      if (Math.abs(dir.y) < 1e-5) return null;
+      const t = -origin.y / dir.y;
+      if (t < 0) return null;
+      const px = origin.x + dir.x * t, pz = origin.z + dir.z * t;
+      return { x: px, y: this.world.groundY(px, pz), z: pz };
+    }
+
     pollInput() {
       const k = this.keys, w = this.world;
-      let ix = 0, iz = 0;
-      if (k.has('w') || k.has('arrowup')) ix += 1;
-      if (k.has('s') || k.has('arrowdown')) ix -= 1;
-      if (k.has('d')) iz += 1;
-      if (k.has('a')) iz -= 1;
-      const boost = k.has('shift') ? 2 : 1;
-      w.playerInput.x = ix * boost;
-      w.playerInput.y = iz * boost;
-      // commander view: orbit with the arrows
-      if (w.controllerMode === 'commander') {
+      let ix = 0, iy = 0;
+      if (k.has('w')) ix += 1;
+      if (k.has('s')) ix -= 1;
+      if (k.has('d')) iy += 1;
+      if (k.has('a')) iy -= 1;
+      const boost = k.has('shift') ? 1.8 : 1;
+      w.setInput({ x: ix * boost, y: iy * boost });
+      if (w.mode() === 'commander') {
         if (k.has('arrowleft')) this.renderer.camera.cmdYaw += 0.02;
         if (k.has('arrowright')) this.renderer.camera.cmdYaw -= 0.02;
-        if (k.has('arrowup')) this.renderer.camera.cmdDist -= 3;
-        if (k.has('arrowdown')) this.renderer.camera.cmdDist += 3;
+        if (k.has('arrowup')) this.renderer.camera.cmdDist = Math.max(40, this.renderer.camera.cmdDist - 4);
+        if (k.has('arrowdown')) this.renderer.camera.cmdDist = Math.min(1200, this.renderer.camera.cmdDist + 4);
+        // commander auto-orbits slowly
+        if (!k.has('arrowleft') && !k.has('arrowright')) this.renderer.camera.cmdYaw += 0.0015;
       }
     }
 
-    // mouse-look while pointer-locked (fps / vehicle)
     onMouseMove(e) {
       const cam = this.renderer.camera, w = this.world;
-      if (w.controllerMode !== 'commander' && document.pointerLockElement === this.canvas) {
+      if (w.mode() !== 'commander' && document.pointerLockElement === this.canvas) {
         cam.look(-e.movementX * 0.0022, -e.movementY * 0.0022);
-        // in fps, the unit faces the camera's yaw
-        const u = w.focusedUnit();
-        if (u && w.controllerMode === 'fps') u.yaw = cam.lookYaw;
+        w.setLook(cam.lookYaw);
+        this._mx = e.clientX; this._my = e.clientY;
       }
     }
 
     lockPointer() { if (document.pointerLockElement !== this.canvas) this.canvas.requestPointerLock(); }
+    unlock() { if (document.pointerLockElement) document.exitPointerLock(); }
 
     keydown(e) {
       const k = e.key.toLowerCase();
       this.keys.add(k);
       const w = this.world;
-      if (k === 'f' || k === 'e') this.cyclePossession();
-      if (k === 'escape' || k === 'q') { if (document.pointerLockElement) document.exitPointerLock(); else w.release(); }
-      if (k === 'c') w.controllerMode === 'commander' ? this.cyclePossession() : w.release();
-      if (k === 'v' && w.controllerMode === 'fps') { /* fps stays */ }
+      if (k === 'f') this.possessNext();
+      if (k === 'escape') { if (document.pointerLockElement) this.unlock(); else { w.release(); w.select([]); } }
+      if (k === 'c') { w.mode() === 'commander' ? this.possessNext() : (w.release(), w.select([])); }
+      if (k === 'v' && w.mode() === 'commander') this.focusSelected();
+      if (k === 'r') this.toggleSelectMode();
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
     }
     keyup(e) { this.keys.delete(e.key.toLowerCase()); }
 
-    // Cycle through own units to possess; start from the closest.
-    cyclePossession() {
-      const w = this.world, pu = w.playerUnit;
-      const mine = w.units.filter(u => u.alive && (u.team === pu.team));
+    focusSelected() {
+      const sel = this.world.selected;
+      if (sel.length) this.world.focus(sel[0].id);
+    }
+
+    possessNext() {
+      const w = this.world;
+      const mine = w.units.filter(u => u.alive && u.team === w.human);
       if (!mine.length) return;
-      // nearest first
-      const px = pu.pos.x, pz = pu.pos.z;
-      mine.sort((a, b) => E.dist2v(pu.pos, a.pos) - E.dist2v(pu.pos, b.pos));
-      const cur = w.focusedId;
+      const ref = w.playerUnit ? w.playerUnit.pos : { x: 0, z: 0 };
+      mine.sort((a, b) => E.distXZ2(ref, a.pos) - E.distXZ2(ref, b.pos));
+      const cur = w.possessedId;
       const i = mine.findIndex(u => u.id === cur);
       const next = mine[(i + 1) % mine.length];
       w.focus(next.id);
-      if (w.controllerMode === 'fps') this.lockPointer();
+      if (w.mode() === 'fps' || w.mode() === 'fighter') this.lockPointer();
+    }
+
+    onMouseDown(e) {
+      const w = this.world;
+      if (e.button === 0) {
+        if (w.mode() !== 'commander') { // firing
+          w.setInput({ fire: true });
+          this._fireHeld = true;
+          return;
+        }
+        const p = this.pick(e.clientX, e.clientY);
+        if (p) {
+          // box select if shift, else nearest
+          if (this._sel === null) { this._sel = { x0: e.clientX, y0: e.clientY, shift: e.shiftKey }; this._selActive = true; }
+          else {
+            if (e.shiftKey) this.boxSelect(e);
+            else { const u = E.SIM.selectNearest(w, p, 40); w.select(u ? [u] : []); }
+            this._sel = null;
+          }
+        }
+      } else if (e.button === 2) {
+        // right-click: command selection (attack-move) or focus single
+        const p = this.pick(e.clientX, e.clientY);
+        if (p) {
+          if (w.selected.length) w.order(w.selected, 'attack', { pos: p });
+          else { const u = E.SIM.selectNearest(w, p, 40); if (u) { w.select([u]); w.order([u], 'attack', { pos: p }); } }
+        }
+      }
+    }
+    onMouseUp(e) {
+      if (this._fireHeld) { this.world.setInput({ fire: false }); this._fireHeld = false; }
+      if (this._selActive && e.button === 0) { this._selActive = false; this._sel = null; }
+    }
+    boxSelect(e) {
+      const a = this.pick(this._sel ? this._sel.x0 : e.clientX, this._sel ? this._sel.y0 : e.clientY);
+      const b = this.pick(e.clientX, e.clientY);
+      if (a && b) this.world.select(E.SIM.selectBox(this.world, a, b));
     }
 
     bindInput() {
@@ -1684,10 +2127,10 @@
       window.addEventListener('keydown', (e) => this.keydown(e));
       window.addEventListener('keyup', (e) => this.keyup(e));
       window.addEventListener('mousemove', (e) => this.onMouseMove(e));
-      this.canvas.addEventListener('click', () => {
-        const w = this.world;
-        if (w.controllerMode === 'fps' || w.controllerMode === 'vehicle') this.lockPointer();
-      });
+      window.addEventListener('mousedown', (e) => this.onMouseDown(e));
+      window.addEventListener('mouseup', (e) => this.onMouseUp(e));
+      window.addEventListener('contextmenu', (e) => e.preventDefault());
+      this.canvas.addEventListener('click', () => { if (this.world.mode() === 'commander') this.lockPointer && this.unlock(); });
     }
 
     buildHud() {
@@ -1695,35 +2138,38 @@
       if (!root) return;
       root.innerHTML = `
         <div id="gc-top" class="gc-top"></div>
+        <div class="gc-crosshair" id="gc-cross" style="display:none"></div>
         <div id="gc-help" class="gc-help">
-          <b>Galactic Conquest</b> &nbsp; W A S D move · Mouse look · <b>F</b> possess next unit · <b>C</b>/<b>Esc</b> release ·
-          <b>←→</b> orbit · <b>↑↓</b> zoom
+          <b>Galactic Conquest</b> · Left-click select · Left-drag box · Right-click attack-move · <b>F</b> board · <b>V</b> drive selected · <b>C/Esc</b> release · <b>↑↓←→</b> orbit · WASD move
         </div>`;
-      this.HUD = { top: document.getElementById('gc-top'), update: (w, r) => {
-        const pu = w.playerUnit;
-        const m = w.controllerMode;
-        const u = w.focusedUnit();
-        this.HUD.top.innerHTML =
-          `<span class="gc-chip gc-${w.planet.biome}">${w.planet.biomeDef.name} · ${w.planet.biomeDef.theme}</span>` +
-          `<span class="gc-chip">You: <b>${w.playerUnit.faction === 'aegis' ? 'Concord' : 'Pact'}</b></span>` +
-          `<span class="gc-chip gc-mode">${m.toUpperCase()}${u ? ' · ' + u.type + ' ' + (u.hp|0) + 'hp' : ''}</span>` +
-          `<span class="gc-chip">${w.units.length} units</span>`;
-      } };
+      this.HUD = {
+        top: document.getElementById('gc-top'),
+        cross: document.getElementById('gc-cross'),
+        update: (w, r) => {
+          const m = w.mode();
+          const u = w.focusedUnit();
+          this.HUD.cross.style.display = (m === 'fps' || m === 'fighter') ? 'block' : 'none';
+          const objs = w.objectives;
+          const aegisCap = objs.filter(o => o.owner === 'aegis').length;
+          const verdantCap = objs.filter(o => o.owner === 'verdant').length;
+          this.HUD.top.innerHTML =
+            `<span class="gc-chip gc-${w.planet.biome}">${w.planet.biomeDef.name} · ${w.planet.biomeDef.theme}</span>` +
+            `<span class="gc-chip">You: <b>${w.human === 'aegis' ? 'Concord' : 'Pact'}</b></span>` +
+            `<span class="gc-chip gc-mode">${m.toUpperCase()}${u ? ' · ' + u.type + ' ' + (u.hp | 0) + '/' + u.maxHp : ''}</span>` +
+            `<span class="gc-chip">Obj <b class="aegis">${aegisCap}</b> : <b class="verdant">${verdantCap}</b></span>` +
+            `<span class="gc-chip">${w.selected.length ? w.selected.length + ' selected' : (w.units.length) + ' units'}</span>` +
+            (w.winner ? `<span class="gc-chip" style="border-color:var(--ok)">VICTORY: ${w.winner.toUpperCase()}</span>` : '');
+        }
+      };
     }
 
-    stop() {
-      this.running = false;
-      cancelAnimationFrame(this._raf);
-      if (document.pointerLockElement) document.exitPointerLock();
-    }
+    stop() { this.running = false; cancelAnimationFrame(this._raf); this.unlock(); }
   }
 
   E.Game = Game;
   E.boot = function (opts) {
     const canvas = document.getElementById('view');
-    const g = new E.Game(canvas);
-    g.start(opts || {});
-    return g;
+    return new E.Game(canvas).start(opts || {});
   };
 })(window.E = window.E || {});
 

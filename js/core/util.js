@@ -25,6 +25,9 @@
   E.dist2 = (ax, ay, bx, by) => { const dx = bx - ax, dy = by - ay; return Math.hypot(dx, dy); };
   E.dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
   E.dist2v = (a, b) => { const dx = b.x - a.x, dy = b.y - a.y; return dx * dx + dy * dy; };
+  // horizontal (x,z) distances — the ground plane. y is altitude.
+  E.distXZ = (a, b) => Math.hypot(b.x - a.x, b.z - a.z);
+  E.distXZ2 = (a, b) => { const dx = b.x - a.x, dz = b.z - a.z; return dx * dx + dz * dz; };
   E.len = (x, y) => Math.hypot(x, y);
 
   E.deepCopy = (o) => {

@@ -18,6 +18,9 @@
       this.lookPitch = 0;
       this.dist = 18;
       this.roll = 0;
+      this.cmdYaw = 0.8;      // orbit angle
+      this.cmdPitch = 1.0;    // elevation; + = above, looking down
+      this.cmdDist = 520;
       this._sm = { p: E.V3.make(), r: 0, d: 18 };
       this._tmp = E.V3.make();
       this._look = E.V3.make(0, 0, -1);
@@ -108,8 +111,8 @@
       const cy = u ? (u.pos ? u.pos.y : u.y) : 0;
       const cz = u ? (u.pos ? u.pos.z : u.z) : 0;
       this.cmdYaw = (this.cmdYaw === undefined) ? t * 0.05 : this.cmdYaw;
-      this.cmdPitch = this.cmdPitch === undefined ? -0.6 : this.cmdPitch;
-      this.cmdDist = this.cmdDist === undefined ? 260 : this.cmdDist;
+      this.cmdPitch = this.cmdPitch === undefined ? 1.0 : this.cmdPitch;   // elevation; + = above, looking down
+      this.cmdDist = this.cmdDist === undefined ? 520 : this.cmdDist;
       const cp = Math.cos(this.cmdPitch), sp = Math.sin(this.cmdPitch);
       const eye = E.V3.make(
         cx + Math.sin(this.cmdYaw) * cp * this.cmdDist,

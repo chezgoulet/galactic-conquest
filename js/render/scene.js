@@ -60,6 +60,7 @@
       const vis = (b.challenge && b.challenge.fog) || 3000;
       this.fog.far = Math.max(400, vis);
       this.fog.near = Math.max(30, vis * 0.08);
+      this._fogFar = this.fog.far; this._fogNear = this.fog.near;
       this.hemi.color.setRGB(pal.sky[0] / 255, pal.sky[1] / 255, pal.sky[2] / 255);
       this.hemi.groundColor.setRGB(pal.low[0] / 255, pal.low[1] / 255, pal.low[2] / 255);
       const s = b.sun || {};
@@ -79,10 +80,13 @@
       this.renderer.setSize(W, H, false);
     }
 
-    // fade fog out as the camera climbs into the air/space
+    // Fade ground fog as the camera climbs into air/space (clearer horizon up high).
     setCameraAltitude(alt) {
-      const t = E.clamp01(E.invLerp(800, 4000, alt));
-      this.scene.fog = t < 0.05 ? this.fog : null;
+      if (!this.scene.fog) return;
+      const t = E.clamp01(E.invLerp(60, 3000, alt));
+      const base = this._fogFar || this.fog.far;
+      this.fog.far = base * (1 + t * 6);      // horizon opens up with altitude
+      this.fog.near = (this._fogNear || this.fog.near) * (1 + t * 3);
     }
 
     // Quality governor: downgrades before a visible stutter, probes back up.
