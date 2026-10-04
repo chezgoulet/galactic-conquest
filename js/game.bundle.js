@@ -801,6 +801,104 @@
   E.opponent = (id) => (id === 'aegis' ? 'verdant' : 'aegis');
 })(window.E = window.E || {});
 
+// ---- js/data/galaxy.js ----
+// The galactic campaign. A strip of star systems between the two factions:
+// the player holds the left, the enemy the right, and a contested "front" runs
+// down the middle. A campaign is a sequence of battles; each match's scope is
+// the current front system (its planet + biome + challenge). Capturing it flips
+// the system to you, advances the front, and grants a strategic resource that
+// scales your fleet for the next match. Capturing the enemy home wins the war.
+(function (E) {
+  'use strict';
+
+  // A pool of named systems, each pinned to a biome (its inherent challenge).
+  const SYSTEM_POOL = [
+    { name: 'Kethara', biome: 'tundra' }, { name: 'Sarruun', biome: 'desert' },
+    { name: 'Veyra', biome: 'jungle' }, { name: 'Necropolis', biome: 'urban' },
+    { name: 'Pyrrhus', biome: 'volcanic' }, { name: 'Maelstrom', biome: 'ocean' },
+    { name: 'Vesta Minor', biome: 'cratered' }, { name: 'Oblivion', biome: 'gas' },
+    { name: 'Kethara II', biome: 'tundra' }, { name: 'Sarruun Prime', biome: 'desert' },
+    { name: 'Veyra Deep', biome: 'jungle' }, { name: 'Ashen Reach', biome: 'volcanic' },
+  ];
+
+  // Generate a campaign for two factions and a seed.
+  // Returns a serializable state object (the "campaign").
+  function newCampaign(opts) {
+    opts = opts || {};
+    const seed = opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9);
+    const r = E.RNG(seed);
+    const playerFaction = opts.playerFaction || 'aegis';
+    const enemyFaction = E.opponent(playerFaction);
+    const len = opts.length || 5; // contested systems between the two homes
+    const systems = [];
+    // player home
+    systems.push({ id: 0, name: 'Home — ' + E.faction(playerFaction).short, biome: 'cratered', owner: playerFaction, home: playerFaction, x: 0, y: 0 });
+    // contested front
+    for (let i = 1; i <= len; i++) {
+      const sp = r.pick(SYSTEM_POOL);
+      // avoid the same biome twice in a row for variety
+      let pick = sp; let tries = 0;
+      while (systems.length && pick.biome === systems[systems.length - 1].biome && tries++ < 6) pick = r.pick(SYSTEM_POOL);
+      systems.push({ id: i, name: pick.name, biome: pick.biome, owner: null, x: i, y: 0 });
+    }
+    // enemy home
+    systems.push({ id: len + 1, name: 'Home — ' + E.faction(enemyFaction).short, biome: 'volcanic', owner: enemyFaction, home: enemyFaction, x: len + 1, y: 0 });
+
+    return {
+      seed, playerFaction, enemyFaction, systems,
+      frontIndex: 1, resources: 100, matches: 0,
+      victory: null, // null | 'aegis' | 'verdant'
+    };
+  }
+
+  // The system the current match is fought over (the front).
+  function frontSystem(c) { return c.systems[c.frontIndex]; }
+
+  // Fleet size multiplier from strategic resources (captured systems grow your fleet).
+  function fleetScale(c) { return 1 + E.clamp01(c.resources / 400) * 1.0; } // 1x .. 2x
+
+  // Begin a battle for the current front. Returns match options.
+  function matchOptions(c) {
+    const s = frontSystem(c);
+    return {
+      biome: s.biome,
+      human: c.playerFaction,
+      seed: (c.seed ^ (c.frontIndex * 2654435761)) >>> 0,
+      system: s.name, systemId: c.frontIndex,
+      fleetScale: fleetScale(c),
+    };
+  }
+
+  // Report the result of a match back to the campaign.
+  // won: boolean (did the player capture the front system)
+  function applyResult(c, won) {
+    c.matches++;
+    if (c.victory) return { changed: false };
+    const s = c.systems[c.frontIndex];
+    if (won) {
+      s.owner = c.playerFaction;
+      c.resources += 120 + c.frontIndex * 20;
+      c.frontIndex++;
+      if (c.frontIndex >= c.systems.length - 1) {
+        c.victory = c.playerFaction; // reached enemy home
+      }
+    } else {
+      c.resources = Math.max(40, c.resources - 40); // loss costs resources, not the front
+    }
+    return { changed: true, won, front: c.frontIndex, victory: c.victory, resources: c.resources };
+  }
+
+  // A random "quick battle" (no campaign): just pick a biome.
+  function quickBattle(opts) {
+    opts = opts || {};
+    const r = E.RNG(opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9));
+    const s = r.pick(SYSTEM_POOL);
+    return { biome: s.biome, system: s.name, human: opts.human || 'aegis', seed: r.i(1e9), fleetScale: 1 };
+  }
+
+  E.Campaign = { newCampaign, frontSystem, fleetScale, matchOptions, applyResult, quickBattle, SYSTEM_POOL };
+})(window.E = window.E || {});
+
 // ---- js/data/units.js ----
 // The roster. Pure data: what each unit is, how it fights, how big it is, and
 // what it costs. Rendering and simulation both read from here so the numbers
@@ -1371,6 +1469,7 @@
     constructor(opts) {
       opts = opts || {};
       this.human = opts.human || 'aegis';
+      this.fleetScale = opts.fleetScale || 1;
       this.planet = E.makePlanet(opts.biome || 'tundra', opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9), opts.scale || 1);
       this.terrain = E.makeTerrain(this.planet);
       this.rng = E.RNG((this.planet.seed * 7919 + 17) | 0);
@@ -1415,16 +1514,20 @@
 
     spawnForce(faction, base) {
       const F = E.FORCE_DEFAULT;
+      const sc = (faction === this.human && this.fleetScale) ? this.fleetScale : 1;
       const rr = (n) => { const a = this.rng.angle(), d = this.rng.f(10, 70); return { x: base.x + Math.cos(a) * d, z: base.z + Math.sin(a) * d }; };
+      const ni = (n) => Math.max(1, Math.round(n * sc));
       for (const [role, n] of Object.entries({ rifle: F.rifle, recon: F.recon, medic: F.medic }))
-        for (let i = 0; i < n; i++) this.unit('infantry', faction, role, role, rr());
+        for (let i = 0; i < ni(n); i++) this.unit('infantry', faction, role, role, rr());
       for (const [type, n] of Object.entries(F.vehicle))
-        for (let i = 0; i < n; i++) this.unit('vehicle', faction, type, 'gunship', rr());
+        for (let i = 0; i < ni(n); i++) this.unit('vehicle', faction, type, 'gunship', rr());
       for (const [type, n] of Object.entries(F.fighter))
-        for (let i = 0; i < n; i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
+        for (let i = 0; i < ni(n); i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
       // A bot "capital" in the air for each side (the player's can be boarded).
-      const cap = this.unit('capital', faction, F.capital, 'cruiser', { x: base.x, z: base.z });
-      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 340;
+      // A bigger fleet gets a bigger flagship.
+      const capType = sc > 1.4 ? 'dreadnought' : (sc > 1.15 ? 'carrier' : F.capital);
+      const cap = this.unit('capital', faction, capType, capType, { x: base.x, z: base.z });
+      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 200;
       cap.genome = { r: this.rng.f(0.9, 1.15) };
       cap.yaw = cap.aim = faction === 'aegis' ? Math.PI : 0;
       // medic healers are assigned to the nearest own units
@@ -2568,6 +2671,11 @@
       if (events.length) { this.renderer.fx.applyEvents(events); if (E.Music && E.Music.on) E.Music.onEvents(events); }
       if (E.Music) E.Music.setIntensity(this.world.intensity);
       if (this.world.winner && !this._won) { this._won = true; if (E.Music && E.Music.on) E.Music.victory(this.world.winner); }
+      // report the result once, shortly after the battle is decided
+      if (this.world.winner && !this._endFired) {
+        this._endTimer = (this._endTimer || 0) + dt;
+        if (this._endTimer > 4 && this.onEnd) { this._endFired = true; this.onEnd(this.world.winner === this.world.human); }
+      }
       this.renderer.fx.syncProjectiles(this.world.projectiles);
       this.renderer.update(dt, this.world.t, this.world);
       if (this.HUD) this.HUD.update(this.world, this.renderer);
@@ -2786,34 +2894,215 @@
 })(window.E = window.E || {});
 
 // ---- js/ui/main.js ----
-// The entry point (runs last in the bundle). M0 boots a preview planet directly;
-// M5 replaces this with the main menu (new match, multi-select, etc.).
-// Boot is deferred to the next frame and wrapped so a failure is reported to
-// window.__GC_ERROR__ (and the console) instead of hanging the page.
+// The entry point (runs last in the bundle). Shows the main menu / galactic
+// campaign map; when a battle starts it launches the Game and, when the match
+// ends, returns to the menu and records the result into the campaign.
 (function (E) {
   'use strict';
   let game = null;
-  function start(opts) {
+  let menu = null;
+  const uiRoot = () => document.getElementById('ui');
+
+  function start(opts, campaign) {
     try {
+      if (menu) menu.hide();
       game = E.boot(opts || {});
       window.GC.game = game;
-      E.game = game;
+      // record fleet scale for the force
+      if (game.world && opts && opts.fleetScale) game.world.fleetScale = opts.fleetScale;
+      game.onEnd = (won) => {
+        if (campaign) {
+          const res = E.Campaign.applyResult(campaign, won);
+          try { localStorage.setItem(E.LS_KEY, JSON.stringify(campaign)); } catch {}
+          E.bus.emit('campaign:updated', res);
+        }
+        // return to the menu
+        setTimeout(() => { if (menu) menu.show(); }, 2500);
+        if (menu) menu.campaign = campaign || menu.campaign;
+        E.bus.emit('game:end', won);
+      };
+      E.bus.emit('game:start', game);
       return game;
     } catch (err) {
       console.error('GC boot failed:', err);
       window.__GC_ERROR__ = (err && err.stack) || String(err);
-      const el = document.getElementById('ui');
-      if (el) { const d = document.createElement('div'); d.className = 'gc-boot-error'; d.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;color:#ff8a8a;font:14px/1.5 monospace;padding:40px;text-align:center;z-index:99'; d.textContent = 'Boot failed:\n' + (err && err.message || err); el.appendChild(d); }
+      if (menu) { menu.campaign = campaign || menu.campaign; menu.show(); }
       return null;
     }
   }
+
+  function boot() {
+    menu = new E.Menu(uiRoot());
+    menu.onStart = (opts, campaign) => start(opts, campaign);
+    // A GC_AUTOSTART (biome/seed/human) skips the menu — used by tests and as
+    // a quick-play hook. Otherwise show the main menu / campaign map.
+    if (window.GC_AUTOSTART) {
+      start(Object.assign({ biome: 'desert', seed: 7 }, window.GC_AUTOSTART), null);
+    } else {
+      menu.show();
+    }
+  }
+
   window.GC = window.GC || {};
-  window.GC.start = start;
+  window.GC.start = boot;
   window.GC.E = E;
-  // Defer to the next frame so the canvas is laid out and a menu can unlock audio.
-  const auto = () => start(window.GC_AUTOSTART || { biome: 'desert', seed: 7 });
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(auto));
-  else requestAnimationFrame(auto);
+  window.GC.getGame = () => game;
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(boot));
+  else requestAnimationFrame(boot);
+})(window.E = window.E || {});
+
+// ---- js/ui/menus.js ----
+// Main menu + galactic campaign map + post-match overlay. UI only (browser).
+// The menu owns the #ui overlay; when a battle starts it hands the overlay to
+// the Game and returns to render when the match ends. Campaign state persists
+// to localStorage so a player can resume their front.
+(function (E) {
+  'use strict';
+
+  const LS_KEY = 'gc.campaign.v1';
+  const LS_SET = 'gc.settings.v1';
+
+  class Menu {
+    constructor(root) {
+      this.root = root;
+      this.campaign = this.load() || null;
+      this.settings = this.loadSettings();
+      this.onStart = null;   // set by main.js: (opts) => void
+      this._hidden = false;
+    }
+
+    load() { try { const s = localStorage.getItem(LS_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
+    save() { try { if (this.campaign) localStorage.setItem(LS_KEY, JSON.stringify(this.campaign)); } catch {} }
+    loadSettings() { try { const s = localStorage.getItem(LS_SET); return Object.assign({ faction: 'aegis' }, s ? JSON.parse(s) : {}); } catch { return { faction: 'aegis' }; } }
+    saveSettings() { try { localStorage.setItem(LS_SET, JSON.stringify(this.settings)); } catch {} }
+
+    hide() { this._hidden = true; this.root.innerHTML = ''; }
+    show() { this._hidden = false; this.render(); }
+
+    // ── main menu ──────────────────────────────────────────────
+    render() {
+      const T = E.faction;
+      this.root.innerHTML = `
+      <div class="menu gc-menu">
+        <div class="menu-card">
+          <div class="menu-title">GALACTIC CONQUEST</div>
+          <div class="menu-sub">A war across the stars, fought on land, in the air, and in the void. Built entirely from code.</div>
+
+          <div class="menu-row">
+            <div class="menu-label">Command</div>
+            <div class="seg" id="gc-fac">
+              <button data-fac="aegis" class="${this.settings.faction === 'aegis' ? 'on' : ''}">Aegis Concord</button>
+              <button data-fac="verdant" class="${this.settings.faction === 'verdant' ? 'on' : ''}">Verdant Pact</button>
+            </div>
+          </div>
+
+          <div class="menu-row">
+            <button class="gc-btn primary gc-campaign" style="flex:1">Galactic Campaign ${this.campaign ? `· ${this.campaign.systems.length - 2} systems` : ''}</button>
+            <button class="gc-btn gc-quick" style="flex:1">Quick Battle</button>
+          </div>
+
+          <div class="menu-row">
+            <button class="gc-btn gc-mp" style="flex:1" disabled>Multiplayer <span class="gc-dim">— coming online</span></button>
+          </div>
+
+          <div class="gc-controls" id="gc-controls">
+            <div class="gc-controls-head">CONTROLS</div>
+            <div>Left-click select · Left-drag box-select · Right-click attack-move</div>
+            <div><b>F</b> board nearest unit · <b>V</b> drive selected · <b>C/Esc</b> release to commander view</div>
+            <div>WASD move · Mouse look (on foot / in a craft) · <b>↑↓←→</b> orbit the commander view · <b>Shift</b> boost</div>
+            <div>Hold to capture objectives · Destroy the enemy HQ to win</div>
+          </div>
+        </div>
+      </div>`;
+      this.bind();
+    }
+
+    bind() {
+      const q = (s) => this.root.querySelector(s);
+      this.root.querySelectorAll('#gc-fac button').forEach(b => b.addEventListener('click', () => {
+        this.settings.faction = b.dataset.fac; this.saveSettings();
+        this.root.querySelectorAll('#gc-fac button').forEach(x => x.classList.toggle('on', x === b));
+      }));
+      const c = q('.gc-campaign'); if (c) c.addEventListener('click', () => this.showCampaign());
+      const qk = q('.gc-quick'); if (qk) qk.addEventListener('click', () => this.quick());
+    }
+
+    // ── quick battle: pick a biome, fight AI ───────────────────
+    quick() {
+      const biomes = E.BIOME_LIST;
+      const btn = (id, d) => `<button class="gc-btn gc-biome" data-biome="${id}">${d.theme}<span class="gc-dim"> · ${d.name}</span></button>`;
+      this.root.innerHTML = `
+      <div class="menu gc-menu">
+        <div class="menu-card">
+          <div class="menu-title">QUICK BATTLE</div>
+          <div class="menu-sub">Pick a world. Each biome has an inherent challenge.</div>
+          <div class="gc-biome-grid">
+            ${biomes.map(d => btn(d.id, d)).join('')}
+          </div>
+          <div class="menu-row" style="margin-top:14px"><button class="gc-btn gc-back">Back</button></div>
+        </div>
+      </div>`;
+      this.root.querySelectorAll('.gc-biome').forEach(b => b.addEventListener('click', () => {
+        const r = E.Campaign.quickBattle({ seed: E.RNG(1).i(1e9), human: this.settings.faction });
+        r.biome = b.dataset.biome;
+        r.system = E.biome(b.dataset.biome).name;
+        this.begin(r, null);
+      }));
+      const back = this.root.querySelector('.gc-back'); if (back) back.addEventListener('click', () => this.render());
+    }
+
+    // ── galactic campaign map ──────────────────────────────────
+    showCampaign() {
+      if (!this.campaign) this.campaign = E.Campaign.newCampaign({ playerFaction: this.settings.faction, seed: E.RNG(1).i(1e9) });
+      const c = this.campaign;
+      const opts = E.Campaign.matchOptions(c);
+      const front = E.Campaign.frontSystem(c);
+      const bdef = E.biome(front.biome);
+      const nodes = c.systems.map((s, i) => {
+        const cls = s.owner === c.playerFaction ? 'aegis' : s.owner === c.enemyFaction ? 'verdant' : 'neutral';
+        const isFront = i === c.frontIndex && !c.victory;
+        return `<div class="gc-node ${cls}${isFront ? ' front' : ''}" title="${s.name}">
+          <div class="gc-node-dot"></div>
+          <div class="gc-node-name">${s.name}</div>
+          <div class="gc-node-biome">${E.biome(s.biome).theme}</div>
+        </div>`;
+      }).join('');
+      this.root.innerHTML = `
+      <div class="menu gc-menu">
+        <div class="menu-card gc-galaxy-card">
+          <div class="menu-title">GALACTIC CAMPAIGN</div>
+          <div class="menu-sub">Drive the war from your home to the enemy's. Capture the front system to advance.</div>
+          <div class="gc-galaxy">${nodes}</div>
+          <div class="gc-galaxy-link"></div>
+          <div class="gc-front">
+            <div><span class="gc-dim">FRONT SYSTEM</span><b> ${front.name}</b></div>
+            <div><span class="gc-dim">WORLD</span> ${bdef.theme} — ${bdef.challenge.name}</div>
+            <div class="gc-front-chal">${bdef.desc}</div>
+            <div><span class="gc-dim">YOUR FLEET</span> ${E.Campaign.fleetScale(c).toFixed(2)}x · Resources ${c.resources}</div>
+          </div>
+          <div class="menu-row" style="margin-top:14px">
+            <button class="gc-btn primary gc-attack" style="flex:1">Deploy to ${front.name}</button>
+            <button class="gc-btn gc-reset">Restart Campaign</button>
+            <button class="gc-btn gc-back">Back</button>
+          </div>
+          ${c.victory ? `<div class="gc-victory">THE ${E.faction(c.victory).name.toUpperCase()} HAS CONQUERED THE GALAXY</div>` : ''}
+        </div>
+      </div>`;
+      const atk = this.root.querySelector('.gc-attack');
+      if (atk) atk.addEventListener('click', () => this.begin(opts, c));
+      const rst = this.root.querySelector('.gc-reset');
+      if (rst) rst.addEventListener('click', () => { this.campaign = E.Campaign.newCampaign({ playerFaction: this.settings.faction, seed: E.RNG(1).i(1e9) }); this.save(); this.showCampaign(); });
+      const back = this.root.querySelector('.gc-back'); if (back) back.addEventListener('click', () => this.render());
+    }
+
+    // begin a battle: opts is match options, c is the campaign (or null for quick)
+    begin(opts, c) {
+      if (this.onStart) this.onStart(opts, c);
+    }
+  }
+
+  E.Menu = Menu;
+  E.LS_KEY = LS_KEY;
 })(window.E = window.E || {});
 
 window.__GC_READY__ = true;

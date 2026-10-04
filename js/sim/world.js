@@ -10,6 +10,7 @@
     constructor(opts) {
       opts = opts || {};
       this.human = opts.human || 'aegis';
+      this.fleetScale = opts.fleetScale || 1;
       this.planet = E.makePlanet(opts.biome || 'tundra', opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9), opts.scale || 1);
       this.terrain = E.makeTerrain(this.planet);
       this.rng = E.RNG((this.planet.seed * 7919 + 17) | 0);
@@ -54,16 +55,20 @@
 
     spawnForce(faction, base) {
       const F = E.FORCE_DEFAULT;
+      const sc = (faction === this.human && this.fleetScale) ? this.fleetScale : 1;
       const rr = (n) => { const a = this.rng.angle(), d = this.rng.f(10, 70); return { x: base.x + Math.cos(a) * d, z: base.z + Math.sin(a) * d }; };
+      const ni = (n) => Math.max(1, Math.round(n * sc));
       for (const [role, n] of Object.entries({ rifle: F.rifle, recon: F.recon, medic: F.medic }))
-        for (let i = 0; i < n; i++) this.unit('infantry', faction, role, role, rr());
+        for (let i = 0; i < ni(n); i++) this.unit('infantry', faction, role, role, rr());
       for (const [type, n] of Object.entries(F.vehicle))
-        for (let i = 0; i < n; i++) this.unit('vehicle', faction, type, 'gunship', rr());
+        for (let i = 0; i < ni(n); i++) this.unit('vehicle', faction, type, 'gunship', rr());
       for (const [type, n] of Object.entries(F.fighter))
-        for (let i = 0; i < n; i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
+        for (let i = 0; i < ni(n); i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
       // A bot "capital" in the air for each side (the player's can be boarded).
-      const cap = this.unit('capital', faction, F.capital, 'cruiser', { x: base.x, z: base.z });
-      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 340;
+      // A bigger fleet gets a bigger flagship.
+      const capType = sc > 1.4 ? 'dreadnought' : (sc > 1.15 ? 'carrier' : F.capital);
+      const cap = this.unit('capital', faction, capType, capType, { x: base.x, z: base.z });
+      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 200;
       cap.genome = { r: this.rng.f(0.9, 1.15) };
       cap.yaw = cap.aim = faction === 'aegis' ? Math.PI : 0;
       // medic healers are assigned to the nearest own units

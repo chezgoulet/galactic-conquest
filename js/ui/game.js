@@ -53,6 +53,11 @@
       if (events.length) { this.renderer.fx.applyEvents(events); if (E.Music && E.Music.on) E.Music.onEvents(events); }
       if (E.Music) E.Music.setIntensity(this.world.intensity);
       if (this.world.winner && !this._won) { this._won = true; if (E.Music && E.Music.on) E.Music.victory(this.world.winner); }
+      // report the result once, shortly after the battle is decided
+      if (this.world.winner && !this._endFired) {
+        this._endTimer = (this._endTimer || 0) + dt;
+        if (this._endTimer > 4 && this.onEnd) { this._endFired = true; this.onEnd(this.world.winner === this.world.human); }
+      }
       this.renderer.fx.syncProjectiles(this.world.projectiles);
       this.renderer.update(dt, this.world.t, this.world);
       if (this.HUD) this.HUD.update(this.world, this.renderer);

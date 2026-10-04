@@ -79,6 +79,37 @@ button.gc-btn:disabled { opacity: .5; cursor: default; }
 .gc-bridge .bridge-sub { display: flex; gap: 16px; margin-top: 6px; }
 .gc-bridge .bridge-sub .lbl { color: var(--dim); font-size: 10px; letter-spacing: 1.5px; display: block; }
 .gc-bridge .bridge-sub .tv { font-size: 13px; }
+.gc-dim { color: var(--dim); font-weight: 400; }
+
+/* main menu cards */
+.gc-menu .menu-card { padding: 30px 34px; }
+.gc-controls { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--dim); font-size: 13px; line-height: 1.9; letter-spacing: .2px; }
+.gc-controls-head { color: var(--accent); font-size: 11px; letter-spacing: 3px; margin-bottom: 6px; }
+.gc-controls b { color: var(--text); }
+
+/* biome grid (quick battle) */
+.gc-biome-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
+.gc-biome { text-align: left; width: 100%; }
+.gc-biome .gc-dim { display: block; font-size: 12px; color: var(--dim); margin-top: 2px; }
+
+/* galactic campaign map */
+.gc-galaxy-card { max-width: 820px; }
+.gc-galaxy { display: flex; align-items: flex-start; justify-content: space-between; margin: 26px 4px 6px; position: relative; }
+.gc-galaxy::before { content: ""; position: absolute; left: 2%; right: 2%; top: 11px; height: 2px; background: linear-gradient(90deg, var(--aegis), var(--line) 40%, var(--line) 60%, var(--verdant)); }
+.gc-galaxy-link { height: 0; }
+.gc-node { position: relative; width: 12%; text-align: center; z-index: 1; }
+.gc-node-dot { width: 22px; height: 22px; margin: 0 auto; border-radius: 50%; background: #223049; border: 2px solid var(--line); box-shadow: 0 0 0 4px rgba(10,14,22,.8); }
+.gc-node.aegis .gc-node-dot { background: var(--aegis); border-color: #ffb08a; }
+.gc-node.verdant .gc-node-dot { background: var(--verdant); border-color: #a0ffd6; }
+.gc-node.neutral .gc-node-dot { background: repeating-conic-gradient(#33415c 0 25%, #141d2e 0 50%); }
+.gc-node.front .gc-node-dot { box-shadow: 0 0 0 4px rgba(74,140,255,.35), 0 0 18px var(--accent); animation: gc-pulse 1.4s infinite; }
+@keyframes gc-pulse { 0%,100% { box-shadow: 0 0 0 4px rgba(74,140,255,.35), 0 0 14px var(--accent); } 50% { box-shadow: 0 0 0 7px rgba(74,140,255,.15), 0 0 22px var(--accent); } }
+.gc-node-name { margin-top: 8px; font-size: 13px; font-weight: 600; }
+.gc-node-biome { font-size: 11px; color: var(--dim); letter-spacing: .5px; }
+.gc-front { margin-top: 14px; padding: 14px 16px; background: #0d1524; border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 5px; font-size: 14px; }
+.gc-front b { color: #fff; }
+.gc-front-chal { color: var(--dim); font-size: 13px; line-height: 1.5; max-width: 60ch; }
+.gc-victory { margin-top: 16px; padding: 14px; text-align: center; font-size: 22px; font-weight: 700; letter-spacing: 3px; color: var(--ok); border: 1px solid var(--ok); border-radius: 10px; }
 #gc-loading .bar { width: 220px; height: 3px; background: #16223a; border-radius: 3px; margin-top: 14px; overflow: hidden; }
 #gc-loading .bar i { display: block; height: 100%; width: 40%; background: var(--accent); animation: load 1s infinite; }
 @keyframes load { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }

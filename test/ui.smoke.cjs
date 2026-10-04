@@ -33,6 +33,7 @@ async function freePort() {
   });
   const cleanup = async () => { try { await browser.close(); } catch {} try { server.kill('SIGKILL'); } catch {} };
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  await page.addInitScript(() => { window.GC_AUTOSTART = { biome: 'desert', seed: 7 }; });
   const errors = [];
   const logs = [];
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
