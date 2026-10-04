@@ -38,9 +38,18 @@ sting. No audio files exist.
 **`data/`** — pure, serializable tables. `factions.js` (the two original
 factions — hull grammar, palette, engine glow, weapons, insignia, doctrine,
 music theme), `biomes.js` (eight worlds with a procedural palette + an
-inherent challenge each), `galaxy.js` (the campaign: a graph of ten
-star-systems), `units.js` (the full roster: infantry, vehicles, fighters,
-capitals, turrets, weapons, doctrine multipliers).
+inherent challenge each), and the roster split by domain: `land.js` (infantry,
+vehicles, emplacements), `air.js` (fighters), `space.js` (capital ships), each
+adding its weapons to `E.WEAPONS`; `units.js` holds the shared lookups,
+doctrine and order of battle.
+
+`galaxy.js` is the campaign — the strategic layer. Fleets are pieces on a
+ten-world map; each carries ships (space), a fighter wing (air) and an army
+(land), and that is exactly what it brings into a battle and what comes back
+out damaged. Worlds pay credits and fuel only while *supplied* (connected to
+the home system and not blockaded). A turn is: redeploy, build, run covert
+ops, then assault or blockade one jump beyond your territory. The whole
+campaign is one plain object, so saving is `JSON.stringify`.
 
 **`sim/`** — the World owns match state and is **pure and deterministic**: it
 draws only from its own `rng` and never touches THREE or the DOM. That property
@@ -50,8 +59,29 @@ is what makes everything else possible —
 * the same sim drives the headless Node tests.
 
 `terrain.js` builds a heightfield + battle layout (five command posts, two of
-them HQs) deterministically from the seed. `sim.js` is the tick: control,
-projectiles, strikes, capture logic, reinforcement, AI, and the win condition.
+them HQs) deterministically from the seed. The rules are split by domain, and
+every file adds to one `E.SIM` namespace (same-file calls are bare, cross-file
+calls go through `E.SIM` at call time, so load order never matters):
+
+| file | owns |
+|---|---|
+| `common.js` | helpers, unit construction, the altitude bands (`ALT`), the extension registries |
+| `combat.js` | weapons, projectiles, damage, sightlines |
+| `ai.js` | shared perception and intent (targets, goals, squad orders) |
+| `land.js` | infantry, vehicles, emplacements |
+| `air.js` | fighters and bombers |
+| `space.js` | capital ships, orbital strikes |
+| `objectives.js` | command posts, reinforcements, victory |
+| `sim.js` | setup, the per-tick step, player verbs |
+
+One sky, three domains: ground battle at the bottom, a cloud deck, thinning
+air, then space where the fleets hold station (`E.SIM.ALT`). Domains plug in
+through registries rather than editing each other: `ctl[kind]` (bot + player
+control and damage hooks), `verbs` (player commands), `systems` (per-tick
+world systems), `modes` (e.g. boarding), `obstacles` (cover that stops shots
+and sightlines) and `net` (extra state for multiplayer snapshots).
+`test/golden.cjs` prints a fingerprint of scripted battles; an unchanged
+fingerprint proves a refactor changed no behaviour.
 
 **`render/` + `ui/`** — three.js. `planet.js`/`geo.js` build the surface,
 `hulls.js`/`props.js` build capital ships and ground structures from genomes,
