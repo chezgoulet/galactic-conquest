@@ -1367,47 +1367,171 @@
 // LAND roster: infantry classes, ground vehicles, emplacements and their
 // weapons. Distances are meters, speeds m/s, rates shots/s. See units.js for
 // armor classes and the shared lookup helpers.
+//
+// Extra weapon fields used by the land sim: supp (suppression multiplier of
+// the shots passing a victim, default 1), cv (cover damage multiplier).
 (function (E) {
   'use strict';
 
   Object.assign(E.WEAPONS = E.WEAPONS || {}, {
     // ── infantry ──
     blaster:  { name: 'DL-7 Blaster',     kind: 'bolt', dmg: 20, rate: 5.5, speed: 300, range: 240, spread: 0.012, heat: 0.085, vs: { light: 0.5, heavy: 0.12, cap: 0.01 }, sfx: 'rifle' },
-    repeater: { name: 'Rotary Repeater',  kind: 'bolt', dmg: 13, rate: 10,  speed: 280, range: 200, spread: 0.03,  heat: 0.045, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
-    longrifle:{ name: 'Lance Rifle',      kind: 'bolt', dmg: 95, rate: 0.9, speed: 620, range: 650, spread: 0.0015, heat: 0.42, scale: 1.7, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'lance' },
+    repeater: { name: 'Rotary Repeater',  kind: 'bolt', dmg: 12, rate: 10,  speed: 280, range: 210, spread: 0.03,  heat: 0.04, supp: 2.0, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
+    longrifle:{ name: 'Lance Rifle',      kind: 'bolt', dmg: 95, rate: 0.9, speed: 620, range: 650, spread: 0.0015, heat: 0.42, scale: 1.7, supp: 2.2, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'lance' },
     carbine:  { name: 'Field Carbine',    kind: 'bolt', dmg: 15, rate: 7,   speed: 280, range: 170, spread: 0.022, heat: 0.06, vs: { light: 0.5, heavy: 0.12, cap: 0.01 }, sfx: 'rifle' },
-    rocket:   { name: 'HX Launcher',      kind: 'rocket', dmg: 260, rate: 0.45, speed: 95, range: 420, spread: 0.004, splash: 8, heat: 0, seek: 1.4, vs: { inf: 0.55, light: 1.3, heavy: 1.6, cap: 0.5 }, sfx: 'missile' },
-    grenade:  { name: 'Frag Charge',      kind: 'grenade', dmg: 150, speed: 27, grav: 19, fuse: 2.0, splash: 9, cd: 6, vs: { heavy: 0.6, cap: 0.05 }, sfx: 'launch' },
-    medburst: { name: 'Mender Pulse',     kind: 'heal', heal: 70, radius: 14, cd: 9, sfx: 'shield' },
+    engcarbine:{ name: 'Fabricator SMG',  kind: 'bolt', dmg: 14, rate: 7.5, speed: 280, range: 180, spread: 0.024, heat: 0.06, vs: { light: 0.5, heavy: 0.12, cap: 0.01 }, sfx: 'rifle' },
+    rocket:   { name: 'HX Launcher',      kind: 'rocket', dmg: 260, rate: 0.45, speed: 95, range: 420, spread: 0.004, splash: 8, heat: 0, seek: 1.4, cd: 5.5, vs: { inf: 0.55, light: 1.3, heavy: 1.6, cap: 0.5 }, sfx: 'missile' },
+    grenade:  { name: 'Frag Charge',      kind: 'grenade', dmg: 150, speed: 27, grav: 19, fuse: 2.0, splash: 9, cd: 6, cv: 1.6, vs: { heavy: 0.6, cap: 0.05 }, sfx: 'launch' },
+    medburst: { name: 'Mender Pulse',     kind: 'heal', heal: 60, radius: 14, cd: 9, sfx: 'shield' },
+    // engineer tools and non-projectile damage sources, handled by the land sim
+    mine:     { name: 'Tread Mine',       kind: 'mine', dmg: 560, splash: 7, cd: 7, vs: { inf: 0.4, light: 1.25, heavy: 1.0, cap: 0.05 }, sfx: 'launch' },
+    charge:   { name: 'Demolition Charge', kind: 'mine', dmg: 1100, splash: 10, cd: 3, vs: { inf: 0.6, light: 1.2, heavy: 1.0, cap: 0.1 }, sfx: 'launch' },
+    ram:      { name: 'Impact',           kind: 'mine', dmg: 0, vs: {} },
+    wreck:    { name: 'Wreck Blast',      kind: 'mine', dmg: 0, vs: { heavy: 0.5, cap: 0.05 } },
     // ── vehicles ──
     skiffgun: { name: 'Twin Repeaters',   kind: 'bolt', dmg: 17, rate: 9,   speed: 340, range: 320, spread: 0.02, heat: 0.04, scale: 1.2, vs: { heavy: 0.3, cap: 0.02 }, sfx: 'pulse' },
-    cannon:   { name: 'Siege Cannon',     kind: 'shell', dmg: 280, rate: 0.6, speed: 210, range: 520, spread: 0.006, splash: 9, heat: 0, grav: 6, vs: { inf: 0.8, cap: 0.4 }, sfx: 'cannon' },
-    coax:     { name: 'Coaxial Repeater', kind: 'bolt', dmg: 12, rate: 9,   speed: 320, range: 260, spread: 0.025, heat: 0.03, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
+    cannon:   { name: 'Siege Cannon',     kind: 'shell', dmg: 250, rate: 0.5, speed: 210, range: 520, spread: 0.006, splash: 8.5, heat: 0, grav: 6, cv: 1.6, vs: { inf: 0.8, cap: 0.4 }, sfx: 'cannon' },
+    coax:     { name: 'Coaxial Repeater', kind: 'bolt', dmg: 12, rate: 9,   speed: 320, range: 260, spread: 0.025, heat: 0.03, supp: 1.4, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
+    aaflak:   { name: 'Flak Cannon',      kind: 'bolt', dmg: 16, rate: 7.5, speed: 520, range: 720, spread: 0.02, heat: 0.03, scale: 1.4, supp: 1.2, vs: { inf: 0.35, heavy: 0.15, cap: 0.02 }, sfx: 'pd' },
+    aamissile:{ name: 'Skyhook Missile',  kind: 'missile', dmg: 210, rate: 0.2, speed: 250, range: 1200, spread: 0.004, seek: 3.1, splash: 8, cd: 5.5, vs: { inf: 0.3, heavy: 0.3, light: 1.15, cap: 0.3 }, sfx: 'missile' },
     // ── emplacements ──
     turret:   { name: 'Defense Battery',  kind: 'bolt', dmg: 34, rate: 3.2, speed: 420, range: 420, spread: 0.012, heat: 0, scale: 1.5, vs: { cap: 0.1 }, sfx: 'pulse' },
+    nestgun:  { name: 'Nest Repeater',    kind: 'bolt', dmg: 11, rate: 11,  speed: 300, range: 250, spread: 0.026, heat: 0, supp: 1.5, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
+    ioncannon:{ name: 'Ion Cannon',       kind: 'ion', dmg: 450, rate: 0.02, speed: 0, range: 4400, cd: 42, shield: 3600, vs: { cap: 1 }, sfx: 'capital' },
+    inert:    { name: 'None',             kind: 'bolt', dmg: 0, rate: 0.1, speed: 100, range: 0, vs: {} },
   });
 
   // Infantry classes — what the player (and every bot) deploys as.
+  // Jobs: trooper = all-rounder, heavy = suppression + anti-armor/air,
+  // sniper = picks priority targets at range, medic = sustain, engineer = vehicles/fortifications.
   E.INFANTRY = {
     trooper: { name: 'Trooper',  hp: 110, speed: 6.4, sprint: 10.2, r: 0.55, h: 1.85, weapon: 'blaster',   alt: 'grenade',  armor: 'inf', cost: 1,
                desc: 'Line infantry. Accurate blaster and a frag charge. Takes ground and holds it.' },
-    heavy:   { name: 'Heavy',    hp: 170, speed: 5.4, sprint: 8.2,  r: 0.62, h: 1.95, weapon: 'repeater',  alt: 'rocket',   armor: 'inf', cost: 1,
-               desc: 'Rotary repeater and a guided launcher. The answer to armor and aircraft.' },
+    heavy:   { name: 'Heavy',    hp: 175, speed: 5.3, sprint: 8.0,  r: 0.62, h: 1.95, weapon: 'repeater',  alt: 'rocket',   armor: 'inf', cost: 1,
+               desc: 'Rotary repeater suppresses; the guided launcher breaks armor and aircraft. Slow to turn on a flank.' },
     sniper:  { name: 'Marksman', hp: 85,  speed: 6.6, sprint: 10.6, r: 0.5,  h: 1.8,  weapon: 'longrifle', alt: 'grenade',  armor: 'inf', cost: 1, zoom: 3.2,
-               desc: 'Lance rifle that kills at any range. Fragile; keep distance.' },
+               desc: 'Lance rifle that kills at any range. Fragile; hunts heavies, menders and engineers.' },
     medic:   { name: 'Mender',   hp: 100, speed: 6.8, sprint: 10.8, r: 0.52, h: 1.8,  weapon: 'carbine',   alt: 'medburst', armor: 'inf', cost: 1,
                desc: 'Carbine and a healing pulse. Passive aura mends nearby allies.' },
+    engineer:{ name: 'Engineer', hp: 105, speed: 6.2, sprint: 9.8,  r: 0.55, h: 1.85, weapon: 'engcarbine', alt: 'mine',    armor: 'inf', cost: 1,
+               desc: 'Repairs vehicles and emplacements, raises barricades, lays tread mines and plants charges. Cycle tools with the cycle key.' },
   };
 
   E.VEHICLES = {
-    skiff: { name: 'Skiff',     hp: 420,  shield: 160, speed: 34, accel: 26, turn: 2.4, r: 3.2, h: 2.4, hover: 1.1, weapon: 'skiffgun', alt: null,   armor: 'light', cost: 2,
-             desc: 'Fast hover scout. Twin repeaters, thin armor.' },
-    tank:  { name: 'Bulwark',   hp: 1500, shield: 400, speed: 17, accel: 10, turn: 1.3, r: 4.6, h: 3.4, hover: 0.8, weapon: 'cannon',   alt: 'coax', armor: 'heavy', cost: 3,
-             desc: 'Hover tank. Siege cannon with splash, coaxial repeater.' },
+    skiff: { name: 'Skiff',     hp: 540,  shield: 160, speed: 34, accel: 26, brake: 38, grip: 1.7, turn: 2.4, r: 3.2, h: 2.4, hover: 1.1, weapon: 'skiffgun', alt: null,   armor: 'light', cost: 2,
+             mass: 1, armorF: { front: 0.85, side: 1.0, rear: 1.25, top: 1.2 }, turret: { arc: 0.75, rate: 3.0, pitchMin: -0.25, pitchMax: 0.6 },
+             desc: 'Fast hover scout. Twin repeaters in a fixed forward arc, thin armor, drifts through turns.' },
+    tank:  { name: 'Bulwark',   hp: 1500, shield: 400, speed: 17, accel: 10, brake: 18, grip: 3.6, turn: 1.3, r: 4.6, h: 3.4, hover: 0.8, weapon: 'cannon',   alt: 'coax', armor: 'heavy', cost: 3,
+             mass: 4, armorF: { front: 0.55, side: 1.0, rear: 1.55, top: 1.3 }, turret: { arc: Math.PI, rate: 1.15, pitchMin: -0.12, pitchMax: 0.5 },
+             desc: 'Hover tank. Heavy frontal armor, soft rear. Siege cannon with splash, coaxial repeater, slow turret.' },
+    aa:    { name: 'Sentinel',  hp: 520,  shield: 200, speed: 25, accel: 16, brake: 28, grip: 2.4, turn: 1.9, r: 3.4, h: 3.0, hover: 0.9, weapon: 'aaflak', alt: 'aamissile', armor: 'light', cost: 2,
+             mass: 1.6, armorF: { front: 0.8, side: 1.0, rear: 1.3, top: 1.15 }, turret: { arc: Math.PI, rate: 2.6, pitchMin: -0.1, pitchMax: 1.45 },
+             desc: 'Mobile anti-air platform. Flak and Skyhook seekers; weak against ground attackers.' },
   };
 
+  // Emplacements and structures (kind 'turret').
   E.TURRETS = {
-    battery: { name: 'Defense Battery', hp: 900, shield: 0, r: 2.6, h: 3.6, weapon: 'turret', armor: 'heavy', turn: 2.2 },
+    battery:  { name: 'Defense Battery', hp: 900, shield: 0, r: 2.6, h: 3.6, weapon: 'turret', armor: 'heavy', turn: 2.2 },
+    aabattery:{ name: 'AA Battery',      hp: 560, shield: 0, r: 2.8, h: 3.4, weapon: 'aaflak', alt: 'aamissile', armor: 'light', turn: 2.8, aa: true, pitchMax: 1.5,
+                desc: 'Anti-air emplacement. Deadly to low, slow aircraft; helpless against infantry.' },
+    nest:     { name: 'MG Nest',         hp: 650, shield: 0, r: 2.4, h: 2.2, weapon: 'nestgun', armor: 'light', turn: 3.0, nest: true,
+                desc: 'Sandbagged machine-gun nest. Suppresses infantry.' },
+    shieldgen:{ name: 'Shield Generator', hp: 1600, shield: 0, r: 3.8, h: 6, weapon: 'inert', armor: 'heavy', turn: 0, structure: true, shieldR: 150,
+                desc: 'No weapon. While alive, shields everything within its dome from orbital strikes.' },
+    ioncannon:{ name: 'Ion Cannon',      hp: 2800, shield: 0, r: 5.5, h: 9, weapon: 'ioncannon', armor: 'heavy', turn: 0.5, structure: true,
+                desc: 'Whoever holds its command post fires it at the nearest enemy capital ship.' },
+  };
+
+  // ── cover: destructible geometry. w/d are full width/depth, h height (m) ──
+  // hard: shrugs off small arms (bolts x0.25), soft: sandbags/crates/foliage (x0.9)
+  // vault: infantry hop over it (h<=1.35); climb: infantry clamber over (h<=2.1)
+  // crush: vehicles drive through it and destroy it; solid: vehicles are stopped
+  E.COVER = {
+    sandbag:  { name: 'Sandbag Wall',  w: [3.4, 5.2], d: 1.0, h: 1.0, hp: 240,  hard: false, vault: true, crush: true,  fort: true },
+    barrier:  { name: 'Barricade',     w: [3.2, 4.6], d: 0.6, h: 1.7, hp: 520,  hard: true,  climb: true, solid: true, fort: true },
+    crates:   { name: 'Crate Stack',   w: [2.0, 3.0], d: 2.0, h: 1.9, hp: 300,  hard: false, climb: true, crush: true,  fort: true },
+    bunker:   { name: 'Bunker Wall',   w: [7, 10],    d: 1.4, h: 2.4, hp: 1300, hard: true,  solid: true, fort: true },
+    trap:     { name: 'Tank Trap',     w: [2.6, 3.4], d: 1.2, h: 1.1, hp: 700,  hard: true,  vault: true, solid: true, fort: true },
+    rock:     { name: 'Boulder',       w: [2.6, 5.5], d: 2.4, h: 2.0, hp: 1100, hard: true,  climb: true, solid: true, round: true },
+    slab:     { name: 'Ice Slab',      w: [2.6, 4.5], d: 1.1, h: 1.5, hp: 380,  hard: false, climb: true, solid: true },
+    tree:     { name: 'Tree Trunk',    w: [1.3, 2.0], d: 1.5, h: 4.5, hp: 420,  hard: false, solid: true, round: true },
+    cactus:   { name: 'Cactus',        w: [1.0, 1.6], d: 1.2, h: 2.2, hp: 120,  hard: false, crush: true, round: true },
+    ruin:     { name: 'Ruined Wall',   w: [4.5, 8],   d: 1.0, h: 2.6, hp: 1000, hard: true,  solid: true },
+    ledge:    { name: 'Rubble Ledge',  w: [3.5, 6],   d: 1.6, h: 1.25, hp: 700, hard: true,  vault: true, solid: true },
+    tower:    { name: 'Tower Base',    w: [4.5, 6],   d: 4.5, h: 6.0, hp: 1800, hard: true,  solid: true },
+    wreck:    { name: 'Wreck',         w: [4, 7],     d: 3.0, h: 1.8, hp: 700,  hard: true,  climb: true, solid: true, dyn: true },
+    shield:   { name: 'Deployed Barrier', w: [3.6, 3.6], d: 0.5, h: 1.6, hp: 340, hard: false, climb: true, solid: true, dyn: true },
+  };
+  // How a biome's `cover` keys turn into natural cover pieces: key -> [[type, weight], ...]
+  E.COVER_BIOME = {
+    rocks: [['rock', 1], ['ledge', 0.25]], ice: [['slab', 1]], trees: [['tree', 1]], vines: [['tree', 0.4]], cactus: [['cactus', 1]],
+    buildings: [['tower', 0.35], ['ruin', 0.9]], ruins: [['ruin', 1], ['ledge', 0.5]], vents: [['rock', 0.6]],
+  };
+
+  // ── perks: two tiers per class, one pick per tier (mutually exclusive) ──
+  // mul/add edit the unit's modifier sheet `u.m` (see land_perks.js for every key).
+  E.PERKS = {
+    trooper: {
+      t1: [
+        { id: 'trooper.stim',   name: 'Stim Pack',    desc: 'Sprint 12% faster, vaults quicker.',        mul: { sprint: 1.12, vault: 0.75 } },
+        { id: 'trooper.plate',  name: 'Plate Carrier', desc: '+18 health and 30% less suppression taken.', add: { hp: 18 }, mul: { suppTake: 0.7 } },
+      ],
+      t2: [
+        { id: 'trooper.frag',   name: 'Frag Specialist', desc: 'Frag cooldown -30%, blast +20%.',          mul: { gCd: 0.7, gBlast: 1.2 } },
+        { id: 'trooper.overcharge', name: 'Overcharge', desc: '+12% blaster damage, runs hotter.',          mul: { dmg: 1.12, heat: 1.25 } },
+      ],
+    },
+    heavy: {
+      t1: [
+        { id: 'heavy.suppressor', name: 'Suppressor',  desc: 'Your fire suppresses 60% harder.',         mul: { suppGive: 1.6 } },
+        { id: 'heavy.ironclad',   name: 'Ironclad',    desc: '+30 health, 12% damage resistance.',       add: { hp: 30, dr: 0.12 } },
+      ],
+      t2: [
+        { id: 'heavy.tandem',     name: 'Tandem Warhead', desc: 'Launcher reloads 25% faster, +10% damage.', mul: { rCd: 0.75, rDmg: 1.1 } },
+        { id: 'heavy.skyhunter',  name: 'Skyhunter',   desc: 'Missiles track harder and hit aircraft +25%.', mul: { seek: 1.8, vsAir: 1.25 } },
+      ],
+    },
+    sniper: {
+      t1: [
+        { id: 'sniper.steady',    name: 'Steady Breath', desc: 'Far less bloom; fires 10% faster.',       mul: { bloom: 0.4, rate: 1.1 } },
+        { id: 'sniper.ghillie',   name: 'Ghillie Wrap',  desc: 'Crouched, you are hard for enemies to spot.', add: { stealth: 0.5 } },
+      ],
+      t2: [
+        { id: 'sniper.piercing',  name: 'Piercing Round', desc: '+12% damage; shots do double damage to cover.', mul: { dmg: 1.12, coverDmg: 2 } },
+        { id: 'sniper.cooler',    name: 'Vented Coil',   desc: 'Rifle runs 35% cooler.',                  mul: { heat: 0.65 } },
+      ],
+    },
+    medic: {
+      t1: [
+        { id: 'medic.triage',     name: 'Triage',       desc: 'Healing pulse restores 45% more.',          mul: { heal: 1.45 } },
+        { id: 'medic.aura',       name: 'Wide Field',   desc: 'Healing aura reaches 50% further.',         mul: { aura: 1.5 } },
+      ],
+      t2: [
+        { id: 'medic.bulwark',    name: 'Bulwark Field', desc: 'Allies in your aura take 15% less damage.', add: { auraRes: 0.15 } },
+        { id: 'medic.sprinter',   name: 'Field Medic',  desc: '+10% speed and self-regeneration.',         mul: { speed: 1.1 }, add: { regen: 2.5 } },
+      ],
+    },
+    engineer: {
+      t1: [
+        { id: 'engineer.fabricator', name: 'Fabricator',  desc: 'Barricades have +60% health and deploy 30% faster.', mul: { cover: 1.6, buildCd: 0.7 } },
+        { id: 'engineer.minelayer',  name: 'Minelayer',   desc: 'Carry 7 mines (not 4); mines hit 25% harder.',       add: { mines: 3 }, mul: { mineDmg: 1.25 } },
+      ],
+      t2: [
+        { id: 'engineer.welder',     name: 'Master Welder', desc: 'Repairs 50% faster.',                      mul: { repair: 1.5 } },
+        { id: 'engineer.sapper',     name: 'Sapper',       desc: 'Charges do +50% damage and fuse 35% faster.', mul: { chargeDmg: 1.5, fuse: 0.65 } },
+      ],
+    },
+  };
+
+  // what bots deploy as (weighted); the lead's E.FORCE.mix is replaced with this at sim load
+  E.LAND_MIX = [['trooper', 5], ['heavy', 2.2], ['sniper', 1.3], ['medic', 1.5], ['engineer', 1.6]];
+
+  // tunables for structures and objectives
+  E.LAND = {
+    shieldR: 150,            // shield generator dome radius (m)
+    ionCd: 42, ionFirst: 25, ionShield: 3600, ionHull: 450,
+    aaMaxAlt: 900,           // AA batteries ignore aircraft above this height over the ground
+    mineArm: 1.6, mineR: 3.4,
   };
 })(window.E = window.E || {});
 
@@ -2021,6 +2145,7 @@
     if (kind === 'capital') S.buildGuns(u);
     w.units.push(u); w.umap.set(u.id, u);
     w.events.push({ type: 'spawn', uid: u.id });
+    if (S.onSpawn) S.onSpawn(w, u); // land: infantry state, perks, squads
     return u;
   }
 
@@ -2056,165 +2181,1865 @@
 })(window.E = window.E || {});
 
 // ---- js/sim/land.js ----
-// LAND: infantry, ground vehicles and emplacements — movement over terrain,
-// bot behaviour and player control.
+// LAND: movement and control for infantry, ground vehicles and emplacements,
+// suppression, weapon handling, and the hooks that give vehicles weight.
+// Bot behaviour lives in land_ai.js, cover in land_cover.js, structures and
+// objectives in land_struct.js, perks and loadouts in land_perks.js.
+//
+// Infantry state (all on the unit):
+//   stance 0 stand / 1 crouch / 2 slide     supp 0..1 suppression       stam 0..1 sprint stamina
+//   sprinting bool                          bloom radians of aim spread  vault 0..1 progress (0 = not vaulting)
+//   vaultKind 'vault'|'mantle'              tool 0 gun / 1 repair torch / 2 charge (engineer)
+// Vehicle state: crip 0 ok / 1 mobility kill / 2 burning, lastZone 'front'|'side'|'rear'|'top'|'belly',
+//   aimLimited (turret cannot reach the aim point), spd forward speed, pitch/roll hull tilt.
 (function (E) {
   'use strict';
   const S = E.SIM = E.SIM || {}, V = E.V3;
-  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make();
+  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make(), tmpD = V.make();
   const GRAV = 22;
+  const STANCE_H = [1, 0.66, 0.45], STANCE_SPD = [1, 0.5, 1];
+  // neutral modifier sheet (land_perks.js builds the real one per unit)
+  const M0 = { hp: 1, speed: 1, sprint: 1, dmg: 1, bloom: 1, suppTake: 1, suppGive: 1, heal: 1, repair: 1, gCd: 1, gBlast: 1, rCd: 1, rDmg: 1, seek: 1, vsAir: 1, cover: 1, mines: 4,
+               mineDmg: 1, aura: 1, auraRes: 0, regen: 0, stealth: 0, heat: 1, rate: 1, vault: 1, dr: 0, coverDmg: 1, buildCd: 1, chargeDmg: 1, fuse: 1 };
+  const OUT = { c: null, nx: 0, nz: 0 };
 
-  // ── movement ─────────────────────────────────────────────────
-  function stepInfantry(w, u, dt, wx, wz, speed, jump) {
-    const T = w.terrain, g = T.ground(u.pos.x, u.pos.z);
+  // ── suppression ──────────────────────────────────────────────
+  function addSupp(w, e, a) {
+    if (!(a > 0)) return;
+    const m = e.m || M0, before = e.supp || 0;
+    e.supp = Math.min(1, before + a * m.suppTake); e.suppT = w.t;
+    if (e.pid) {
+      const lv = e.supp > 0.7 ? 2 : e.supp > 0.35 ? 1 : 0, lb = before > 0.7 ? 2 : before > 0.35 ? 1 : 0;
+      if (lv > lb) w.events.push({ type: 'suppress', uid: e.id, to: e.pid, level: lv, supp: e.supp });
+    }
+  }
+  function nearMissInf(w, e, p) {
+    const W = E.WEAPONS[p.wk] || {}, own = p.uid ? w.umap.get(p.uid) : null;
+    let a = (0.012 + Math.min(p.dmg, 70) * 0.0009) * (W.supp || 1);
+    if (own && own.m) a *= own.m.suppGive;
+    addSupp(w, e, a);
+  }
+
+  // ── weapons (modifier aware) ─────────────────────────────────
+  const rot = V.make();
+  function bloomDir(w, u, dir) {
+    const b = u.bloom || 0; if (b <= 0.0005 || u.kind !== 'infantry') return dir;
+    // uniform point in a disc of angular radius b around dir (cheap, deterministic)
+    const R = w.rng, a = R.next() * E.TAU, r = Math.sqrt(R.next()) * b;
+    const rx = dir.z, rz = -dir.x, rl = Math.hypot(rx, rz) || 1;   // right
+    rot.x = dir.x + (rx / rl) * Math.cos(a) * r + 0 ; rot.z = dir.z + (rz / rl) * Math.cos(a) * r;
+    rot.y = dir.y + Math.sin(a) * r;
+    const l = Math.hypot(rot.x, rot.y, rot.z) || 1; rot.x /= l; rot.y /= l; rot.z /= l;
+    return rot;
+  }
+  function landFire(w, u, dir, tid) {
+    const W = E.WEAPONS[u.def.weapon], m = u.m || M0;
+    if (u.fireT > 0 || u.hot) return false;
+    u.fireT += 1 / (W.rate * m.rate);
+    if (W.heat) { u.heat += W.heat * m.heat; if (u.heat >= 1) { u.hot = true; if (u.pid) w.events.push({ type: 'overheat', uid: u.id, to: u.pid }); } }
+    const d = bloomDir(w, u, dir);
+    S.shoot(w, u, u.def.weapon, S.muzzle(u, d, tmpD), d, tid, m.dmg);
+    return true;
+  }
+  function landAlt(w, u, dir, tid) {
+    const wk = u.def.alt; if (!wk || u.altT > 0) return false;
+    const W = E.WEAPONS[wk], m = u.m || M0;
+    if (W.kind === 'heal') {
+      u.altT = W.cd;
+      const R2 = W.radius * W.radius, hv = W.heal * m.heal;
+      for (const a of w.units) if (a.alive && a.team === u.team && a.kind === 'infantry' && V.distance2(a.pos, u.pos) < R2) a.hp = Math.min(a.maxHp, a.hp + hv);
+      w.events.push({ type: 'heal', pos: V.clone(u.pos), team: u.team, r: W.radius });
+      if (u.pid) S.score(w, u.pid, 25, 'HEAL');
+      return true;
+    }
+    if (W.kind === 'mine') return !!S.layMine(w, u);
+    u.altT = (W.cd || 1 / W.rate) * (wk === 'rocket' ? m.rCd : wk === 'grenade' ? m.gCd : 1);
+    let mul = wk === 'rocket' ? m.rDmg : 1;
+    const t = tid ? w.umap.get(tid) : null;
+    if (t && t.kind === 'fighter') mul *= m.vsAir;
+    const d = bloomDir(w, u, dir);
+    const p = S.shoot(w, u, wk, S.muzzle(u, d, tmpD), d, tid, mul);
+    if (wk === 'grenade') p.splash *= m.gBlast;
+    if (wk === 'rocket' && m.seek !== 1) p.seek *= m.seek;
+    return true;
+  }
+  // seeker launch helper: use the AIR engineer's lock-on if it exists, else pass the target id
+  function lockId(w, u, tg) {
+    if (typeof S.lockOn === 'function') {
+      let r = null; try { r = S.lockOn(w, u, tg); } catch (e) { r = null; }
+      if (r && typeof r === 'object' && r.id) return r.id;
+      if (typeof r === 'number' && r > 0) return r;
+      if (r === false || r === 0) return 0;
+    }
+    return tg.id;
+  }
+
+  // ── infantry movement ────────────────────────────────────────
+  function canVault(c) { return (c.def.vault && c.h <= 1.4) ? 'vault' : (c.def.climb && c.h <= 2.1) ? 'mantle' : null; }
+  function startVault(w, u, c, kind, nx, nz) {
+    const T = w.terrain;
+    let px = u.pos.x, pz = u.pos.z, ok = false;
+    for (let i = 1; i <= 24; i++) {
+      px = u.pos.x - nx * i * 0.3; pz = u.pos.z - nz * i * 0.3;
+      if (!S.coverBlockedAt(w, px, pz, u.r, T.ground(px, pz))) { ok = true; break; }
+    }
+    if (!ok) return false;
+    px -= nx * 0.35; pz -= nz * 0.35;
+    const A = w.layout.arena;
+    if (Math.abs(px) > A.x * 1.2 || Math.abs(pz) > A.z * 1.2 || T.height(px, pz) < T.waterLevel - 0.5) return false;
+    const m = u.m || M0;
+    u.vaultD = { x0: u.pos.x, z0: u.pos.z, x1: px, z1: pz, t: 0, dur: (kind === 'vault' ? 0.42 : 0.85) * m.vault * (1 + Math.hypot(px - u.pos.x, pz - u.pos.z) * 0.05), peak: c.h + 0.3 };
+    u.vaultKind = kind; u.vault = 0.01; u.stance = 0;
+    w.events.push({ type: 'vault', uid: u.id, kind, pos: { x: u.pos.x, y: u.pos.y, z: u.pos.z }, cid: c.id });
+    return true;
+  }
+  function stepVault(w, u, dt) {
+    const v = u.vaultD, T = w.terrain;
+    v.t += dt; const k = Math.min(1, v.t / v.dur), e = k * k * (3 - 2 * k);
+    const ox = u.pos.x, oz = u.pos.z;
+    u.pos.x = v.x0 + (v.x1 - v.x0) * e; u.pos.z = v.z0 + (v.z1 - v.z0) * e;
+    const g = T.ground(u.pos.x, u.pos.z);
+    u.pos.y = g + Math.sin(k * Math.PI) * v.peak; u.vy = 0; u.onGround = false;
+    u.vel.x = (u.pos.x - ox) / dt; u.vel.z = (u.pos.z - oz) / dt; u.vel.y = 0;
+    u.vault = k;
+    if (k >= 1) {
+      u.vaultD = null; u.vault = 0; u.onGround = true; u.pos.y = g;
+      const sp = Math.hypot(u.vel.x, u.vel.z) || 1, keep = Math.min(1, u.speed * 0.6 / sp);
+      u.vel.x *= keep; u.vel.z *= keep; u.vaultCd = 0.35;
+    }
+  }
+  // wx,wz: desired direction (len<=1). smul scales the walking (or sprint) speed.
+  function stepInfantry(w, u, dt, wx, wz, smul, jump, crouch, sprint) {
+    if (u.stance === undefined) S.initInfantry(w, u);
+    if (u.vaultD) { stepVault(w, u, dt); u.h += (u.def.h * STANCE_H[0] - u.h) * Math.min(1, dt * 10); return; }
+    const T = w.terrain, m = u.m || M0, d = u.def;
+    const g = T.ground(u.pos.x, u.pos.z), wl = Math.hypot(wx, wz);
+    u.vaultCd = Math.max(0, (u.vaultCd || 0) - dt); u.slideCd = Math.max(0, (u.slideCd || 0) - dt);
+    const hv = Math.hypot(u.vel.x, u.vel.z);
+    // stamina and sprint
+    if (u.winded && u.stam > 0.3) u.winded = false;
+    let spr = !!sprint && wl > 0.2 && !u.winded && u.stance !== 1;
+    if (spr) { u.stam -= dt / 7; if (u.stam <= 0) { u.stam = 0; u.winded = true; spr = false; } }
+    else u.stam = Math.min(1, u.stam + dt * (wl < 0.1 ? 0.28 : 0.14));
+    u.sprinting = spr;
+    // stance: crouch, slide
+    if (u.stance === 2) {
+      u.slideT -= dt;
+      if (u.slideT <= 0 || !crouch || hv < 3) u.stance = crouch ? 1 : 0;
+    } else if (crouch && sprint && u.onGround && hv > d.speed * u.spM * 0.85 && u.slideCd <= 0 && u.stam > 0.12) {
+      u.stance = 2; u.slideT = 0.8; u.slideCd = 1.8; u.stam -= 0.1;
+      const k = Math.max(hv, d.sprint * u.spM) * 1.08 / hv; u.vel.x *= k; u.vel.z *= k;
+      w.events.push({ type: 'slide', uid: u.id, pos: { x: u.pos.x, y: u.pos.y, z: u.pos.z } });
+    } else u.stance = crouch ? 1 : 0;
+    const hT = d.h * STANCE_H[u.stance];
+    u.h += (hT - u.h) * Math.min(1, dt * (u.stance === 2 ? 25 : 10));
+    // desired velocity
+    let speed = (spr ? d.sprint * m.sprint : d.speed) * u.spM * m.speed * smul;
+    speed *= STANCE_SPD[u.stance] * (1 - 0.28 * (u.supp || 0));
     if (T.height(u.pos.x, u.pos.z) < T.waterLevel - 0.5) speed *= 0.62;
-    if (wx || wz) {
+    if (wl > 0.01) {
       const grade = (T.ground(u.pos.x + wx * 1.6, u.pos.z + wz * 1.6) - g) / 1.6;
       if (grade > 0.15) speed *= E.clamp(1.12 - grade * 0.8, 0.3, 1);
     }
-    const k = Math.min(1, dt * (u.onGround ? 11 : 2.5));
-    u.vel.x += (wx * speed - u.vel.x) * k; u.vel.z += (wz * speed - u.vel.z) * k;
+    let tvx = wx * speed, tvz = wz * speed;
+    if (u.stance === 2) { // sliding: momentum carries, friction bleeds it, steering is weak
+      const f = Math.max(0, u.slideT / 0.8), sp = Math.max(3, Math.hypot(u.vel.x, u.vel.z) * (1 - dt * 1.7)), vx = u.vel.x, vz = u.vel.z, vl = Math.hypot(vx, vz) || 1;
+      tvx = vx / vl * sp * (0.6 + 0.4 * f); tvz = vz / vl * sp * (0.6 + 0.4 * f);
+    }
+    // accelerate toward it: snappy on the ground, little air control
+    const acc = u.onGround ? (u.stance === 2 ? 14 : wl < 0.05 ? 62 : spr ? 30 : 44) : 5;
+    let dvx = tvx - u.vel.x, dvz = tvz - u.vel.z; const dl = Math.hypot(dvx, dvz), lim = acc * dt;
+    if (dl > lim) { dvx *= lim / dl; dvz *= lim / dl; }
+    u.vel.x += dvx; u.vel.z += dvz;
     u.pos.x += u.vel.x * dt; u.pos.z += u.vel.z * dt;
     S.clampArena(w, u);
-    if (jump && u.onGround) { u.vy = 7.6; u.onGround = false; }
+    // jump
+    if (jump && u.onGround && u.stance !== 2) { u.vy = 7.6; u.onGround = false; u.stance = 0; }
     u.vy -= GRAV * dt; u.pos.y += u.vy * dt;
+    // cover collision and auto vault / mantle
+    const col = S.collideCover(w, u.pos, u.r, u.pos.y, 0, 0, OUT);
+    if (col) {
+      if (u.stance === 2) { u.stance = 1; u.slideT = 0; }
+      if (wl > 0.2 && u.vaultCd <= 0 && !u.winded) {
+        const into = (wx * -OUT.nx + wz * -OUT.nz) / wl;
+        if (into > 0.45) {
+          u.pushT = (u.pushT || 0) + dt;
+          const kind = canVault(col);
+          if (kind && (u.pushT > 0.08 || (jump && into > 0.2)) && startVault(w, u, col, kind, OUT.nx, OUT.nz)) { u.pushT = 0; return; }
+        } else u.pushT = 0;
+      }
+    } else u.pushT = 0;
     const g2 = T.ground(u.pos.x, u.pos.z);
     if (u.pos.y <= g2 || (u.vy <= 0 && u.pos.y - g2 < 0.45 && u.onGround)) { u.pos.y = g2; u.vy = 0; u.onGround = true; }
     else if (u.pos.y - g2 > 0.45) u.onGround = false;
     u.vel.y = u.vy;
   }
-  function stepVehicle(w, u, dt, throttle, turn) {
+
+  // sustain: suppression decay, bloom, perk regeneration (run for every infantry each tick)
+  function infantryTick(w, u, dt) {
+    const m = u.m || M0;
+    if (u.supp > 0 && w.t - u.suppT > 0.7) {
+      const was = u.supp;
+      u.supp = Math.max(0, u.supp - dt * (u.stance === 1 ? 0.34 : 0.22));
+      if (u.pid && was > 0.35 && u.supp <= 0.35) w.events.push({ type: 'suppress', uid: u.id, to: u.pid, level: 0, supp: u.supp });
+    }
+    // aim bloom: moving, airborne, suppressed, sliding; crouching steadies
+    const hv = Math.hypot(u.vel.x, u.vel.z);
+    let b = 0.004 + (hv / Math.max(1, u.speed)) * 0.012 + (u.onGround ? 0 : 0.03) + (u.supp || 0) * 0.05 + (u.stance === 2 ? 0.02 : 0);
+    if (u.stance === 1 && hv < 1.5) b *= 0.4; else if (u.stance === 1) b *= 0.7;
+    if (u.sprinting) b += 0.02;
+    if (u.def.weapon === 'longrifle') b *= 0.5;
+    b *= m.bloom;
+    u.bloom += (b - u.bloom) * Math.min(1, dt * 8);
+    if (m.regen && u.hp < u.maxHp && u.hitT > 3) u.hp = Math.min(u.maxHp, u.hp + m.regen * dt);
+  }
+
+  // ── vehicles ─────────────────────────────────────────────────
+  const VOUT = { c: null, nx: 0, nz: 0 };
+  function stepVehicle(w, u, dt, throttle, turn, brake) {
     const d = u.def, T = w.terrain;
-    u.spd += (throttle * u.speed - u.spd) * Math.min(1, dt * d.accel / u.speed * 1.6);
-    u.yaw += turn * d.turn * dt * (0.35 + 0.65 * Math.min(1, Math.abs(u.spd) / (u.speed * 0.4) + 0.4));
-    const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
-    const grade = (T.height(u.pos.x + fx * 5, u.pos.z + fz * 5) - T.height(u.pos.x, u.pos.z)) / 5;
-    const sl = u.spd > 0 && grade > 0.25 ? E.clamp(1.2 - grade * 0.8, 0.25, 1) : 1;
-    u.vel.x = fx * u.spd * sl; u.vel.z = fz * u.spd * sl;
+    const crip = u.crip === 2 ? 0.35 : u.crip === 1 ? 0.5 : 1;
+    const maxF = u.speed * crip;
+    const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw), rx = Math.cos(u.yaw), rz = -Math.sin(u.yaw);
+    let vf = u.vel.x * fx + u.vel.z * fz, vl = u.vel.x * rx + u.vel.z * rz;
+    const sf = Math.min(1, Math.abs(vf) / (maxF * 0.35));
+    const yr = turn * d.turn * (u.crip ? 0.55 : 1) * (0.3 + 0.7 * sf);
+    u.yaw += yr * dt;
+    const tgt = throttle >= 0 ? throttle * maxF : throttle * maxF * 0.45;
+    const acc = ((tgt > 0 && vf >= 0 && tgt > vf) || (tgt < 0 && vf <= 0 && tgt < vf)) ? d.accel * (u.crip ? 0.6 : 1) : d.brake;
+    const lim = acc * dt * (brake ? 2.2 : 1);
+    const pvf = vf;
+    vf += E.clamp((brake ? 0 : tgt) - vf, -lim, lim);
+    const grade = (T.height(u.pos.x + fx * 5, u.pos.z + fz * 5) - T.height(u.pos.x - fx * 5, u.pos.z - fz * 5)) / 10;
+    vf -= grade * 9.8 * dt * 0.8;
+    vl *= Math.exp(-d.grip * dt * (brake ? 2.8 : 1));
+    vl -= yr * vf * dt * 0.2;
+    u.vel.x = fx * vf + rx * vl; u.vel.z = fz * vf + rz * vl;
     u.pos.x += u.vel.x * dt; u.pos.z += u.vel.z * dt;
     S.clampArena(w, u);
-    const ty = Math.max(T.height(u.pos.x, u.pos.z), T.waterLevel) + d.hover;
-    u.vel.y = (ty - u.pos.y) * Math.min(1, dt * 9) / dt; u.pos.y += (ty - u.pos.y) * Math.min(1, dt * 9);
-  }
-
-  // ── AI: infantry ─────────────────────────────────────────────
-  function aiInfantry(w, u, dt) {
-    const ai = u.ai, W = E.WEAPONS[u.def.weapon];
-    S.think(w, u, dt);
-    const tg = S.target(w, u), gp = S.goalPos(w, u, tmpC);
-    const gx = gp.x - u.pos.x, gz = gp.z - u.pos.z, dg = Math.hypot(gx, gz);
-    let wx = 0, wz = 0, speed = u.speed;
-    if (tg) {
-      const tx = tg.pos.x - u.pos.x, tz = tg.pos.z - u.pos.z, d = Math.hypot(tx, tz) || 1;
-      S.leadPoint(u, tg, W, tmpA); S.eyeOf(u, tmpB);
-      const ax = tmpA.x - tmpB.x, ay = tmpA.y - tmpB.y, az = tmpA.z - tmpB.z;
-      const wantY = Math.atan2(ax, az) + ai.errY, wantP = Math.atan2(ay, Math.hypot(ax, az)) + ai.errP;
-      u.aimYaw = S.turnTo(u.aimYaw, wantY, 7 * dt); u.aimPitch = S.turnTo(u.aimPitch, wantP, 5 * dt);
-      u.yaw = u.aimYaw;
-      // strafe while fighting; keep pushing onto the objective
-      const sx = -tz / d * ai.strafe, sz = tx / d * ai.strafe;
-      const push = dg > 10 ? 0.75 : 0;
-      const keep = (u.type === 'sniper' && d < 120) ? -0.5 : (d > W.range * 0.7 ? 0.8 : 0);
-      wx = sx * 0.55 + (dg > 0.1 ? gx / dg * push : 0) + tx / d * keep; wz = sz * 0.55 + (dg > 0.1 ? gz / dg * push : 0) + tz / d * keep;
-      const l = Math.hypot(wx, wz); if (l > 1) { wx /= l; wz /= l; }
-      speed *= 0.8;
-      // bursts
-      if (ai.pauseT > 0) ai.pauseT -= dt;
-      else {
-        if (ai.burstT <= 0) ai.burstT = 0.5 + w.rng.next() * 0.9;
-        const al = Math.abs(S.angDiff(wantY, u.aimYaw)) + Math.abs(wantP - u.aimPitch);
-        if (al < 0.07 && d < W.range) { S.firePrimary(w, u, S.dirOf(u.aimYaw, u.aimPitch, tmpA), 0); }
-        ai.burstT -= dt; if (ai.burstT <= 0 || u.hot) ai.pauseT = 0.5 + w.rng.next() * 0.9;
+    // world geometry: crush light cover at speed, bounce off the rest
+    const col = S.collideCover(w, u.pos, u.r * 0.85, u.pos.y - d.hover, 1, Math.abs(vf), VOUT);
+    if (col) {
+      const vn = u.vel.x * VOUT.nx + u.vel.z * VOUT.nz;
+      if (vn < 0) {
+        u.vel.x -= VOUT.nx * vn * 1.3; u.vel.z -= VOUT.nz * vn * 1.3;
+        const imp = -vn;
+        if (imp > 5 && w.t - (u.bumpT || -9) > 0.5) {
+          u.bumpT = w.t;
+          const dm = (imp - 5) * 14 * (d.mass || 1);
+          S.coverDamage(w, col, dm * 3, null, 'ram');
+          S.applyDamage(w, u, dm, { wk: 'ram', team: null, uid: 0, owner: null }, null);
+          w.events.push({ type: 'bump', uid: u.id, speed: imp, pos: V.clone(u.pos) });
+        }
       }
-      if (u.altT <= 0) {
-        const alt = u.def.alt;
-        if (alt === 'grenade' && tg.kind !== 'fighter' && d > 10 && d < 34 && w.rng.next() < 0.03) S.fireAlt(w, u, S.dirOf(u.aimYaw, Math.min(0.9, u.aimPitch + 0.28 + d * 0.006), tmpA), 0);
-        else if (alt === 'rocket' && tg.kind !== 'infantry' && d < E.WEAPONS.rocket.range && w.rng.next() < 0.08) S.fireAlt(w, u, S.dirOf(u.aimYaw, u.aimPitch + 0.03, tmpA), tg.id);
-      }
-    } else if (dg > gp.r) {
-      wx = gx / dg; wz = gz / dg;
-      if (dg > 30) speed = u.def.sprint * u.spM;
-      u.yaw = S.turnTo(u.yaw, Math.atan2(wx, wz), 6 * dt); u.aimYaw = u.yaw; u.aimPitch *= 0.9;
     }
-    if (u.def.alt === 'medburst' && u.altT <= 0 && (w.tickN + u.id) % 20 === 0) {
-      for (const a of w.units) if (a.alive && a.team === u.team && a.kind === 'infantry' && a.hp < a.maxHp * 0.6 && V.distance2(a.pos, u.pos) < 160) { S.fireAlt(w, u, tmpA, 0); break; }
-    }
-    stepInfantry(w, u, dt, wx, wz, speed, false);
+    // hover: spring-damper ride height with a gentle bob that settles when stopped
+    const ground = Math.max(T.height(u.pos.x, u.pos.z), T.waterLevel);
+    const bob = Math.sin(w.t * 2.1 + u.id * 1.7) * 0.07 * (1 - 0.6 * sf) + sf * Math.sin(w.t * 17 + u.id) * 0.025;
+    const ty = ground + d.hover + bob - 0.14 * (1 - sf) * (u.crip ? 2 : 1);
+    u.vy = (u.vy || 0) + ((ty - u.pos.y) * 55 - (u.vy || 0) * 8.5) * dt;
+    u.pos.y += u.vy * dt; u.vel.y = u.vy;
+    if (u.pos.y < ground + 0.25) { u.pos.y = ground + 0.25; if (u.vy < 0) u.vy *= -0.2; }
+    // tilt
+    const ax = (vf - pvf) / dt;
+    u.pitch += (-Math.atan(grade) * 0.9 - ax * 0.004 - u.pitch) * Math.min(1, dt * 5);
+    u.roll += (-yr * sf * 0.1 - vl * 0.015 - u.roll) * Math.min(1, dt * 5);
+    u.spd = vf;
   }
-
-  // ── AI: vehicles + turrets ───────────────────────────────────
+  // turret traverse with hull-relative limits; returns remaining aim error (large if the point is out of reach)
+  function slew(w, u, wantYaw, wantPitch, dt, rateMul) {
+    const tr = u.def.turret;
+    if (!tr) { // emplacements: free traverse
+      const r = (u.def.turn || 2) * dt * (rateMul || 1);
+      u.aimYaw = S.turnTo(u.aimYaw, wantYaw, r);
+      const pMax = u.def.pitchMax || 1.1;
+      u.aimPitch = S.turnTo(u.aimPitch, E.clamp(wantPitch, -0.35, pMax), r);
+      return Math.abs(S.angDiff(wantYaw, u.aimYaw)) + Math.abs(wantPitch - u.aimPitch);
+    }
+    const rate = tr.rate * dt * (rateMul || 1) * (u.crip ? 0.5 : 1);
+    let rel = S.angDiff(u.aimYaw, u.yaw), want = S.angDiff(wantYaw, u.yaw);
+    const arc = tr.arc;
+    u.aimLimited = false;
+    if (arc < Math.PI) { rel = E.clamp(rel, -arc, arc); if (Math.abs(want) > arc) { want = E.clamp(want, -arc, arc); u.aimLimited = true; } }
+    rel += E.clamp(S.angDiff(want, rel), -rate, rate);
+    u.aimYaw = u.yaw + rel;
+    u.aimPitch += E.clamp(E.clamp(wantPitch, tr.pitchMin, tr.pitchMax) - u.aimPitch, -rate, rate);
+    return Math.abs(S.angDiff(wantYaw, u.aimYaw)) + Math.abs(wantPitch - u.aimPitch);
+  }
+  // aim a vehicle/emplacement at a unit (with lead); returns the aim error
   function aimTurret(w, u, tg, dt, rate) {
     const W = E.WEAPONS[u.def.weapon];
     S.leadPoint(u, tg, W, tmpA); S.eyeOf(u, tmpB);
     const ax = tmpA.x - tmpB.x, ay = tmpA.y - tmpB.y, az = tmpA.z - tmpB.z;
     const wantY = Math.atan2(ax, az) + u.ai.errY, wantP = Math.atan2(ay, Math.hypot(ax, az)) + u.ai.errP;
-    u.aimYaw = S.turnTo(u.aimYaw, wantY, rate * dt); u.aimPitch = S.turnTo(u.aimPitch, E.clamp(wantP, -0.35, 1.1), rate * dt);
-    return Math.abs(S.angDiff(wantY, u.aimYaw)) + Math.abs(wantP - u.aimPitch);
-  }
-  function aiVehicle(w, u, dt) {
-    const ai = u.ai, W = E.WEAPONS[u.def.weapon];
-    S.think(w, u, dt);
-    const tg = S.target(w, u), gp = S.goalPos(w, u, tmpC);
-    let gx = gp.x - u.pos.x, gz = gp.z - u.pos.z; const dg = Math.hypot(gx, gz);
-    let throttle = dg > 14 ? 1 : 0, des = dg > 1 ? Math.atan2(gx, gz) : u.yaw;
-    if (tg) {
-      const tx = tg.pos.x - u.pos.x, tz = tg.pos.z - u.pos.z, d = Math.hypot(tx, tz);
-      const al = aimTurret(w, u, tg, dt, 2.6);
-      if (al < 0.06 && d < W.range) S.firePrimary(w, u, S.dirOf(u.aimYaw, u.aimPitch, tmpA), 0);
-      if (u.def.alt === 'coax' && tg.kind === 'infantry' && d < E.WEAPONS.coax.range && al < 0.12) S.fireAlt(w, u, S.dirOf(u.aimYaw, u.aimPitch, tmpA), 0);
-      if (d < W.range * 0.7) {
-        if (u.type === 'tank') { throttle = dg > 40 ? 0.35 : 0; }
-        else { des = Math.atan2(tx, tz) + ai.strafe * 1.35; throttle = 0.8; }
-      }
-    } else { u.aimYaw = S.turnTo(u.aimYaw, u.yaw, 1.5 * dt); u.aimPitch *= 0.95; }
-    const dy = S.angDiff(des, u.yaw);
-    if (Math.abs(dy) > 1.1) throttle *= 0.3;
-    stepVehicle(w, u, dt, throttle, E.clamp(dy * 2.2, -1, 1));
-  }
-  function aiTurret(w, u, dt) {
-    S.think(w, u, dt);
-    const tg = S.target(w, u);
-    if (tg) { if (aimTurret(w, u, tg, dt, u.def.turn) < 0.07) S.firePrimary(w, u, S.dirOf(u.aimYaw, u.aimPitch, tmpA), 0); }
-    u.yaw = u.aimYaw;
+    return slew(w, u, wantY, wantP, dt, u.def.turret ? 1 : (rate / Math.max(0.1, u.def.turn || 2)));
   }
 
   // ── player control ───────────────────────────────────────────
   function playerInfantry(w, u, p, dt) {
+    if (u.stance === undefined) S.initInfantry(w, u);
     const inp = p.input, mx = E.clamp(inp.mx || 0, -1, 1), mz = E.clamp(inp.mz || 0, -1, 1);
     const my = inp.moveYaw, fx = Math.sin(my), fz = Math.cos(my);
     let wx = fx * mz - fz * mx, wz = fz * mz + fx * mx; const l = Math.hypot(wx, wz);
     if (l > 1) { wx /= l; wz /= l; }
     u.yaw = inp.yaw; u.aimYaw = inp.yaw; u.aimPitch = inp.pitch;
     const sprint = inp.sprint && mz > 0 && !inp.fire;
-    stepInfantry(w, u, dt, wx, wz, sprint ? u.def.sprint * u.spM : u.speed, inp.jump);
+    stepInfantry(w, u, dt, wx, wz, 1, inp.jump, !!inp.crouch, sprint);
+    infantryTick(w, u, dt);
+    if (u.vaultD) return;
+    // engineer tools: cycle selects, abil2 raises a barricade
+    if (inp.cycle && !u.cycP && u.type === 'engineer') { u.tool = (u.tool + 1) % 3; w.events.push({ type: 'tool', uid: u.id, to: u.pid, tool: u.tool }); }
+    u.cycP = !!inp.cycle;
+    if (inp.abil2 && !u.abil2P && u.type === 'engineer') S.engBuild(w, u);
+    u.abil2P = !!inp.abil2;
     S.dirOf(inp.yaw, inp.pitch, tmpA);
-    if (inp.fire && !sprint) S.firePrimary(w, u, tmpA, 0);
+    if (inp.fire && !u.sprinting) {
+      if (u.type === 'engineer' && u.tool > 0) S.engTool(w, u, tmpA, dt);
+      else landFire(w, u, tmpA, 0);
+    }
     if (inp.abil) {
       if (u.def.alt === 'grenade') S.dirOf(inp.yaw, Math.min(1.2, inp.pitch + 0.16), tmpA);
-      const lk = u.def.alt === 'rocket' ? S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.12, 500, S.lockable) : null;
-      S.fireAlt(w, u, tmpA, lk ? lk.id : 0);
+      let lk = 0;
+      if (u.def.alt === 'rocket') { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.12, 500, S.lockable); lk = t ? lockId(w, u, t) : 0; }
+      landAlt(w, u, tmpA, lk);
     }
   }
   function playerVehicle(w, u, p, dt) {
     const inp = p.input, mx = E.clamp(inp.mx || 0, -1, 1), mz = E.clamp(inp.mz || 0, -1, 1);
-    stepVehicle(w, u, dt, mz, -mx);
-    u.aimYaw = S.turnTo(u.aimYaw, inp.yaw, 3.2 * dt); u.aimPitch = S.turnTo(u.aimPitch, E.clamp(inp.pitch, -0.3, 1.0), 3.2 * dt);
+    stepVehicle(w, u, dt, mz, -mx, !!inp.crouch);
+    slew(w, u, inp.yaw, inp.pitch, dt, 1);
     S.dirOf(u.aimYaw, u.aimPitch, tmpA);
-    if (inp.fire) S.firePrimary(w, u, tmpA, 0);
-    if (inp.abil) S.fireAlt(w, u, tmpA, 0);
+    if (inp.fire && !u.aimLimited) landFire(w, u, tmpA, 0);
+    if (inp.abil) {
+      let lk = 0;
+      if (u.def.alt === 'aamissile') { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; }
+      landAlt(w, u, tmpA, lk);
+    }
   }
   function playerTurret(w, u, p, dt) {
     const inp = p.input;
-    u.aimYaw = S.turnTo(u.aimYaw, inp.yaw, 3 * dt); u.aimPitch = S.turnTo(u.aimPitch, E.clamp(inp.pitch, -0.3, 1.2), 3 * dt); u.yaw = u.aimYaw;
-    if (inp.fire) S.firePrimary(w, u, S.dirOf(u.aimYaw, u.aimPitch, tmpA), 0);
+    slew(w, u, inp.yaw, inp.pitch, dt, 1); u.yaw = u.aimYaw;
+    S.dirOf(u.aimYaw, u.aimPitch, tmpA);
+    if (u.def.structure) { if (inp.fire) S.structureFire(w, u); return; }
+    if (inp.fire) landFire(w, u, tmpA, 0);
+    if (inp.abil && u.def.alt) {
+      let lk = 0;
+      if (u.def.aa) { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; }
+      landAlt(w, u, tmpA, lk);
+    }
   }
 
-  const C = S.ctl = S.ctl || {};
-  C.infantry = { ai: aiInfantry, player: playerInfantry };
-  C.vehicle = { ai: aiVehicle, player: playerVehicle };
-  C.turret = { ai: aiTurret, player: playerTurret };
+  // ── hooks: damage, death ─────────────────────────────────────
+  function infDamage(w, e, d, src, at, head) {
+    const m = e.m || M0;
+    d *= (1 - Math.min(0.6, m.dr + (e.auraRes || 0)));
+    if (src.uid) { e.lastAtt = src.uid; e.lastAttT = w.t; }
+    addSupp(w, e, 0.05 + d / e.maxHp * 0.7);
+    return d;
+  }
+  const SIDE_FWD = { x: 0, z: 0 };
+  function vehDamage(w, e, d, src, at, head) {
+    const F = e.def.armorF; if (!F) return d;
+    let zone = 'side';
+    if (src.vel) {
+      const vx = src.vel.x, vy = src.vel.y, vz = src.vel.z, sp = Math.hypot(vx, vy, vz) || 1, hxz = Math.hypot(vx, vz) || 1;
+      if (vy / sp < -0.62) zone = 'top';
+      else {
+        const cosA = -(vx * Math.sin(e.yaw) + vz * Math.cos(e.yaw)) / hxz;   // +1: the shot comes from dead ahead
+        zone = cosA > 0.55 ? 'front' : cosA < -0.45 ? 'rear' : 'side';
+      }
+    } else if (src.wk === 'mine') zone = 'belly';
+    const mul = zone === 'belly' ? 1.25 : F[zone];
+    e.lastZone = zone;
+    if (src.wk !== 'ram' && src.wk !== 'burn' && (e.pid || src.owner) && Math.abs(mul - 1) > 0.04) w.events.push({ type: 'armor', uid: e.id, zone, mul, to: e.pid, by: src.owner || null, pos: at ? V.clone(at) : V.clone(e.pos) });
+    return d * mul;
+  }
+  function vehDeath(w, e, src) {
+    const big = e.type === 'tank' ? 1 : 0.65;
+    S.leaveWreck(w, e);
+    S.blast(w, e.pos, 13 * big, 240 * big, e.team, e.id, 'wreck', e.pid);
+    w.events.push({ type: 'wreck', uid: e.id, utype: e.type, pos: V.clone(e.pos), yaw: e.yaw });
+  }
+  // an explosion that hurts everyone nearby (friend and foe at reduced rate)
+  function blast(w, pos, R, dmg, team, uid, wk, pid) {
+    const src = { wk, team, uid, owner: null };
+    for (const o of w.units) {
+      if (!o.alive || o.kind === 'capital' || o.kind === 'fighter' || o.id === uid) continue;
+      S.centerOf(o, tmpC);
+      const dd = V.distance(tmpC, pos) - o.r;
+      if (dd < R) applyBlast(w, o, dmg * E.clamp01(1 - Math.max(0, dd) / R) * (o.team === team ? 0.55 : 1), src, tmpC);
+    }
+    S.blastCover(w, pos.x, pos.y, pos.z, R, dmg * 0.6, 1);
+    w.events.push({ type: 'blast', pos: V.clone(pos), r: R, wk, team });
+  }
+  function applyBlast(w, o, d, src, at) { if (d > 1) S.applyDamage(w, o, d, src, at); }
 
-  Object.assign(S, { stepInfantry, stepVehicle, aiInfantry, aimTurret, aiVehicle, aiTurret, playerInfantry, playerVehicle, playerTurret });
+  // ── per-tick land systems ────────────────────────────────────
+  function vehicleSystem(w, dt) {
+    const U = w.units;
+    for (let i = 0; i < U.length; i++) {
+      const u = U[i]; if (!u.alive || u.kind !== 'vehicle') continue;
+      // mobility kill / burning
+      const f = u.hp / u.maxHp, lv = f < 0.15 ? 2 : f < 0.36 ? 1 : 0;
+      if (lv !== (u.crip || 0)) {
+        w.events.push({ type: lv > (u.crip || 0) ? 'cripple' : 'recover', uid: u.id, utype: u.type, level: lv, pos: V.clone(u.pos), team: u.team });
+        u.crip = lv;
+      }
+      if (u.crip === 2) { u.hp -= 3.2 * dt; if (u.hp <= 0) { S.kill(w, u, { wk: 'burn', team: null, uid: 0, owner: null }); continue; } }
+      // ramming
+      const spd = Math.hypot(u.vel.x, u.vel.z);
+      if (spd > 6 && (w.tickN + u.id) % 2 === 0) {
+        for (let j = 0; j < U.length; j++) {
+          const o = U[j]; if (o === u || !o.alive || o.team === u.team) continue;
+          if (o.kind !== 'infantry' && o.kind !== 'vehicle') continue;
+          const dx = o.pos.x - u.pos.x, dz = o.pos.z - u.pos.z, rr = u.r * 0.9 + o.r;
+          if (dx * dx + dz * dz > rr * rr || Math.abs(o.pos.y - u.pos.y) > 4) continue;
+          if (w.t - (o.ramT || -9) < 0.7) continue;
+          const dl = Math.hypot(dx, dz) || 1, nx = dx / dl, nz = dz / dl;
+          const closing = u.vel.x * nx + u.vel.z * nz - (o.vel.x * nx + o.vel.z * nz);
+          if (closing < 4) continue;
+          o.ramT = w.t; u.ramT = w.t;
+          const src = { wk: 'ram', team: u.team, uid: u.id, owner: u.pid || null };
+          if (o.kind === 'infantry') {
+            S.applyDamage(w, o, 40 + closing * 9 * (u.def.mass || 1), src, o.pos);
+            o.vel.x += nx * closing * 0.8; o.vel.z += nz * closing * 0.8; o.vy = 4; o.onGround = false;
+          } else {
+            const mu = u.def.mass || 1, mo = o.def.mass || 1;
+            S.applyDamage(w, o, closing * 30 * mu / (mu + mo) * 1.6, src, o.pos);
+            S.applyDamage(w, u, closing * 30 * mo / (mu + mo) * 1.6, { wk: 'ram', team: o.team, uid: o.id, owner: o.pid || null }, u.pos);
+            const k = closing * (mu / (mu + mo)) * 0.6; o.vel.x += nx * k; o.vel.z += nz * k; u.vel.x -= nx * closing * (mo / (mu + mo)) * 0.5; u.vel.z -= nz * closing * (mo / (mu + mo)) * 0.5;
+          }
+          w.events.push({ type: 'ram', uid: u.id, tid: o.id, closing, pos: V.clone(o.pos) });
+          if (w.landStats) w.landStats.rams++;
+        }
+      }
+    }
+  }
+
+  // ── registration ─────────────────────────────────────────────
+  const C = S.ctl = S.ctl || {};
+  C.infantry = { ai: (w, u, dt) => S.aiInfantry(w, u, dt), player: playerInfantry, damage: infDamage, nearMiss: nearMissInf };
+  C.vehicle = { ai: (w, u, dt) => S.aiVehicle(w, u, dt), player: playerVehicle, damage: vehDamage, death: vehDeath };
+  C.turret = { ai: (w, u, dt) => S.aiTurret(w, u, dt), player: playerTurret, death: (w, e, src) => S.structureDeath(w, e, src) };
+  S.systems.push(vehicleSystem);
+
+  // ── net ──────────────────────────────────────────────────────
+  const R2 = (x) => Math.round(x * 100) / 100;
+  S.net.unit.infantry = {
+    pack: (u) => [u.stance || 0, Math.round((u.supp || 0) * 100), Math.round((u.stam === undefined ? 1 : u.stam) * 100), Math.round((u.vault || 0) * 100), u.tool || 0, R2(u.h), u.sprinting ? 1 : 0, R2(u.bloom || 0), u.aimPitch ? R2(u.aimPitch) : 0],
+    apply(u, a) { u.stance = a[0]; u.supp = a[1] / 100; u.stam = a[2] / 100; u.vault = a[3] / 100; u.tool = a[4]; u.h = a[5]; u.sprinting = !!a[6]; u.bloom = a[7]; u.aimPitch = a[8]; u.aimYaw = u.yaw; },
+  };
+  S.net.unit.vehicle = {
+    pack: (u) => [u.crip || 0, R2(u.aimYaw), R2(u.aimPitch), u.aimLimited ? 1 : 0, u.lastZone || ''],
+    apply(u, a) { u.crip = a[0]; u.aimYaw = a[1]; u.aimPitch = a[2]; u.aimLimited = !!a[3]; u.lastZone = a[4]; },
+  };
+  S.net.unit.turret = {
+    pack: (u) => [R2(u.aimPitch), u.active === false ? 0 : 1, Math.round((u.cd || 0) * 10) / 10, u.charging ? 1 : 0],
+    apply(u, a) { u.aimPitch = a[0]; u.active = !!a[1]; u.cd = a[2]; u.charging = !!a[3]; u.aimYaw = u.yaw; },
+  };
+
+  Object.assign(S, { stepInfantry, stepVehicle, slew, aimTurret, playerInfantry, playerVehicle, playerTurret, addSupp, landFire, landAlt, lockId, infantryTick, blast, M0, canVault,
+    // kept for callers of the previous API
+    playerTurretCtl: playerTurret });
+})(window.E = window.E || {});
+
+// ---- js/sim/land_ai.js ----
+// LAND AI: squads of infantry that fight from cover, bound forward under their
+// own base of fire, flank and retreat; medics and engineers doing their jobs;
+// vehicles that escort and kite. Everything here only decides what to do; the
+// movement and weapon handling is in land.js.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3;
+  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make(), tmpD = V.make();
+  const DEST = { x: 0, z: 0, r: 3 };
+  const ROLE = { trooper: 'assault', engineer: 'assault', heavy: 'support', sniper: 'support', medic: 'medic' };
+
+  // how much each class wants each kind of target (counters live here)
+  const PRIO = {
+    trooper:  { trooper: 1, heavy: 1.0, sniper: 1.25, medic: 1.35, engineer: 1.45, v_skiff: 0.45, v_tank: 0.12, v_aa: 0.55, t_battery: 0.12, t_nest: 0.4, t_aabattery: 0.9, t_shieldgen: 0.2, t_ioncannon: 0.2, fighter: 0.05 },
+    heavy:    { trooper: 0.8, heavy: 0.8, sniper: 0.9, medic: 0.9, engineer: 0.9, v_skiff: 2.2, v_tank: 2.0, v_aa: 2.2, t_battery: 0.9, t_nest: 0.7, t_aabattery: 1.4, t_shieldgen: 0.35, t_ioncannon: 0.3, fighter: 1.9 },
+    sniper:   { trooper: 0.9, heavy: 1.7, sniper: 2.0, medic: 1.9, engineer: 1.9, v_skiff: 0.05, v_tank: 0.02, v_aa: 0.05, t_battery: 0, t_nest: 0.3, t_aabattery: 0.2, t_shieldgen: 0, t_ioncannon: 0, fighter: 0 },
+    medic:    { trooper: 1, heavy: 0.9, sniper: 1.2, medic: 1.2, engineer: 1.2, v_skiff: 0.2, v_tank: 0.05, v_aa: 0.2, t_battery: 0.05, t_nest: 0.2, t_aabattery: 0.5, t_shieldgen: 0.05, t_ioncannon: 0.05, fighter: 0 },
+    engineer: { trooper: 1, heavy: 0.9, sniper: 1.2, medic: 1.2, engineer: 1.2, v_skiff: 0.3, v_tank: 0.05, v_aa: 0.3, t_battery: 0.05, t_nest: 0.3, t_aabattery: 0.6, t_shieldgen: 0.05, t_ioncannon: 0.05, fighter: 0 },
+  };
+  const VPRIO = {
+    tank: { trooper: 0.9, heavy: 1.1, sniper: 0.9, medic: 0.9, engineer: 1.0, v_skiff: 0.9, v_tank: 1.6, v_aa: 1.3, t_battery: 1.3, t_nest: 0.9, t_aabattery: 1.0, t_shieldgen: 0.5, t_ioncannon: 0.5, fighter: 0 },
+    skiff: { trooper: 1, heavy: 0.8, sniper: 1.1, medic: 1.1, engineer: 1.1, v_skiff: 0.9, v_tank: 0.1, v_aa: 0.6, t_battery: 0.1, t_nest: 0.3, t_aabattery: 0.5, t_shieldgen: 0, t_ioncannon: 0, fighter: 0 },
+    aa:    { trooper: 0.35, heavy: 0.3, sniper: 0.35, medic: 0.35, engineer: 0.35, v_skiff: 0.3, v_tank: 0.05, v_aa: 0.2, t_battery: 0, t_nest: 0, t_aabattery: 0, t_shieldgen: 0, t_ioncannon: 0, fighter: 3 },
+  };
+  const keyOf = (e) => e.kind === 'infantry' ? e.type : e.kind === 'vehicle' ? 'v_' + e.type : e.kind === 'turret' ? 't_' + e.type : e.kind;
+
+  // ── squads ───────────────────────────────────────────────────
+  function squadOf(w, u) { return u.sq ? (w.sqMap && w.sqMap.get(u.sq)) || null : null; }
+  function assignSquad(w, u) {
+    if (u.pid || u.kind !== 'infantry') return;
+    w.sqMap = w.sqMap || new Map();
+    let best = null, bd = 80 * 80;
+    for (const s of w.squads) {
+      if (s.team !== u.team || s.ids.length >= 5) continue;
+      const d = (s.cx - u.pos.x) * (s.cx - u.pos.x) + (s.cz - u.pos.z) * (s.cz - u.pos.z);
+      if (d < bd) { bd = d; best = s; }
+    }
+    if (!best) {
+      best = { id: w.squadId++, team: u.team, ids: [], cx: u.pos.x, cz: u.pos.z, goal: null, goalT: 0, contact: null, focus: 0, advance: true, flank: null, flankT: -99, flankSign: w.rng.sign(), n: 0, born: w.t };
+      w.squads.push(best); w.sqMap.set(best.id, best);
+    }
+    best.ids.push(u.id); u.sq = best.id;
+  }
+  function chooseSquadGoal(w, sq) {
+    const R = w.rng, en = S.enemyOf(sq.team);
+    let best = null, bs = 0;
+    for (const c of w.cps) {
+      const d = Math.hypot(c.pos.x - sq.cx, c.pos.z - sq.cz);
+      let s;
+      if (c.owner !== sq.team) s = (c.owner ? 1 : 1.25) * (c.n[sq.team] > 0 ? 1.25 : 1) / (d + 160);
+      else if (c.n[en] > 0 || Math.abs(c.cap) < 0.99) s = 1.8 / (d + 160);
+      else continue;
+      let taken = 0; for (const o of w.squads) if (o !== sq && o.team === sq.team && o.goal && o.goal.cp === c.id) taken++;
+      s *= (0.6 + R.next() * 0.8) / (1 + 0.7 * taken);
+      if (s > bs) { bs = s; best = { x: c.pos.x, z: c.pos.z, r: c.r * 0.7, cp: c.id, uid: 0 }; }
+    }
+    // go after enemy structures when the line is ours, and objective sites
+    if (w.cps.filter(c => c.owner === sq.team).length >= 3 && R.next() < 0.22) {
+      let tgt = null, bd = 1e9;
+      for (const e of w.units) if (e.alive && e.team === en && e.kind === 'turret' && (e.type === 'shieldgen' || e.type === 'ioncannon' || e.type === 'aabattery')) { const d = Math.hypot(e.pos.x - sq.cx, e.pos.z - sq.cz); if (d < bd) { bd = d; tgt = e; } }
+      if (tgt) { best = { x: tgt.pos.x, z: tgt.pos.z, r: 22, cp: -1, uid: tgt.id }; bs = 1; }
+    }
+    for (const o of w.objs) {
+      if (o.done) continue;
+      if (o.type === 'uplink') { const d = Math.hypot(o.pos.x - sq.cx, o.pos.z - sq.cz); const s = 1.4 / (d + 160) * (0.7 + R.next() * 0.6); if (s > bs) { bs = s; best = { x: o.pos.x, z: o.pos.z, r: o.r * 0.6, cp: -2, uid: 0 }; } }
+      else if (o.target) {
+        const tu = w.umap.get(o.target); if (!tu || !tu.alive) continue;
+        const mine = (o.type === 'destroy') === (o.team === sq.team) ;
+        const d = Math.hypot(tu.pos.x - sq.cx, tu.pos.z - sq.cz), s = 1.5 / (d + 160) * (0.7 + R.next() * 0.6);
+        if (s > bs && (o.type === 'destroy' ? o.team === sq.team : o.team === sq.team)) { bs = s; best = { x: tu.pos.x, z: tu.pos.z, r: 24, cp: -3, uid: o.type === 'destroy' ? tu.id : 0 }; }
+      }
+    }
+    return best || { x: w.cps[R.i(w.cps.length)].pos.x, z: 0, r: 20, cp: -1, uid: 0 };
+  }
+  function squadSystem(w, dt) {
+    if (w.tickN % 9 !== 0) return;
+    const SQ = w.squads;
+    for (let i = SQ.length - 1; i >= 0; i--) {
+      const sq = SQ[i];
+      let n = 0, cx = 0, cz = 0, sup = 0, supFiring = 0, asl = 0, ex = 0, ez = 0, en = 0;
+      const tally = {};
+      for (let k = sq.ids.length - 1; k >= 0; k--) {
+        const u = w.umap.get(sq.ids[k]);
+        if (!u || !u.alive || u.pid || u.sq !== sq.id) { sq.ids.splice(k, 1); continue; }
+        n++; cx += u.pos.x; cz += u.pos.z;
+        const role = ROLE[u.type];
+        if (role === 'support') { sup++; if (w.t - u.lastFire < 1.2) supFiring++; } else if (role === 'assault') asl++;
+        const t = u.ai.tid ? w.umap.get(u.ai.tid) : null;
+        if (t && t.alive && u.ai.los) { ex += t.pos.x; ez += t.pos.z; en++; tally[t.id] = (tally[t.id] || 0) + (t.kind === 'infantry' ? 1 : 2); }
+      }
+      if (!n) { SQ.splice(i, 1); w.sqMap.delete(sq.id); continue; }
+      sq.cx = cx / n; sq.cz = cz / n; sq.n = n;
+      if (en) { sq.contact = { x: ex / en, z: ez / en, t: w.t }; let bf = 0, bc = 0; for (const id in tally) if (tally[id] > bc) { bc = tally[id]; bf = +id; } sq.focus = bf; }
+      const fresh = sq.contact && w.t - sq.contact.t < 4;
+      if (!fresh) sq.focus = 0;
+      // goal
+      const g = sq.goal;
+      let stale = !g || w.t > sq.goalT;
+      if (g && g.cp >= 0 && !stale) { const c = w.cps[g.cp]; if (c.owner === sq.team && c.n[S.enemyOf(sq.team)] === 0 && Math.abs(c.cap) >= 0.99) stale = true; }
+      if (g && g.uid) { const tu = w.umap.get(g.uid); if (!tu || !tu.alive) stale = true; }
+      if (stale && !fresh) { sq.goal = chooseSquadGoal(w, sq); sq.goalT = w.t + 18 + w.rng.next() * 14; sq.flank = null; }
+      // fire and manoeuvre: assault elements bound forward only while the base of fire is up
+      sq.advance = !fresh || sup === 0 || supFiring > 0 || w.t - (sq.advT || 0) > 6;
+      if (sq.advance && fresh && sup > 0 && supFiring === 0) sq.advT = w.t;
+      // flank point
+      if (fresh && asl >= 2 && (!sq.flank || w.t - sq.flankT > 9)) {
+        const bx = sq.cx - sq.contact.x, bz = sq.cz - sq.contact.z, bl = Math.hypot(bx, bz) || 1;
+        if (bl > 38) {
+          const ang = sq.flankSign * 0.95, ca = Math.cos(ang), sa = Math.sin(ang), rad = E.clamp(bl * 0.9, 34, 95);
+          const fx = sq.contact.x + (bx / bl * ca - bz / bl * sa) * rad, fz = sq.contact.z + (bx / bl * sa + bz / bl * ca) * rad;
+          if (w.terrain.height(fx, fz) > w.terrain.waterLevel + 0.3 && Math.abs(fx) < w.layout.arena.x && Math.abs(fz) < w.layout.arena.z) { sq.flank = { x: fx, z: fz }; sq.flankT = w.t; }
+          else sq.flankSign = -sq.flankSign;
+        }
+      } else if (!fresh && sq.flank && w.t - sq.flankT > 12) sq.flank = null;
+    }
+  }
+
+  // ── perception ───────────────────────────────────────────────
+  function pickTarget(w, u, sq) {
+    const W = E.WEAPONS[u.def.weapon], pr = PRIO[u.type] || PRIO.trooper, ai = u.ai;
+    const sense = u.type === 'sniper' ? 520 : Math.min(W.range * 1.05, 250);
+    let best = null, bs = 0; S.eyeOf(u, tmpA);
+    const focus = sq ? sq.focus : 0, T = w.terrain;
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      const pf = pr[keyOf(e)]; if (!pf) continue;
+      let d = V.distance(u.pos, e.pos);
+      if (e.kind === 'infantry' && e.m && e.m.stealth && e.stance === 1 && Math.hypot(e.vel.x, e.vel.z) < 1.5) d *= 1 + 2 * e.m.stealth;
+      if (d > sense) continue;
+      if (e.kind === 'fighter' && (u.def.alt !== 'rocket' || e.pos.y - T.height(e.pos.x, e.pos.z) > 160 || d > 380)) continue;
+      let s = pf * 1000 / (d + 60);
+      if (e.id === ai.tid) s *= 1.25;
+      if (e.id === focus) s *= 1.4;
+      if (e.id === u.lastAtt && w.t - u.lastAttT < 4) s *= 1.3;
+      if (s <= bs) continue;
+      if (e.kind !== 'fighter' && !S.los(w, tmpA, S.centerOf(e, tmpB))) continue;
+      bs = s; best = e;
+    }
+    return best;
+  }
+
+  // ── order / goal destination ─────────────────────────────────
+  function orderDest(w, u, o) {
+    const ord = u.order, ai = u.ai; if (!ord) return null;
+    if (ord.type === 'follow') { const l = w.unitOf(ord.pid); if (l) { o.x = l.pos.x + ai.off.x * 0.4; o.z = l.pos.z + ai.off.z * 0.4; o.r = 6; return o; } u.order = null; return null; }
+    o.x = ord.pos.x + ai.off.x * 0.3; o.z = ord.pos.z + ai.off.z * 0.3; o.r = 8;
+    if (ord.type !== 'hold' && w.t - ord.t > 75) u.order = null;
+    return o;
+  }
+
+  function validCover(w, u, tg) {
+    const ai = u.ai, c = ai.cov;
+    if (!c || !c.alive) return false;
+    if (c.occ !== u.id) { c.occ = u.id; }
+    c.occT = w.t;
+    return S.coverCovered(w, ai.cx, ai.cz, tg.pos.x, tg.pos.z, 0.8);
+  }
+  function takeCover(w, u, tx, tz, R, gx, gz) {
+    const ai = u.ai, CS = S.findCover(w, u, tx, tz, R, gx, gz, 0.9);
+    if (!CS) return false;
+    ai.cov = CS.c; ai.cx = CS.x; ai.cz = CS.z; ai.px = CS.px; ai.pz = CS.pz; ai.tall = CS.c.h > 1.45;
+    CS.c.occ = u.id; CS.c.occT = w.t;
+    return true;
+  }
+
+  // ── infantry think: pick the target, decide what to be doing ──
+  function think(w, u) {
+    const ai = u.ai, W = E.WEAPONS[u.def.weapon], R = w.rng;
+    const sq = squadOf(w, u), role = ROLE[u.type] || 'assault', hpf = u.hp / u.maxHp;
+    let t = pickTarget(w, u, sq); ai.los = !!t;
+    if (t) ai.seenT = w.t;
+    else if (ai.cov && ai.cov.alive && ai.tid && w.t - (ai.seenT || -9) < 4) { const m0 = w.umap.get(ai.tid); if (m0 && m0.alive) t = m0; }   // keep the head down, remember who is out there
+    ai.tid = t ? t.id : 0;
+    const k = w.cfg.aiErr * (1 + (u.supp || 0) * 2.2);
+    ai.errY = R.gauss() * k; ai.errP = R.gauss() * k * 0.6;
+    if (w.t > ai.offT) {
+      ai.offT = w.t + 5 + R.next() * 7;
+      const g = sq && sq.goal ? sq.goal : { r: 20 }, rr = (g.r || 20) * 0.8, a = R.angle(), d = Math.sqrt(R.next()) * rr;
+      ai.off.x = Math.cos(a) * d; ai.off.z = Math.sin(a) * d;
+    }
+    ai.strafeT -= 0.4; if (ai.strafeT <= 0) { ai.strafe = -ai.strafe; ai.strafeT = 1 + R.next() * 2.2; }
+    // retreat hysteresis
+    if (!ai.retreat && hpf < 0.27 && w.t - u.bornT > 3) ai.retreat = true;
+    else if (ai.retreat && hpf > 0.6) ai.retreat = false;
+    ai.job = null; ai.mode = 'move'; ai.expose = true; ai.crouchWant = false;
+    const ord = orderDest(w, u, DEST);
+    // 1. retreat
+    if (ai.retreat) {
+      ai.mode = 'retreat';
+      let md = null, bd = 1e9;
+      for (const a of w.units) if (a.alive && a !== u && a.team === u.team && a.type === 'medic' && a.kind === 'infantry') { const d = V.distance2(a.pos, u.pos); if (d < bd && d < 110 * 110) { bd = d; md = a; } }
+      if (md) { ai.dx = md.pos.x; ai.dz = md.pos.z; ai.dr = 4; }
+      else { const h = w.cps.find(c => c.home === u.team); ai.dx = h.pos.x; ai.dz = h.pos.z; ai.dr = h.r * 0.5; }
+      if (t && !(md && Math.sqrt(bd) < 12)) { if (!validCover(w, u, t)) { ai.cov = null; takeCover(w, u, t.pos.x, t.pos.z, 20, ai.dx, ai.dz); } if (ai.cov) { ai.dx = ai.cx; ai.dz = ai.cz; ai.dr = 0.8; ai.mode = 'fight'; ai.crouchWant = true; } }
+      return;
+    }
+    // 2. class jobs when nothing is shooting at us
+    const near = t ? V.distance(u.pos, t.pos) : 1e9;
+    if (u.type === 'medic' && !(t && near < 40 && u.supp > 0.4)) {
+      let bt = null, bd = 45 * 45;
+      for (const a of w.units) if (a.alive && a !== u && a.team === u.team && a.kind === 'infantry' && a.hp < a.maxHp * 0.65) { const d = V.distance2(a.pos, u.pos); if (d < bd) { bd = d; bt = a; } }
+      if (bt) { ai.mode = 'heal'; ai.dx = bt.pos.x; ai.dz = bt.pos.z; ai.dr = 6; ai.job = bt.id; return; }
+    }
+    if (u.type === 'engineer' && !(t && near < 35)) { if (engineerJob(w, u, sq)) return; }
+    // 3. combat
+    if (t) {
+      const d = near, g = sq && sq.goal;
+      const gx = g ? g.x : t.pos.x, gz = g ? g.z : t.pos.z;
+      const needCover = (u.supp || 0) > 0.35 || hpf < 0.6 || role === 'support' || u.type === 'sniper' || u.type === 'medic';
+      const holding = ord && u.order.type === 'hold';
+      // keep distance as a marksman
+      if (u.type === 'sniper' && d < 70) { ai.mode = 'kite'; ai.dx = u.pos.x + (u.pos.x - t.pos.x) / d * 30; ai.dz = u.pos.z + (u.pos.z - t.pos.z) / d * 30; ai.dr = 3; ai.cov = null; return; }
+      const tooFar = d > W.range * 0.88;
+      // cover maintenance
+      if (!validCover(w, u, t)) { ai.cov = null; if (w.t > (ai.covT || 0)) { ai.covT = w.t + 0.7; takeCover(w, u, t.pos.x, t.pos.z, needCover ? 32 : 22, holding ? ord.x : gx, holding ? ord.z : gz); } }
+      const bound = role === 'assault' && !holding && sq && sq.advance && (d > W.range * 0.42 || tooFar) && (u.supp || 0) < 0.45 && hpf > 0.5;
+      if (tooFar || bound) {
+        ai.mode = 'advance';
+        let fx = t.pos.x, fz = t.pos.z;
+        if (sq && sq.flank && !ai.flankDone && role === 'assault') {
+          const df = Math.hypot(sq.flank.x - u.pos.x, sq.flank.z - u.pos.z);
+          if (df < 14) ai.flankDone = true; else { fx = sq.flank.x; fz = sq.flank.z; }
+        }
+        // bound to the next cover that makes progress, else step straight at it
+        let ok = false;
+        if (takeCover(w, u, t.pos.x, t.pos.z, 24, fx, fz)) {
+          const prog = Math.hypot(ai.cx - t.pos.x, ai.cz - t.pos.z) < d - 3 || tooFar && Math.hypot(ai.cx - fx, ai.cz - fz) < Math.hypot(u.pos.x - fx, u.pos.z - fz) - 3;
+          if (prog) { ai.dx = ai.cx; ai.dz = ai.cz; ai.dr = 0.9; ok = true; } else ai.cov = null;
+        }
+        if (!ok) { const dl = Math.hypot(fx - u.pos.x, fz - u.pos.z) || 1, st = Math.min(16, dl); ai.dx = u.pos.x + (fx - u.pos.x) / dl * st; ai.dz = u.pos.z + (fz - u.pos.z) / dl * st; ai.dr = 1.5; }
+        ai.expose = !tooFar ? true : false;
+        return;
+      }
+      ai.mode = 'fight';
+      if (ai.cov) { ai.dx = ai.cx; ai.dz = ai.cz; ai.dr = 0.7; }
+      else { ai.dx = u.pos.x; ai.dz = u.pos.z; ai.dr = 1e9; }   // open ground: strafe where we are
+      return;
+    }
+    // 4. nothing to shoot: orders, then the squad's goal
+    ai.cov = null;
+    if (ord) { ai.mode = u.order.type === 'hold' ? 'hold' : 'move'; ai.dx = ord.x; ai.dz = ord.z; ai.dr = ord.r; return; }
+    const g = sq && sq.goal;
+    if (g) { ai.dx = g.x + ai.off.x; ai.dz = g.z + ai.off.z; ai.dr = 2.5; }
+    else { const c = w.cps[S.chooseGoal(w, u)]; ai.dx = c.pos.x + ai.off.x; ai.dz = c.pos.z + ai.off.z; ai.dr = 2.5; }
+    // medics tag along behind the assault element
+    if (u.type === 'medic' && sq && sq.n > 1) { ai.dx = sq.cx + ai.off.x * 0.2; ai.dz = sq.cz + ai.off.z * 0.2; ai.dr = 5; }
+    ai.flankDone = false;
+  }
+
+  // engineer jobs: returns true if one was chosen (ai.mode/ai.dx set)
+  function engineerJob(w, u, sq) {
+    const ai = u.ai, R = w.rng;
+    // repair the most damaged friendly vehicle / emplacement nearby
+    let bt = null, bs = 0;
+    for (const e of w.units) {
+      if (!e.alive || e.team !== u.team || (e.kind !== 'vehicle' && e.kind !== 'turret') || e.hp >= e.maxHp * 0.82 || e.def.nest && false) continue;
+      const d = V.distance(e.pos, u.pos); if (d > 90) continue;
+      const s = (1 - e.hp / e.maxHp) * (e.kind === 'vehicle' ? 1.5 : 1) * 100 / (d + 30);
+      if (s > bs) { bs = s; bt = e; }
+    }
+    if (bt) { ai.mode = 'repair'; ai.job = bt.id; ai.dx = bt.pos.x; ai.dz = bt.pos.z; ai.dr = bt.r + 2.5; return true; }
+    // sabotage a nearby enemy structure while no infantry watches it
+    if (u.hp > u.maxHp * 0.5 && u.altT <= 0) {
+      let st = null, sd = 120 * 120, infNear = false;
+      for (const e of w.units) {
+        if (!e.alive || e.team === u.team) continue;
+        const d2 = V.distance2(e.pos, u.pos);
+        if (e.kind === 'infantry' && d2 < 40 * 40) { infNear = true; break; }
+        if (e.kind === 'turret' && d2 < sd && !S.chargeOn(w, e.id) && (e.type === 'shieldgen' || e.type === 'aabattery' || e.type === 'ioncannon' || e.type === 'nest' || e.type === 'battery')) { sd = d2; st = e; }
+      }
+      if (st && !infNear) { ai.mode = 'sabotage'; ai.job = st.id; ai.dx = st.pos.x; ai.dz = st.pos.z; ai.dr = st.r + 2.5; return true; }
+    }
+    // lay mines on the approach to a post we hold
+    if (w.t > (ai.mineT || 0) && u.altT <= 0 && w.units.some(e => e.alive && e.team !== u.team && e.kind === 'vehicle')) {
+      const mine = w.cps.filter(c => c.owner === u.team), en = w.cps.filter(c => c.owner !== u.team);
+      if (mine.length && en.length) {
+        let bc = null, bd = 1e9;
+        for (const c of mine) { const d = Math.hypot(c.pos.x - u.pos.x, c.pos.z - u.pos.z); if (d < bd) { bd = d; bc = c; } }
+        let ec = null, ed = 1e9; for (const c of en) { const d = Math.hypot(c.pos.x - bc.pos.x, c.pos.z - bc.pos.z); if (d < ed) { ed = d; ec = c; } }
+        for (const e of w.units) if (e.alive && e.team !== u.team && e.kind === 'vehicle') { const d = Math.hypot(e.pos.x - bc.pos.x, e.pos.z - bc.pos.z); if (d < ed && d < 500) { ed = d; ec = { pos: e.pos }; } }
+        const dx = ec.pos.x - bc.pos.x, dz = ec.pos.z - bc.pos.z, dl = Math.hypot(dx, dz) || 1, off = bc.r + 10 + R.next() * 24, lat = (R.next() - 0.5) * 30;
+        ai.mode = 'mine'; ai.dx = bc.pos.x + dx / dl * off - dz / dl * lat; ai.dz = bc.pos.z + dz / dl * off + dx / dl * lat; ai.dr = 2.5; ai.job = -1;
+        if (bd < 160) return true;
+      }
+    }
+    return false;
+  }
+
+  // ── infantry per-tick ────────────────────────────────────────
+  function aiInfantry(w, u, dt) {
+    const ai = u.ai, W = E.WEAPONS[u.def.weapon];
+    if (u.stance === undefined) S.initInfantry(w, u);
+    S.infantryTick(w, u, dt);
+    if (u.vaultD) { S.stepInfantry(w, u, dt, 0, 0, 0, false, false, false); return; }
+    ai.thinkT -= dt;
+    if (ai.thinkT <= 0) { ai.thinkT = 0.3 + w.rng.next() * 0.2; think(w, u); }
+    let tg = S.target(w, u);
+    if (tg && tg.kind === 'fighter' && tg.pos.y - w.terrain.height(tg.pos.x, tg.pos.z) > 200) tg = null;
+    let wx = 0, wz = 0, smul = 1, crouch = false, sprint = false;
+    const mode = ai.mode;
+    // movement intent toward the destination
+    let ddx = ai.dx - u.pos.x, ddz = ai.dz - u.pos.z, dd = Math.hypot(ddx, ddz);
+    const atSpot = dd < ai.dr;
+    // peek / hide cycle at tall cover; stand / crouch at low cover
+    let exposed = true;
+    if (mode === 'fight' && ai.cov && atSpot) {
+      ai.peekT -= dt;
+      if (ai.peekT <= 0) { ai.peeking = !ai.peeking; ai.peekT = ai.peeking ? 1.1 + w.rng.next() * 1.4 : 1.4 + w.rng.next() * 1.8; if (!tg) ai.peeking = false; }
+      exposed = ai.peeking;
+      if (ai.tall && ai.peeking) { ddx = ai.px - u.pos.x; ddz = ai.pz - u.pos.z; dd = Math.hypot(ddx, ddz); }
+      else if (ai.tall && !ai.peeking) { ddx = ai.cx - u.pos.x; ddz = ai.cz - u.pos.z; dd = Math.hypot(ddx, ddz); }
+      crouch = !exposed || (!ai.tall && (u.supp || 0) > 0.3);
+      wx = dd > 0.35 ? ddx / dd * 0.6 : 0; wz = dd > 0.35 ? ddz / dd * 0.6 : 0;
+      ai.inCover = true;
+    } else {
+      ai.inCover = false;
+      if (dd > ai.dr && dd < 1e8) {
+        wx = ddx / dd; wz = ddz / dd;
+        if (!tg && dd > 28 && mode !== 'heal' && (u.supp || 0) < 0.3) sprint = true;
+        if (mode === 'retreat' || mode === 'kite') sprint = true;
+        if (mode === 'advance') sprint = (u.supp || 0) < 0.3 && dd > 8 && !(tg && ai.expose && V.distance(u.pos, tg.pos) < 60);
+      }
+      if (mode === 'fight' && !ai.cov && tg) { // no cover: strafe and keep pushing
+        const tx = tg.pos.x - u.pos.x, tz = tg.pos.z - u.pos.z, d = Math.hypot(tx, tz) || 1;
+        wx = -tz / d * ai.strafe * 0.55; wz = tx / d * ai.strafe * 0.55; smul = 0.8;
+        crouch = (u.supp || 0) > 0.5;
+      }
+      if (mode === 'advance' && tg) smul = 0.9;
+    }
+    // unstick
+    ai.stuckT = (ai.stuckT || 0) + dt;
+    if (ai.stuckT > 0.8) {
+      const moved = Math.hypot(u.pos.x - (ai.lx || 0), u.pos.z - (ai.lz || 0));
+      if ((wx || wz) && moved < 0.5 && !ai.inCover) { ai.nudge = w.t + 1.2; ai.nudgeS = w.rng.sign(); }
+      ai.lx = u.pos.x; ai.lz = u.pos.z; ai.stuckT = 0;
+    }
+    if (ai.nudge > w.t) { const c = wx, d = wz; wx = -d * ai.nudgeS * 0.9 + c * 0.2; wz = c * ai.nudgeS * 0.9 + d * 0.2; }
+    // snipers hold still to shoot
+    if (u.type === 'sniper' && tg && !ai.retreat && mode === 'fight' && !ai.cov) { wx *= 0.2; wz *= 0.2; crouch = true; }
+    // aim and fire
+    let aimed = false;
+    if (tg) {
+      S.leadPoint(u, tg, W, tmpA); S.eyeOf(u, tmpB);
+      const ax = tmpA.x - tmpB.x, ay = tmpA.y - tmpB.y, az = tmpA.z - tmpB.z;
+      const wantY = Math.atan2(ax, az) + ai.errY, wantP = Math.atan2(ay, Math.hypot(ax, az)) + ai.errP;
+      const tr = 7 * (1 - 0.45 * (u.supp || 0)) * (u.type === 'heavy' ? 0.8 : 1);
+      u.aimYaw = S.turnTo(u.aimYaw, wantY, tr * dt); u.aimPitch = S.turnTo(u.aimPitch, wantP, 5 * dt);
+      u.yaw = u.aimYaw;
+      const al = Math.abs(S.angDiff(wantY, u.aimYaw)) + Math.abs(wantP - u.aimPitch);
+      aimed = al < 0.07;
+      const d = V.distance(u.pos, tg.pos);
+      if (u.tool) u.tool = 0;
+      if (exposed && !sprint && mode !== 'heal') {
+        if (ai.pauseT > 0) { ai.pauseT -= dt; if (ai.cov && !ai.tall) crouch = true; }
+        else {
+          if (ai.burstT <= 0) ai.burstT = 0.5 + w.rng.next() * 0.9;
+          if (aimed && d < W.range) S.landFire(w, u, S.dirOf(u.aimYaw, u.aimPitch, tmpA), 0);
+          ai.burstT -= dt; if (ai.burstT <= 0 || u.hot) ai.pauseT = (0.4 + w.rng.next() * 0.8) * (u.type === 'sniper' ? 0.4 : 1);
+        }
+      }
+      if (u.altT <= 0 && aimed) {
+        const alt = u.def.alt;
+        if (alt === 'grenade' && tg.kind !== 'fighter' && d > 10 && d < 34 && w.rng.next() < 0.03) S.landAlt(w, u, S.dirOf(u.aimYaw, Math.min(0.9, u.aimPitch + 0.28 + d * 0.006), tmpA), 0);
+        else if (alt === 'rocket' && tg.kind !== 'infantry' && d < E.WEAPONS.rocket.range && w.rng.next() < 0.1) S.landAlt(w, u, S.dirOf(u.aimYaw, u.aimPitch + 0.03, tmpA), S.lockId(w, u, tg));
+      }
+    } else if (wx || wz) {
+      u.yaw = S.turnTo(u.yaw, Math.atan2(wx, wz), 6 * dt); u.aimYaw = u.yaw; u.aimPitch *= 0.9;
+    }
+    // tools and abilities
+    if (mode === 'heal' || u.def.alt === 'medburst') {
+      if (u.def.alt === 'medburst' && u.altT <= 0 && (w.tickN + u.id) % 20 === 0) {
+        const R2 = E.WEAPONS.medburst.radius * E.WEAPONS.medburst.radius * 0.8;
+        for (const a of w.units) if (a.alive && a.team === u.team && a.kind === 'infantry' && a.hp < a.maxHp * 0.6 && V.distance2(a.pos, u.pos) < R2) { S.landAlt(w, u, tmpA, 0); break; }
+      }
+    }
+    if (u.type === 'engineer') engineerTick(w, u, dt, tg, dd);
+    if ((u.supp || 0) > 0.45) crouch = true;
+    S.stepInfantry(w, u, dt, wx, wz, smul, false, crouch, sprint);
+  }
+
+  function engineerTick(w, u, dt, tg, dd) {
+    const ai = u.ai, mode = ai.mode;
+    if (mode === 'repair' && !tg) {
+      const t = w.umap.get(ai.job);
+      if (t && t.alive && V.distance(t.pos, u.pos) < t.r + 7) {
+        u.tool = 1;
+        const dx = t.pos.x - u.pos.x, dz = t.pos.z - u.pos.z;
+        u.aimYaw = S.turnTo(u.aimYaw, Math.atan2(dx, dz), 8 * dt); u.yaw = u.aimYaw;
+        S.engRepair(w, u, t, dt);
+        return;
+      }
+    } else if (mode === 'sabotage' && !tg) {
+      const t = w.umap.get(ai.job);
+      if (t && t.alive && V.distance(t.pos, u.pos) < t.r + 5) {
+        u.tool = 2;
+        const dx = t.pos.x - u.pos.x, dz = t.pos.z - u.pos.z;
+        u.aimYaw = Math.atan2(dx, dz); u.yaw = u.aimYaw; u.aimPitch = 0;
+        S.engSabotage(w, u, S.dirOf(u.aimYaw, 0.1, tmpC), dt);
+        return;
+      }
+    } else if (mode === 'mine' && dd < 3) {
+      ai.mineT = w.t + 22 + w.rng.next() * 20;
+      S.landAlt(w, u, tmpC, 0); ai.mode = 'move';
+      return;
+    }
+    // under fire with nothing to hide behind: put up a barricade
+    if (tg && !ai.cov && !ai.retreat && (u.supp || 0) > 0.25 && w.t >= (u.buildT || 0) && V.distance(u.pos, tg.pos) > 15) {
+      const dx = tg.pos.x - u.pos.x, dz = tg.pos.z - u.pos.z;
+      u.aimYaw = Math.atan2(dx, dz); u.yaw = u.aimYaw;
+      S.engBuild(w, u);
+    }
+    if (u.tool !== 0 && !(mode === 'repair' || mode === 'sabotage')) u.tool = 0;
+  }
+
+  // ── vehicles ─────────────────────────────────────────────────
+  function pickVehTarget(w, u) {
+    const W = E.WEAPONS[u.def.weapon], pr = VPRIO[u.type] || VPRIO.tank, T = w.terrain;
+    let best = null, bs = 0; S.eyeOf(u, tmpA);
+    const aa = u.type === 'aa';
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      const pf = pr[keyOf(e)]; if (!pf) continue;
+      const d = V.distance(u.pos, e.pos);
+      let range = W.range;
+      if (e.kind === 'fighter') { if (!aa) continue; range = E.WEAPONS.aamissile.range; if (e.pos.y - T.height(e.pos.x, e.pos.z) > E.LAND.aaMaxAlt) continue; }
+      if (d > range) continue;
+      let s = pf * 1000 / (d + 60);
+      if (e.id === u.ai.tid) s *= 1.3;
+      if (s <= bs) continue;
+      if (e.kind !== 'fighter' && !S.los(w, tmpA, S.centerOf(e, tmpB))) continue;
+      bs = s; best = e;
+    }
+    return best;
+  }
+  function aiVehicle(w, u, dt) {
+    const ai = u.ai, W = E.WEAPONS[u.def.weapon], R = w.rng;
+    ai.thinkT -= dt;
+    if (ai.thinkT <= 0) {
+      ai.thinkT = 0.3 + R.next() * 0.2;
+      const t = pickVehTarget(w, u); ai.tid = t ? t.id : 0;
+      const k = w.cfg.aiErr * 0.5; ai.errY = R.gauss() * k; ai.errP = R.gauss() * k * 0.6;
+      ai.strafeT -= 0.4; if (ai.strafeT <= 0) { ai.strafe = -ai.strafe; ai.strafeT = 1 + R.next() * 2.2; }
+      if (w.t > ai.offT) { ai.offT = w.t + 6 + R.next() * 8; const a = R.angle(), d = Math.sqrt(R.next()) * 30; ai.off.x = Math.cos(a) * d; ai.off.z = Math.sin(a) * d; }
+      // destination: retreat to base when crippled, else escort the nearest friendly squad, else a post
+      const hpf = u.hp / u.maxHp;
+      if (!ai.retreat && (u.crip || hpf < 0.3)) ai.retreat = true; else if (ai.retreat && hpf > 0.7) ai.retreat = false;
+      ai.wait = false;
+      if (ai.retreat) { const h = w.cps.find(c => c.home === u.team); ai.dx = h.pos.x - (u.team === 'aegis' ? 14 : -14); ai.dz = h.pos.z; ai.dr = 8; }
+      else {
+        let sq = null, bd = 1e9;
+        for (const s of w.squads) { if (s.team !== u.team || s.n < 2) continue; const d = Math.hypot(s.cx - u.pos.x, s.cz - u.pos.z); if (d < bd) { bd = d; sq = s; } }
+        if (u.type === 'aa') {
+          // stay with friendly ground forces under the sky
+          if (sq) { ai.dx = sq.cx + ai.off.x; ai.dz = sq.cz + ai.off.z; ai.dr = 24; } else { const gp = S.goalPos(w, u, tmpC); ai.dx = gp.x; ai.dz = gp.z; ai.dr = 30; }
+        } else if (sq && bd < 500 && sq.goal) {
+          ai.dx = sq.goal.x + ai.off.x; ai.dz = sq.goal.z + ai.off.z; ai.dr = 10;
+          const sd = Math.hypot(sq.cx - u.pos.x, sq.cz - u.pos.z);
+          ai.wait = u.type === 'tank' && sd > 55 && sd < 400;    // don't outrun the escort
+        } else { const gp = S.goalPos(w, u, tmpC); ai.dx = gp.x; ai.dz = gp.z; ai.dr = 14; }
+      }
+    }
+    const tg = S.target(w, u);
+    let gx = ai.dx - u.pos.x, gz = ai.dz - u.pos.z; const dg = Math.hypot(gx, gz);
+    let throttle = dg > ai.dr ? 1 : 0, des = dg > 1 ? Math.atan2(gx, gz) : u.yaw;
+    if (ai.wait) throttle = 0.15;
+    if (ai.retreat && dg < ai.dr) throttle = 0;
+    let brake = false;
+    if (tg) {
+      const tx = tg.pos.x - u.pos.x, tz = tg.pos.z - u.pos.z, d = Math.hypot(tx, tz) || 1;
+      const al = S.aimTurret(w, u, tg, dt, 2.6);
+      S.dirOf(u.aimYaw, u.aimPitch, tmpA);
+      if (tg.kind === 'fighter') {
+        if (al < 0.1 && d < W.range) S.landFire(w, u, tmpA, 0);
+        if (u.def.alt && u.altT <= 0 && al < 0.4) S.landAlt(w, u, tmpA, S.lockId(w, u, tg));
+      } else {
+        if (al < 0.06 && d < W.range && !u.aimLimited) S.landFire(w, u, tmpA, 0);
+        if (u.def.alt === 'coax' && tg.kind === 'infantry' && d < E.WEAPONS.coax.range && al < 0.12) S.landAlt(w, u, tmpA, 0);
+      }
+      const faceYaw = Math.atan2(tx, tz);
+      if (u.type === 'tank') {
+        // armored front toward the enemy; close up when far, back off when near
+        if (d < W.range * 0.9) { des = faceYaw; throttle = d < W.range * 0.4 ? -0.5 : (dg > ai.dr && !ai.wait && d > W.range * 0.65 ? 0.4 : 0); if (ai.retreat) { des = Math.atan2(gx, gz); throttle = dg > ai.dr ? 0.7 : 0; } }
+      } else if (u.type === 'skiff') {
+        if (d < W.range * 0.85) { des = faceYaw + ai.strafe * 0.9; throttle = d < 60 ? -0.4 : 0.85; }
+        else if (u.aimLimited) des = faceYaw;
+      } else if (tg.kind === 'fighter') { throttle *= 0.3; }
+      else if (u.aimLimited) des = faceYaw;
+    } else { u.aimYaw = S.turnTo(u.aimYaw, u.yaw, 1.5 * dt); u.aimPitch *= 0.95; }
+    const dy = S.angDiff(des, u.yaw);
+    if (Math.abs(dy) > 1.1) throttle *= 0.3;
+    S.stepVehicle(w, u, dt, throttle, E.clamp(dy * 2.2, -1, 1), brake);
+  }
+
+  S.systems.push(squadSystem);
+  Object.assign(S, { assignSquad, aiInfantry, aiVehicle, squadOf, pickLandTarget: pickTarget, pickVehTarget });
+})(window.E = window.E || {});
+
+// ---- js/sim/land_cover.js ----
+// LAND cover: destructible cover and fortifications. Generated once from the
+// world seed (own RNG, so w.rng is untouched), stored on w.cover, registered as
+// a world obstacle (projectiles and sightlines stop on it) and queried by the
+// movement and AI code.
+//
+// A cover piece is an oriented box:
+//   { id, type, x, y, z,        centre (y = ground under it)
+//     yaw,                      rotation about +y, same convention as units: local +z -> (sin yaw, cos yaw);
+//                               three.js: mesh.rotation.y = yaw
+//     hw, hd,                   half width (local x) and half depth (local z), metres
+//     h, h0,                    current and original height (shrinks as it degrades)
+//     hp, maxHp, stage,         stage 0 intact, 1 damaged, 2 broken (renderer: swap/crack the model)
+//     alive, dyn, team, ttl }   dyn = built or left at runtime (wreck, engineer barrier)
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3;
+  const CELL = 32;
+  const key = (cx, cz) => (cx + 512) * 2048 + (cz + 512);
+  let HC = null, HNX = 0, HNZ = 0;     // last collision: piece + outward normal
+  let TC = null;                       // piece the last trace hit
+  const TR = { t: 0, surf: 'ground', hit: coverHit };
+  const EXPLOSIVE = { rocket: 1, missile: 1, shell: 1, grenade: 1, bomb: 1, turbo: 1, orbital: 1 };
+
+  // ── store ────────────────────────────────────────────────────
+  function initCover(w) { w.cover = []; w.coverGrid = new Map(); w.coverId = 1; w.coverEvScan = { arr: null, n: 0 }; }
+  function gridAdd(w, c) {
+    const R = Math.hypot(c.hw, c.hd), x0 = Math.floor((c.x - R) / CELL), x1 = Math.floor((c.x + R) / CELL), z0 = Math.floor((c.z - R) / CELL), z1 = Math.floor((c.z + R) / CELL);
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const k = key(i, j); let a = w.coverGrid.get(k); if (!a) { a = []; w.coverGrid.set(k, a); } a.push(c);
+    }
+  }
+  function gridRemove(w, c) {
+    const R = Math.hypot(c.hw, c.hd), x0 = Math.floor((c.x - R) / CELL), x1 = Math.floor((c.x + R) / CELL), z0 = Math.floor((c.z - R) / CELL), z1 = Math.floor((c.z + R) / CELL);
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const a = w.coverGrid.get(key(i, j)); if (!a) continue;
+      const k = a.indexOf(c); if (k >= 0) { a[k] = a[a.length - 1]; a.pop(); }
+    }
+  }
+  function addCover(w, type, x, z, yaw, o) {
+    o = o || {};
+    const D = E.COVER[type], T = w.terrain;
+    const wd = o.w || D.w[0], hp = Math.round((o.hp || D.hp) * (o.hpMul || 1));
+    const y = T.ground(x, z) - 0.1;
+    const c = { id: w.coverId++, type, x, y, z, yaw, hw: wd / 2, hd: (o.d || D.d) / 2, h: D.h, h0: D.h, hp, maxHp: hp, stage: 0, alive: true,
+                dyn: !!o.dyn, team: o.team || null, ttl: o.ttl || 0, c: Math.cos(yaw), s: Math.sin(yaw), def: D, round: !!D.round, idx: w.cover.length };
+    w.cover.push(c); gridAdd(w, c);
+    return c;
+  }
+
+  // ── geometry ─────────────────────────────────────────────────
+  // circle (x,z,r) vs piece; returns penetration depth (>0) and sets HNX/HNZ
+  function circleBox(c, x, z, r) {
+    const dx = x - c.x, dz = z - c.z;
+    const lu = dx * c.c - dz * c.s, lv = dx * c.s + dz * c.c;
+    const qu = lu < -c.hw ? -c.hw : lu > c.hw ? c.hw : lu, qv = lv < -c.hd ? -c.hd : lv > c.hd ? c.hd : lv;
+    let nu = lu - qu, nv = lv - qv, pen;
+    const d2 = nu * nu + nv * nv;
+    if (d2 > 1e-8) {
+      if (d2 >= r * r) return 0;
+      const d = Math.sqrt(d2); pen = r - d; nu /= d; nv /= d;
+    } else { // centre inside: leave through the nearest face
+      const pu = c.hw - Math.abs(lu), pv = c.hd - Math.abs(lv);
+      if (pu < pv) { nu = lu < 0 ? -1 : 1; nv = 0; pen = pu + r; } else { nu = 0; nv = lv < 0 ? -1 : 1; pen = pv + r; }
+    }
+    HNX = nu * c.c + nv * c.s; HNZ = -nu * c.s + nv * c.c;
+    return pen;
+  }
+  // push a ground body out of every solid piece. mode 0 infantry, 1 vehicle (crushes `crush` pieces when
+  // fast). Returns the deepest blocking piece (HC/HNX/HNZ describe it) or null.
+  function collide(w, pos, r, feetY, mode, spd, out) {
+    if (out) out.c = null;
+    const g = w.coverGrid; HC = null; if (!g || !g.size) return null;
+    const x0 = Math.floor((pos.x - r - 8) / CELL), x1 = Math.floor((pos.x + r + 8) / CELL), z0 = Math.floor((pos.z - r - 8) / CELL), z1 = Math.floor((pos.z + r + 8) / CELL);
+    let best = 0, bc = null, bnx = 0, bnz = 0;
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const a = g.get(key(i, j)); if (!a) continue;
+      for (let k = 0; k < a.length; k++) {
+        const c = a[k]; if (!c.alive) continue;
+        if (feetY >= c.y + c.h - 0.2) continue;
+        const pen = circleBox(c, pos.x, pos.z, r); if (pen <= 0) continue;
+        if (mode === 1 && c.def.crush && spd > 5) { coverDamage(w, c, 60 * spd * (c.def.hard ? 0.4 : 1) + 80, null, 'ram'); if (c.alive) { pos.x += HNX * pen * 0.3; pos.z += HNZ * pen * 0.3; } continue; }
+        pos.x += HNX * pen; pos.z += HNZ * pen;
+        if (pen > best) { best = pen; bc = c; bnx = HNX; bnz = HNZ; }
+      }
+    }
+    HC = bc; HNX = bnx; HNZ = bnz;
+    if (out) { out.c = bc; out.nx = bnx; out.nz = bnz; }
+    return bc;
+  }
+  function blockedAt(w, x, z, r, feetY) {
+    const g = w.coverGrid; if (!g || !g.size) return false;
+    const x0 = Math.floor((x - r) / CELL), x1 = Math.floor((x + r) / CELL), z0 = Math.floor((z - r) / CELL), z1 = Math.floor((z + r) / CELL);
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const a = g.get(key(i, j)); if (!a) continue;
+      for (let k = 0; k < a.length; k++) { const c = a[k]; if (c.alive && feetY < c.y + c.h - 0.2 && circleBox(c, x, z, r) > 0) return true; }
+    }
+    return false;
+  }
+  // segment (a + s*t, t in 0..1) vs one box; entry t or -1 (segments that start inside are ignored)
+  function segBox(c, ax, ay, az, sx, sy, sz) {
+    const dx = ax - c.x, dz = az - c.z;
+    const au = dx * c.c - dz * c.s, av = dx * c.s + dz * c.c, ay0 = ay - c.y;
+    const su = sx * c.c - sz * c.s, sv = sx * c.s + sz * c.c;
+    if (au > -c.hw && au < c.hw && av > -c.hd && av < c.hd && ay0 > 0 && ay0 < c.h) return -1;
+    let t0 = 0, t1 = 1;
+    // u slab
+    if (su > -1e-9 && su < 1e-9) { if (au < -c.hw || au > c.hw) return -1; }
+    else { let a = (-c.hw - au) / su, b = (c.hw - au) / su; if (a > b) { const t = a; a = b; b = t; } if (a > t0) t0 = a; if (b < t1) t1 = b; if (t0 > t1) return -1; }
+    if (sv > -1e-9 && sv < 1e-9) { if (av < -c.hd || av > c.hd) return -1; }
+    else { let a = (-c.hd - av) / sv, b = (c.hd - av) / sv; if (a > b) { const t = a; a = b; b = t; } if (a > t0) t0 = a; if (b < t1) t1 = b; if (t0 > t1) return -1; }
+    if (sy > -1e-9 && sy < 1e-9) { if (ay0 < 0 || ay0 > c.h) return -1; }
+    else { let a = -ay0 / sy, b = (c.h - ay0) / sy; if (a > b) { const t = a; a = b; b = t; } if (a > t0) t0 = a; if (b < t1) t1 = b; if (t0 > t1) return -1; }
+    return t0;
+  }
+  // grid-walk a segment; returns the nearest hit t (<= maxT) or -1. any=true stops at the first hit.
+  function segWalk(w, ax, ay, az, sx, sy, sz, maxT, any) {
+    const g = w.coverGrid; TC = null; if (!g || !g.size) return -1;
+    let cx = Math.floor(ax / CELL), cz = Math.floor(az / CELL);
+    const ex = Math.floor((ax + sx) / CELL), ez = Math.floor((az + sz) / CELL);
+    const stx = sx > 0 ? 1 : -1, stz = sz > 0 ? 1 : -1;
+    const tdx = sx !== 0 ? Math.abs(CELL / sx) : 1e9, tdz = sz !== 0 ? Math.abs(CELL / sz) : 1e9;
+    let tmx = sx > 0 ? ((cx + 1) * CELL - ax) / sx : sx < 0 ? (cx * CELL - ax) / sx : 1e9;
+    let tmz = sz > 0 ? ((cz + 1) * CELL - az) / sz : sz < 0 ? (cz * CELL - az) / sz : 1e9;
+    let best = maxT + 1e-6, bc = null;
+    for (let n = 0; n < 200; n++) {
+      const a = g.get(key(cx, cz));
+      if (a) for (let k = 0; k < a.length; k++) {
+        const c = a[k]; if (!c.alive) continue;
+        const t = segBox(c, ax, ay, az, sx, sy, sz);
+        if (t >= 0 && t < best) { best = t; bc = c; if (any) { TC = c; return t; } }
+      }
+      if (cx === ex && cz === ez) break;
+      const nx = tmx < tmz ? tmx : tmz;
+      if (best <= nx) break;
+      if (tmx < tmz) { cx += stx; tmx += tdx; } else { cz += stz; tmz += tdz; }
+    }
+    TC = bc;
+    return bc ? best : -1;
+  }
+
+  // ── obstacle registration ────────────────────────────────────
+  function trace(w, p, ax, ay, az, sx, sy, sz, maxT) {
+    const t = segWalk(w, ax, ay, az, sx, sy, sz, maxT, false);
+    if (t < 0) return null;
+    TR.t = t; TR.surf = 'ground'; return TR;
+  }
+  function blocks(w, a, b) { return segWalk(w, a.x, a.y, a.z, b.x - a.x, b.y - a.y, b.z - a.z, 1, true) >= 0; }
+  function coverHit(w, p, pos) {
+    const c = TC; if (!c || !c.alive) return;
+    const W = E.WEAPONS[p.wk] || {};
+    if (p.splash > 0) return; // splash is applied by the impact scan
+    let d = p.dmg * (c.def.hard ? 0.25 : 0.9) * (W.cv || 1);
+    const su = p.uid ? w.umap.get(p.uid) : null; if (su && su.m && su.m.coverDmg) d *= su.m.coverDmg;
+    coverDamage(w, c, d, p, p.wk);
+  }
+  S.obstacles.push({ trace, blocks });
+
+  // ── damage ───────────────────────────────────────────────────
+  function stageOf(c) { const f = c.hp / c.maxHp; return f > 0.66 ? 0 : f > 0.33 ? 1 : 2; }
+  function coverDamage(w, c, d, src, wk) {
+    if (!c.alive || !(d > 0)) return;
+    if (w.landStats) w.landStats.coverHits++;
+    c.hp -= d;
+    if (c.hp <= 0) { breakCover(w, c, wk); return; }
+    const s = stageOf(c);
+    if (s !== c.stage) {
+      c.stage = s; c.h = c.h0 * (1 - 0.2 * s);
+      w.events.push({ type: 'coverStage', id: c.id, ctype: c.type, stage: s, frac: c.hp / c.maxHp, pos: { x: c.x, y: c.y, z: c.z }, h: c.h });
+    }
+  }
+  function breakCover(w, c, wk) {
+    if (!c.alive) return;
+    c.alive = false; c.hp = 0; c.stage = 3; gridRemove(w, c);
+    w.landStats && (w.landStats.coverBroken++);
+    w.events.push({ type: 'coverBreak', id: c.id, ctype: c.type, pos: { x: c.x, y: c.y, z: c.z }, yaw: c.yaw, hw: c.hw, hd: c.hd, h: c.h0, wk: wk || null, dyn: c.dyn });
+  }
+  function repairCover(w, c, amt) {
+    if (!c.alive || c.hp >= c.maxHp) return 0;
+    const a = Math.min(amt, c.maxHp - c.hp); c.hp += a;
+    const s = stageOf(c); if (s !== c.stage) { c.stage = s; c.h = c.h0 * (1 - 0.2 * s); w.events.push({ type: 'coverStage', id: c.id, ctype: c.type, stage: s, frac: c.hp / c.maxHp, pos: { x: c.x, y: c.y, z: c.z }, h: c.h }); }
+    return a;
+  }
+  // damage everything in a blast: used by impact scan and by wreck / charge explosions
+  function blastCover(w, x, y, z, R, dmg, mul) {
+    const g = w.coverGrid; if (!g || !g.size) return;
+    const x0 = Math.floor((x - R - 6) / CELL), x1 = Math.floor((x + R + 6) / CELL), z0 = Math.floor((z - R - 6) / CELL), z1 = Math.floor((z + R + 6) / CELL);
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const a = g.get(key(i, j)); if (!a) continue;
+      for (let k = a.length - 1; k >= 0; k--) {
+        const c = a[k]; if (!c || !c.alive) continue;
+        const d = Math.hypot(c.x - x, c.z - z) - Math.min(c.hw, c.hd);
+        if (d < R) coverDamage(w, c, dmg * (1 - Math.max(0, d) / R) * (c.def.hard ? 0.7 : 1) * (mul || 1), null, 'blast');
+      }
+    }
+  }
+
+  // ── runtime: ttl, wreck lifetime, impact scan ────────────────
+  function coverSystem(w, dt) {
+    // splash from any projectile that exploded this tick
+    const sc = w.coverEvScan, ev = w.events;
+    let from = sc.arr === ev ? sc.n : 0;
+    for (let i = from; i < ev.length; i++) {
+      const e = ev[i];
+      if (e.type === 'impact' && e.splash > 0) {
+        const W = E.WEAPONS[e.wk]; if (!W) continue;
+        blastCover(w, e.pos.x, e.pos.y, e.pos.z, e.splash, W.dmg * 0.85, (W.cv || 1) * 1.3);
+      }
+    }
+    sc.arr = ev; sc.n = ev.length;
+    if ((w.tickN & 7) === 0) {
+      for (let i = w.cover.length - 1; i >= 0; i--) {
+        const c = w.cover[i];
+        if (c.alive && c.ttl > 0) { c.ttl -= dt * 8; if (c.ttl <= 0) breakCover(w, c, 'expired'); }
+        if (!c.alive && c.dyn) { w.cover.splice(i, 1); }
+      }
+      // indices of static pieces are stable (only dyn pieces are ever spliced, and they come last)
+    }
+  }
+
+  // ── engineer fortifications ──────────────────────────────────
+  function buildBarrier(w, u) {
+    const m = u.m || {};
+    const yaw = u.aimYaw, d = 3.0;
+    const x = u.pos.x + Math.sin(yaw) * d, z = u.pos.z + Math.cos(yaw) * d;
+    if (blockedAt(w, x, z, 1.4, u.pos.y)) return null;
+    if (w.terrain.height(x, z) < w.terrain.waterLevel) return null;
+    // the wall stands across the line of fire
+    const c = addCover(w, 'shield', x, z, yaw, { dyn: true, team: u.team, hpMul: m.cover || 1, ttl: 150 });
+    c.owner = u.id;
+    u.builds = u.builds || [];
+    u.builds.push(c); while (u.builds.length > 3) { const o = u.builds.shift(); if (o.alive) breakCover(w, o, 'expired'); }
+    w.events.push({ type: 'build', uid: u.id, ctype: c.type, cid: c.id, team: u.team, pos: { x, y: c.y, z } });
+    return c;
+  }
+  // wrecks become cover
+  function leaveWreck(w, u) {
+    const big = u.type === 'tank' ? 1 : 0.7;
+    const c = addCover(w, 'wreck', u.pos.x, u.pos.z, u.yaw, { dyn: true, w: 6.2 * big, d: 3.0 * big, hp: 650 * big, ttl: 110 });
+    c.h0 = c.h = 1.6 * big;
+    return c;
+  }
+
+  // ── generation ───────────────────────────────────────────────
+  function freeSpot(w, x, z, rad) {
+    const g = w.coverGrid, x0 = Math.floor((x - rad - 8) / CELL), x1 = Math.floor((x + rad + 8) / CELL), z0 = Math.floor((z - rad - 8) / CELL), z1 = Math.floor((z + rad + 8) / CELL);
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const a = g.get(key(i, j)); if (!a) continue;
+      for (let k = 0; k < a.length; k++) { const c = a[k]; if (Math.hypot(c.x - x, c.z - z) < rad + Math.hypot(c.hw, c.hd) * 0.8) return false; }
+    }
+    return true;
+  }
+  function genCover(w) {
+    initCover(w);
+    const rng = E.RNG((w.planet.seed ^ 0x2c0ffee5) >>> 0), T = w.terrain, cvv = (w.planet.biomeDef && w.planet.biomeDef.cover) || {};
+    const A = w.layout.arena, cps = w.cps;
+    const okSpot = (x, z) => Math.abs(x) < A.x * 1.05 && Math.abs(z) < A.z * 1.05 && T.height(x, z) > T.waterLevel + 0.4 && T.slope(x, z) < 0.55;
+    const nearCp = (x, z, k) => { for (const c of cps) if (Math.hypot(c.pos.x - x, c.pos.z - z) < c.r * k) return true; return false; };
+    const place = (type, x, z, yaw, o) => {
+      const D = E.COVER[type];
+      o = o || {};
+      o.w = D.w[0] + rng.next() * (D.w[1] - D.w[0]); o.hpMul = 0.9 + rng.next() * 0.2;
+      if (D.round) o.d = o.w * (0.7 + rng.next() * 0.3);
+      if (!okSpot(x, z) || nearCp(x, z, 0.5) || !freeSpot(w, x, z, Math.max(o.w, o.d || D.d) * 0.5 + 1)) return null;
+      return addCover(w, type, x, z, yaw, o);
+    };
+    // fortifications: crescents around every post, facing outward, plus nests of cover on the approaches
+    const FORT = [['sandbag', 4], ['barrier', 2], ['crates', 1.6], ['trap', 1.0], ['bunker', 0.6]];
+    cps.forEach((c, ci) => {
+      const n = c.home ? 11 : 8;
+      for (let i = 0; i < n; i++) {
+        const a = (i + rng.next() * 0.6) / n * E.TAU, rr = c.r * (1.05 + rng.next() * 0.55);
+        const x = c.pos.x + Math.cos(a) * rr, z = c.pos.z + Math.sin(a) * rr;
+        const type = rng.pickW(FORT);
+        place(type, x, z, Math.atan2(Math.cos(a), Math.sin(a)));  // wall faces the post
+      }
+    });
+    const order = cps.map((c, i) => i).sort((a, b) => cps[a].pos.x - cps[b].pos.x);
+    for (let k = 0; k + 1 < order.length; k++) {
+      const a = cps[order[k]].pos, b = cps[order[k + 1]].pos, dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz) || 1;
+      const yaw = Math.atan2(dx, dz);
+      const nc = 4 + (rng.next() * 3 | 0);
+      for (let q = 0; q < nc; q++) {
+        const t = 0.18 + 0.64 * (q + rng.next() * 0.8) / nc, off = (rng.next() - 0.5) * 90;
+        const bx = a.x + dx * t - dz / L * off, bz = a.z + dz * t + dx / L * off;
+        const m = 2 + (rng.next() * 3 | 0);
+        for (let i = 0; i < m; i++) place(rng.pickW(FORT), bx + (rng.next() - 0.5) * 22, bz + (rng.next() - 0.5) * 22, yaw + (rng.next() - 0.5) * 0.7);
+      }
+    }
+    // natural cover, by biome
+    const wt = {};
+    let tot = 0;
+    for (const k in cvv) {
+      const m = E.COVER_BIOME[k]; if (!m || !(cvv[k] > 0)) continue;
+      for (const [type, f] of m) { wt[type] = (wt[type] || 0) + cvv[k] * f; tot += cvv[k] * f; }
+    }
+    const pairs = Object.keys(wt).map(k => [k, wt[k]]);
+    if (pairs.length) {
+      const N = Math.min(190, Math.round(18 + tot * 150));
+      let tries = 0, made = 0;
+      while (made < N && tries++ < N * 6) {
+        let x, z;
+        if (rng.next() < 0.55) { // along approaches
+          const k = rng.i(order.length - 1), a = cps[order[k]].pos, b = cps[order[k + 1]].pos, t = rng.next();
+          x = a.x + (b.x - a.x) * t + (rng.next() - 0.5) * 220; z = a.z + (b.z - a.z) * t + (rng.next() - 0.5) * 220;
+        } else { x = (rng.next() * 2 - 1) * A.x * 0.95; z = (rng.next() * 2 - 1) * A.z * 0.95; }
+        if (place(rng.pickW(pairs), x, z, rng.next() * E.TAU)) made++;
+      }
+    }
+    w.coverStatic = w.cover.length;
+  }
+
+  // ── AI helpers: find a firing / hiding spot ──────────────────
+  const CS = { x: 0, z: 0, c: null, px: 0, pz: 0, peek: false };
+  // best hiding spot within R of u that is shielded from a threat at (tx,tz); closer to `gx,gz` preferred.
+  // returns CS (x,z,c,peek spot) or null
+  function findCover(w, u, tx, tz, R, gx, gz, minH) {
+    const g = w.coverGrid; if (!g || !g.size) return null;
+    const x0 = Math.floor((u.pos.x - R) / CELL), x1 = Math.floor((u.pos.x + R) / CELL), z0 = Math.floor((u.pos.z - R) / CELL), z1 = Math.floor((u.pos.z + R) / CELL);
+    let best = 1e9, bc = null, bx = 0, bz = 0, n = 0;
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const a = g.get(key(i, j)); if (!a) continue;
+      for (let k = 0; k < a.length; k++) {
+        const c = a[k]; if (!c.alive || c.h < minH) continue;
+        if (c.def.vault === undefined && c.def.hard === undefined) continue;
+        if (c.occ && c.occ !== u.id && w.t - c.occT < 4) continue;
+        let dx = c.x - tx, dz = c.z - tz; const dl = Math.hypot(dx, dz); if (dl < 14) continue;
+        dx /= dl; dz /= dl;
+        const ext = Math.abs(c.hw * (dx * c.c - dz * c.s)) + Math.abs(c.hd * (dx * c.s + dz * c.c));
+        const sx = c.x + dx * (ext + 0.9), sz = c.z + dz * (ext + 0.9);
+        const dist = Math.hypot(sx - u.pos.x, sz - u.pos.z); if (dist > R) continue;
+        const sc = dist + (gx === undefined ? 0 : 0.35 * Math.hypot(sx - gx, sz - gz)) - Math.min(c.h, 2.2) * 2;
+        if (sc < best && w.terrain.height(sx, sz) > w.terrain.waterLevel) { best = sc; bc = c; bx = sx; bz = sz; }
+        if (++n > 40) break;
+      }
+    }
+    if (!bc) return null;
+    CS.c = bc; CS.x = bx; CS.z = bz;
+    // peek spot: step to the end of the wall that gives a view, still tucked in
+    const c = bc, side = ((u.id + (w.tickN >> 6)) & 1) ? 1 : -1;
+    const dx = c.x - tx, dz = c.z - tz, dl = Math.hypot(dx, dz) || 1;
+    const vs = (dx * c.s + dz * c.c) >= 0 ? 1 : -1;
+    CS.px = c.x + c.c * side * (c.hw + 0.9) + c.s * vs * (c.hd + 0.5);
+    CS.pz = c.z - c.s * side * (c.hw + 0.9) + c.c * vs * (c.hd + 0.5);
+    return CS;
+  }
+  // is a point screened from a threat by an (alive) piece? uses chest height
+  const tmpP = V.make(), tmpQ = V.make();
+  function covered(w, x, z, tx, tz, h) {
+    tmpP.x = tx; tmpP.y = w.terrain.ground(tx, tz) + 1.5; tmpP.z = tz;
+    tmpQ.x = x; tmpQ.y = w.terrain.ground(x, z) + (h || 1.0); tmpQ.z = z;
+    return blocks(w, tmpP, tmpQ);
+  }
+  // nearest alive piece to a point (for engineers, repair targets)
+  function coverNear(w, x, z, R, pred) {
+    const g = w.coverGrid; if (!g || !g.size) return null;
+    const x0 = Math.floor((x - R) / CELL), x1 = Math.floor((x + R) / CELL), z0 = Math.floor((z - R) / CELL), z1 = Math.floor((z + R) / CELL);
+    let best = null, bd = R * R;
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const a = g.get(key(i, j)); if (!a) continue;
+      for (let k = 0; k < a.length; k++) { const c = a[k]; if (!c.alive || (pred && !pred(c))) continue; const d = (c.x - x) * (c.x - x) + (c.z - z) * (c.z - z); if (d < bd) { bd = d; best = c; } }
+    }
+    return best;
+  }
+
+  // ── net ──────────────────────────────────────────────────────
+  S.net = S.net || { unit: {}, world: {} };
+  S.net.world.cover = {
+    pack(w) {
+      const dm = [], dy = [];
+      const cv = w.cover || [];
+      for (let i = 0; i < cv.length; i++) {
+        const c = cv[i];
+        if (c.dyn) { if (c.alive) dy.push([c.id, c.type, Math.round(c.x * 10) / 10, Math.round(c.z * 10) / 10, Math.round(c.yaw * 100) / 100, Math.round(c.hp / c.maxHp * 100), Math.round(c.y * 10) / 10, Math.round(c.hw * 20) / 10]); }
+        else if (!c.alive) dm.push([c.id, 0]); else if (c.hp < c.maxHp) dm.push([c.id, Math.max(1, Math.round(c.hp / c.maxHp * 100))]);
+      }
+      return { s: dm, d: dy };
+    },
+    apply(w, d) {
+      if (!w.cover && w._base) { w.cover = w._base.cover; }
+      if (!w._coverStatic) { w._coverStatic = (w.cover || []).filter(c => !c.dyn); w._coverById = new Map(); for (const c of w._coverStatic) w._coverById.set(c.id, c); }
+      for (const c of w._coverStatic) { c.hp = c.maxHp; c.alive = true; c.stage = 0; c.h = c.h0; }
+      for (const r of d.s) {
+        const c = w._coverById.get(r[0]); if (!c) continue;
+        if (!r[1]) { c.alive = false; c.hp = 0; c.stage = 3; } else { c.hp = c.maxHp * r[1] / 100; c.stage = stageOf(c); c.h = c.h0 * (1 - 0.2 * c.stage); }
+      }
+      const dyn = [];
+      for (const r of d.d) {
+        const D = E.COVER[r[1]]; if (!D) continue;
+        const hw = r[7] / 2 || D.w[0] / 2, ci = Math.cos(r[4]), si = Math.sin(r[4]);
+        dyn.push({ id: r[0], type: r[1], x: r[2], z: r[3], y: r[6], yaw: r[4], hw, hd: D.d / 2, h: D.h, h0: D.h, hp: r[5], maxHp: 100, stage: r[5] > 66 ? 0 : r[5] > 33 ? 1 : 2, alive: true, dyn: true, c: ci, s: si, def: D, round: !!D.round });
+      }
+      w.cover = w._coverStatic.concat(dyn);
+    },
+  };
+
+  S.systems.push(coverSystem);
+  Object.assign(S, { genCover, addCover, collideCover: collide, coverBlockedAt: blockedAt, coverDamage, breakCover, repairCover, blastCover, buildBarrier, leaveWreck, findCover, coverCovered: covered, coverNear, COVER_CELL: CELL });
+})(window.E = window.E || {});
+
+// ---- js/sim/land_perks.js ----
+// LAND perks and loadouts, infantry setup, medic extras and per-battle
+// statistics. Perk definitions are data (E.PERKS in data/land.js); a perk is a
+// set of multipliers / additions on the unit's modifier sheet `u.m`, whose
+// keys are listed in S.M0 (land.js).
+//
+// Players pick perks with the `loadout` verb: w.verb(pid, 'loadout', 'heavy', ['heavy.suppressor', 'heavy.tandem'])
+// The choice is stored on the player (p.loadout[class]) and applied the next
+// time they deploy that class. Bots roll their own perks when they spawn.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3;
+
+  // the lead's E.FORCE.mix (data/units.js loads after data/land.js) -> include the engineer
+  if (E.FORCE && E.LAND_MIX) E.FORCE.mix = E.LAND_MIX;
+
+  // ── perk lookup ──────────────────────────────────────────────
+  const BY_ID = {};
+  for (const cls in E.PERKS) for (const tier of ['t1', 't2']) for (const p of E.PERKS[cls][tier]) { p.cls = cls; p.tier = tier; BY_ID[p.id] = p; }
+  E.PERK_BY_ID = BY_ID;
+
+  // validate a pick for a class: at most one perk per tier, ids must belong to that class
+  function sanitize(cls, ids) {
+    const out = [], P = E.PERKS[cls]; if (!P || !Array.isArray(ids)) return out;
+    const got = { t1: null, t2: null };
+    for (const id of ids) { const p = BY_ID[id]; if (p && p.cls === cls && !got[p.tier]) got[p.tier] = p.id; }
+    if (got.t1) out.push(got.t1); if (got.t2) out.push(got.t2);
+    return out;
+  }
+
+  // ── applying perks ───────────────────────────────────────────
+  function applyPerks(u, ids) {
+    const m = Object.assign({}, S.M0); m.hpAdd = 0;
+    for (const id of ids) {
+      const p = BY_ID[id]; if (!p) continue;
+      if (p.mul) for (const k in p.mul) m[k] = (m[k] === undefined ? 1 : m[k]) * p.mul[k];
+      if (p.add) for (const k in p.add) { if (k === 'hp') m.hpAdd += p.add[k]; else m[k] = (m[k] || 0) + p.add[k]; }
+    }
+    u.m = m; u.perks = ids.slice();
+    const frac = u.maxHp > 0 ? u.hp / u.maxHp : 1;
+    u.maxHp = Math.round(u.baseHp * m.hp + m.hpAdd); u.hp = Math.round(u.maxHp * frac);
+    u.speed = u.def.speed * u.spM * m.speed;
+    u.altT = Math.min(u.altT, 0.5);
+  }
+
+  function initInfantry(w, u) {
+    u.stance = 0; u.supp = 0; u.suppT = -9; u.stam = 1; u.winded = false; u.sprinting = false; u.bloom = 0.004;
+    u.vault = 0; u.vaultKind = ''; u.vaultD = null; u.vaultCd = 0; u.slideT = 0; u.slideCd = 0; u.pushT = 0;
+    u.tool = 0; u.cycP = false; u.abil2P = false; u.buildT = 0; u.builds = []; u.mines = 0;
+    u.baseHp = u.maxHp; u.m = S.M0; u.perks = []; u.lastAtt = 0; u.lastAttT = -9;
+    const ai = u.ai; ai.peekT = 0; ai.peeking = false; ai.retreat = false; ai.cov = null; ai.mode = ''; ai.flankDone = false; ai.inCover = false; ai.dx = u.pos.x; ai.dz = u.pos.z; ai.dr = 1;
+  }
+  function randomPerks(w, cls) {
+    const P = E.PERKS[cls], R = w.rng;
+    if (!P) return [];
+    return [P.t1[R.i(P.t1.length)].id, P.t2[R.i(P.t2.length)].id];
+  }
+  // spawn hook (common.js): every infantry gets its land state; bots roll perks
+  function onSpawn(w, u) {
+    if (u.kind === 'infantry') { initInfantry(w, u); applyPerks(u, randomPerks(w, u.type)); if (S.assignSquad) S.assignSquad(w, u); }
+    else if (u.kind === 'vehicle') { u.crip = 0; u.aimLimited = false; u.vy = 0; u.lastZone = ''; }
+    else if (u.kind === 'turret') { u.active = true; u.cd = 0; }
+  }
+  // deploy hook (sim.js): a player's own loadout replaces the bot roll
+  function onDeploy(w, u, p) {
+    initInfantry(w, u);
+    const ids = (p.loadout && p.loadout[u.type]) || [];
+    applyPerks(u, sanitize(u.type, ids));
+    u.hp = u.maxHp;
+    w.events.push({ type: 'loadout', uid: u.id, to: p.id, cls: u.type, perks: u.perks.slice() });
+  }
+
+  S.verbs.loadout = function (w, pid, cls, ids) {
+    const p = w.players[pid]; if (!p || !E.PERKS[cls]) return null;
+    p.loadout = p.loadout || {};
+    const ok = sanitize(cls, ids);
+    p.loadout[cls] = ok;
+    return ok;
+  };
+
+  // ── medic extras (aura perks), every 0.5s ────────────────────
+  function medicSystem(w, dt) {
+    if (w.tickN % 15 !== 0) return;
+    const U = w.units;
+    for (const a of U) if (a.kind === 'infantry') a.auraRes = 0;
+    for (const md of U) {
+      if (!md.alive || md.type !== 'medic' || !md.m) continue;
+      const m = md.m, R = 10.5 * m.aura, R2 = R * R;
+      for (const a of U) {
+        if (a === md || !a.alive || a.team !== md.team || a.kind !== 'infantry') continue;
+        const d2 = V.distance2(a.pos, md.pos);
+        if (d2 > R2) continue;
+        if (m.aura > 1 && d2 > 110 && a.hp < a.maxHp) a.hp = Math.min(a.maxHp, a.hp + 5);   // the base aura (combat.js) covers 10.5m
+        if (m.auraRes > 0) a.auraRes = Math.max(a.auraRes || 0, m.auraRes);
+      }
+    }
+  }
+
+  // ── statistics (battle reports and tests) ────────────────────
+  function keyOf(u) { return u.kind === 'infantry' ? u.type : u.kind === 'vehicle' ? 'v_' + u.type : u.kind === 'turret' ? 't_' + u.type : u.kind; }
+  function statsSystem(w, dt) {
+    const L = w.landStats, ev = w.events, cur = w._lsEv || (w._lsEv = { arr: null, n: 0 });
+    let from = cur.arr === ev ? cur.n : 0;
+    if (w.tickN % 6 === 0) for (const u of w.units) if (u.alive && u.kind === 'infantry' && !u.pid) { L.infTicks++; if (u.ai.inCover) L.coverTicks++; }
+    for (let i = from; i < ev.length; i++) {
+      const e = ev[i];
+      if (e.type === 'death') {
+        const ku = e.by ? w.umap.get(e.by) : null;
+        const vk = e.kind === 'infantry' ? e.utype : e.kind === 'vehicle' ? 'v_' + e.utype : e.kind === 'turret' ? 't_' + e.utype : e.kind;
+        L.deaths[vk] = (L.deaths[vk] || 0) + 1;
+        if (ku && e.kteam !== e.team) {
+          const kk = keyOf(ku); L.kills[kk] = (L.kills[kk] || 0) + 1;
+          if (e.kind === 'vehicle') L.vehKilledBy[kk] = (L.vehKilledBy[kk] || 0) + 1;
+        } else if (e.kteam !== e.team) { L.kills[e.wk || 'other'] = (L.kills[e.wk || 'other'] || 0) + 1; }
+      } else if (e.type === 'vault') L.vaults++;
+      else if (e.type === 'cripple') L.cripples++;
+      else if (e.type === 'suppress' && e.level === 2) L.suppressions++;
+      else if (e.type === 'mineBlast') L.mineHits++;
+      else if (e.type === 'repair') L.repairs++;
+      else if (e.type === 'fire') { const ku = w.umap.get(e.uid); if (ku && ku.kind === 'infantry') { /* shots fired from cover */ if (ku.ai && ku.ai.inCover) L.shotsFromCover++; L.shots++; } }
+    }
+    cur.arr = ev; cur.n = ev.length;
+  }
+  function newStats() {
+    return { kills: {}, deaths: {}, vehKilledBy: {}, coverBroken: 0, coverHits: 0, vaults: 0, cripples: 0, suppressions: 0, rams: 0, mineHits: 0, repairs: 0,
+             shots: 0, shotsFromCover: 0, coverTicks: 0, infTicks: 0 };
+  }
+
+  S.systems.push(medicSystem, statsSystem);
+  Object.assign(S, { applyPerks, sanitizePerks: sanitize, initInfantry, onSpawn, onDeploy, randomPerks, newLandStats: newStats, perkById: (id) => BY_ID[id] || null });
+})(window.E = window.E || {});
+
+// ---- js/sim/land_struct.js ----
+// LAND structures and tools: emplacements (AA battery, MG nest), the shield
+// generator and ion cannon, engineer tools (repair, barricades, mines,
+// charges), and ground objectives. Also the land-side battle setup.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3;
+  const L = E.LAND;
+  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make();
+
+  // ── setup: cover, structures, per-battle state (called first by sim.setup) ──
+  function setupLand(w) {
+    w.landStats = S.newLandStats(); w.squads = []; w.squadId = 1; w.mines = []; w.mineId = 1; w.charges = []; w.chargeId = 1; w.objs = []; w.objId = 1;
+    w.landT = { aegis: { aa: 25 }, verdant: { aa: 25 } };
+    S.genCover(w);
+    for (const f of E.TEAMS) {
+      const home = w.cps.find(c => c.home === f), sgn = f === 'aegis' ? 1 : -1, hx = home.pos.x, hz = home.pos.z;
+      const mk = (type, x, z) => { const u = S.spawnUnit(w, 'turret', type, f, { x, z }); u.yaw = u.aimYaw = Math.atan2(-x, -z); u.baseTeam = f; return u; };
+      mk('shieldgen', hx - sgn * 52, hz + 6);
+      mk('aabattery', hx - sgn * 22, hz + 44); mk('aabattery', hx - sgn * 22, hz - 44);
+      mk('nest', hx + sgn * 40, hz + 20); mk('nest', hx + sgn * 40, hz - 20);
+      S.spawnUnit(w, 'vehicle', 'aa', f, { x: hx - sgn * 20, z: hz + 4 });
+    }
+    // the ion cannon sits beside the central post; it belongs to whoever holds the post
+    const mid = w.cps[Math.floor(w.cps.length / 2)];
+    const ion = S.spawnUnit(w, 'turret', 'ioncannon', w.rng.next() < 0.5 ? 'aegis' : 'verdant', { x: mid.pos.x + 4, z: mid.pos.z + mid.r * 0.55 });
+    ion.cd = L.ionFirst; ion.active = false; ion.cpId = mid.id;
+    w.ion = ion;
+  }
+
+  // ── shield dome ──────────────────────────────────────────────
+  function shielded(w, team, pos) {
+    const U = w.units;
+    for (let i = 0; i < U.length; i++) {
+      const u = U[i];
+      if (u.kind !== 'turret' || u.type !== 'shieldgen' || !u.alive || u.team !== team) continue;
+      const dx = pos.x - u.pos.x, dz = pos.z - u.pos.z, R = u.def.shieldR || L.shieldR;
+      if (dx * dx + dz * dz < R * R) return true;
+    }
+    return false;
+  }
+
+  // ── structures ───────────────────────────────────────────────
+  function structureDeath(w, e, src) {
+    if (e.def.structure) {
+      w.events.push({ type: 'structureDown', uid: e.id, utype: e.type, team: e.team, pos: V.clone(e.pos), by: src.uid || 0 });
+      S.blast(w, e.pos, 16, 320, e.team, e.id, 'wreck', null);
+    }
+  }
+  // fire the ion cannon (also callable by a player possessing it)
+  function structureFire(w, u) {
+    if (u.type !== 'ioncannon' || !u.active || u.cd > 0) return false;
+    let best = null, bd = 1e12;
+    for (const c of w.units) if (c.alive && c.kind === 'capital' && c.team !== u.team) { const d = V.distance2(c.pos, u.pos); if (d < bd) { bd = d; best = c; } }
+    if (!best) return false;
+    u.cd = L.ionCd;
+    const sh = Math.min(best.shield, L.ionShield); best.shield -= sh; best.hitT = 0;
+    const from = { x: u.pos.x, y: u.pos.y + u.def.h, z: u.pos.z };
+    w.events.push({ type: 'ion', uid: u.id, team: u.team, from, to: V.clone(best.pos), tid: best.id, shieldStripped: Math.round(sh) });
+    S.applyDamage(w, best, L.ionHull, { wk: 'ioncannon', team: u.team, uid: u.id, owner: u.pid || null }, best.pos);
+    return true;
+  }
+  function structureSystem(w, dt) {
+    const ion = w.ion;
+    for (const u of w.units) {
+      if (u.kind !== 'turret' || !u.alive) continue;
+      if (u.def.structure) u.charging = u.type === 'ioncannon' && u.active && u.cd < 4;
+    }
+    if (ion && ion.alive) {
+      const cp = w.cps[ion.cpId];
+      if (cp.owner && cp.owner !== ion.team) {
+        const prev = ion.team; ion.team = cp.owner; ion.cd = Math.max(ion.cd, 8);
+        w.events.push({ type: 'ionFlip', uid: ion.id, team: ion.team, prev });
+      }
+      ion.active = cp.owner === ion.team;
+      if (ion.active) {
+        ion.cd = Math.max(0, ion.cd - dt);
+        if (ion.cd <= 0 && !ion.pid) structureFire(w, ion);
+      }
+    }
+  }
+
+  // ── emplacement AI ───────────────────────────────────────────
+  function pickEmplacementTarget(w, u) {
+    const D = u.def, W = E.WEAPONS[D.weapon], T = w.terrain;
+    let best = null, bs = 0; S.eyeOf(u, tmpA);
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      let s = 0, d = V.distance(u.pos, e.pos);
+      if (D.aa) {
+        if (e.kind !== 'fighter') continue;
+        const alt = e.pos.y - Math.max(T.height(e.pos.x, e.pos.z), T.waterLevel);
+        if (alt > L.aaMaxAlt || d > 1150) continue;
+        const sp = Math.hypot(e.vel.x, e.vel.z, e.vel.y);
+        s = 1000 / (d + 100) * (sp < 110 ? 1.6 : 1) * (alt < 250 ? 1.4 : 1);
+      } else if (D.nest) {
+        if (e.kind === 'infantry') s = 1000 / (d + 40); else if (e.kind === 'vehicle' && e.armor === 'light') s = 500 / (d + 40); else continue;
+        if (d > W.range) continue;
+      } else {
+        if (e.kind === 'fighter') { if (e.pos.y - T.height(e.pos.x, e.pos.z) > 220 || d > 380) continue; s = 600 / (d + 60); }
+        else if (e.kind === 'infantry') s = 900 / (d + 60); else if (e.kind === 'vehicle') s = 1300 / (d + 60); else continue;
+        if (d > W.range) continue;
+      }
+      if (e.id === u.ai.tid) s *= 1.3;
+      if (s <= bs) continue;
+      if (e.kind !== 'fighter' || e.pos.y - T.height(e.pos.x, e.pos.z) < 60) { if (!S.los(w, tmpA, S.centerOf(e, tmpB))) continue; }
+      bs = s; best = e;
+    }
+    return best;
+  }
+  function aiTurret(w, u, dt) {
+    const D = u.def, ai = u.ai;
+    if (D.structure) return;
+    ai.thinkT -= dt;
+    if (ai.thinkT <= 0) {
+      ai.thinkT = 0.25 + w.rng.next() * 0.2;
+      const t = pickEmplacementTarget(w, u); ai.tid = t ? t.id : 0;
+      const k = w.cfg.aiErr * 0.5; ai.errY = w.rng.gauss() * k; ai.errP = w.rng.gauss() * k * 0.6;
+    }
+    const tg = S.target(w, u);
+    if (tg) {
+      const err = S.aimTurret(w, u, tg, dt, D.turn);
+      const d = V.distance(u.pos, tg.pos), W = E.WEAPONS[D.weapon];
+      S.dirOf(u.aimYaw, u.aimPitch, tmpA);
+      if (err < 0.08 && d < W.range) S.landFire(w, u, tmpA, 0);
+      if (D.alt && u.altT <= 0 && err < 0.35 && d < E.WEAPONS[D.alt].range && tg.kind === 'fighter') S.landAlt(w, u, tmpA, S.lockId(w, u, tg));
+    }
+    u.yaw = u.aimYaw;
+  }
+
+  // ── engineer tools ───────────────────────────────────────────
+  function repairRate(t, m) { return (t.kind === 'vehicle' ? 70 : 95) * (m.repair || 1); }
+  // repair a friendly unit (vehicle / emplacement) or cover piece; returns hp restored
+  function engRepair(w, u, tgt, dt) {
+    const m = u.m || S.M0;
+    let amt = 0;
+    if (tgt.hw !== undefined) { // cover piece
+      if (!tgt.alive || (tgt.team && tgt.team !== u.team)) return 0;
+      amt = S.repairCover(w, tgt, 110 * m.repair * dt);
+    } else {
+      if (!tgt.alive || tgt.team !== u.team || (tgt.kind !== 'vehicle' && tgt.kind !== 'turret') || tgt.hp >= tgt.maxHp) return 0;
+      amt = Math.min(tgt.maxHp - tgt.hp, repairRate(tgt, m) * dt); tgt.hp += amt;
+      if (tgt.kind === 'vehicle' && tgt.hp > tgt.maxHp * 0.5) tgt.hitT = Math.max(tgt.hitT, 0);
+    }
+    if (amt > 0) {
+      u.repairAcc = (u.repairAcc || 0) + amt;
+      if (w.t - (u.repairT || -9) > 0.45) {
+        u.repairT = w.t; u.repairId = tgt.id;
+        w.events.push({ type: 'repair', uid: u.id, tid: tgt.id, cover: tgt.hw !== undefined, to: u.pid, pos: tgt.hw !== undefined ? { x: tgt.x, y: tgt.y + tgt.h * 0.5, z: tgt.z } : V.clone(tgt.pos) });
+      }
+      if (u.pid && u.repairAcc >= 120) { S.score(w, u.pid, 15, 'REPAIR'); u.repairAcc = 0; }
+    }
+    return amt;
+  }
+  // the thing a tool is pointed at: the unit (or cover piece) nearest the aim ray within range
+  function toolTarget(w, u, dir, range, pred) {
+    S.eyeOf(u, tmpA);
+    let best = null, bs = 0.32;
+    for (const e of w.units) {
+      if (!e.alive || e.kind === 'infantry' || e.kind === 'fighter' || e.kind === 'capital' || !pred(e)) continue;
+      const dx = e.pos.x - tmpA.x, dy = e.pos.y + e.h * 0.5 - tmpA.y, dz = e.pos.z - tmpA.z, l = Math.hypot(dx, dy, dz);
+      if (l - e.r > range) continue;
+      const a = Math.acos(E.clamp((dx * dir.x + dy * dir.y + dz * dir.z) / (l || 1), -1, 1)) - Math.atan2(e.r, Math.max(l, 1));
+      if (a < bs) { bs = a; best = e; }
+    }
+    return best;
+  }
+  function engTool(w, u, dir, dt) {
+    const m = u.m || S.M0;
+    if (u.tool === 1) {
+      let tgt = toolTarget(w, u, dir, 14, (e) => e.team === u.team && e.hp < e.maxHp && (e.kind === 'vehicle' || e.kind === 'turret'));
+      if (!tgt) {
+        S.dirOf(u.aimYaw, 0, tmpC);
+        tgt = S.coverNear(w, u.pos.x + dir.x * 4, u.pos.z + dir.z * 4, 7, (c) => c.hp < c.maxHp && (!c.team || c.team === u.team));
+      }
+      if (tgt) engRepair(w, u, tgt, dt);
+    } else if (u.tool === 2) engSabotage(w, u, dir, dt);
+  }
+  // plant a charge on an enemy structure / vehicle / emplacement, or defuse one on a friendly one (hold fire)
+  function engSabotage(w, u, dir, dt) {
+    const m = u.m || S.M0;
+    let tgt = toolTarget(w, u, dir, 9, (e) => true);
+    if (!tgt) { u.work = 0; u.workId = 0; return; }
+    if (u.workId !== tgt.id) { u.workId = tgt.id; u.work = 0; }
+    const ch = chargeOn(w, tgt.id);
+    if (tgt.team === u.team) {
+      if (!ch || ch.team === u.team) { u.work = 0; return; }
+    } else if (ch && ch.team === u.team) { u.work = 0; return; }
+    u.work += dt / 1.4;
+    if (u.work >= 1) {
+      u.work = 0;
+      if (tgt.team === u.team) defuse(w, ch, u); else plantCharge(w, u, tgt);
+    }
+  }
+  function chargeOn(w, uid) { for (const c of w.charges) if (c.uid === uid) return c; return null; }
+  function plantCharge(w, u, tgt) {
+    if (!tgt || !tgt.alive || tgt.team === u.team || chargeOn(w, tgt.id) || u.altT > 0) return null;
+    const m = u.m || S.M0, fuse = 11 * m.fuse;
+    const c = { id: w.chargeId++, uid: tgt.id, team: u.team, by: u.id, pid: u.pid || null, t: w.t + fuse, fuse, mul: m.chargeDmg };
+    w.charges.push(c); u.altT = E.WEAPONS.charge.cd;
+    w.events.push({ type: 'charge', cid: c.id, uid: tgt.id, team: u.team, fuse, pos: V.clone(tgt.pos) });
+    return c;
+  }
+  function defuse(w, ch, u) {
+    const i = w.charges.indexOf(ch); if (i < 0) return false;
+    w.charges.splice(i, 1);
+    w.events.push({ type: 'defuse', cid: ch.id, uid: ch.uid, team: u.team, by: u.id });
+    if (u.pid) S.score(w, u.pid, 100, 'CHARGE DEFUSED');
+    return true;
+  }
+  function chargeSystem(w, dt) {
+    for (let i = w.charges.length - 1; i >= 0; i--) {
+      const c = w.charges[i], t = w.umap.get(c.uid);
+      if (!t || !t.alive) { w.charges.splice(i, 1); continue; }
+      if (w.t >= c.t) {
+        w.charges.splice(i, 1);
+        const W = E.WEAPONS.charge, src = { wk: 'charge', team: c.team, uid: c.by, owner: c.pid };
+        w.events.push({ type: 'chargeBlast', cid: c.id, uid: t.id, pos: V.clone(t.pos), team: c.team });
+        S.applyDamage(w, t, W.dmg * c.mul, src, t.pos);
+        S.blast(w, t.pos, W.splash, 220, c.team, c.by, 'charge', c.pid);
+      }
+    }
+  }
+  function engBuild(w, u) {
+    const m = u.m || S.M0;
+    if (w.t < (u.buildT || 0)) return null;
+    const c = S.buildBarrier(w, u);
+    if (c) u.buildT = w.t + 14 * m.buildCd;
+    return c;
+  }
+
+  // ── mines ────────────────────────────────────────────────────
+  function layMine(w, u) {
+    if (!u.onGround || u.vaultD) return null;
+    const m = u.m || S.M0, W = E.WEAPONS.mine;
+    let n = 0, oldest = null;
+    for (const k of w.mines) if (k.uid === u.id) { n++; if (!oldest) oldest = k; }
+    if (n >= m.mines) w.mines.splice(w.mines.indexOf(oldest), 1);
+    const k = { id: w.mineId++, team: u.team, uid: u.id, pid: u.pid || null, x: u.pos.x, y: u.pos.y, z: u.pos.z, armT: w.t + L.mineArm, expT: w.t + 300, mul: m.mineDmg, seen: false };
+    w.mines.push(k); u.altT = W.cd;
+    w.events.push({ type: 'mine', mid: k.id, team: u.team, pos: { x: k.x, y: k.y, z: k.z }, uid: u.id });
+    if (w.landStats) w.landStats.minesLaid = (w.landStats.minesLaid || 0) + 1;
+    return k;
+  }
+  function mineSystem(w, dt) {
+    const M = w.mines; if (!M.length) return;
+    if (w.tickN % 3 !== 0) return;
+    const W = E.WEAPONS.mine, U = w.units;
+    for (let i = M.length - 1; i >= 0; i--) {
+      const k = M[i];
+      if (w.t > k.expT) { M.splice(i, 1); continue; }
+      if (w.t < k.armT) continue;
+      let hit = null, seen = false;
+      for (let j = 0; j < U.length; j++) {
+        const e = U[j]; if (!e.alive || e.team === k.team) continue;
+        const dx = e.pos.x - k.x, dz = e.pos.z - k.z, d2 = dx * dx + dz * dz;
+        if (e.kind === 'vehicle') { const R = L.mineR + e.r * 0.45; if (d2 < R * R && e.pos.y - k.y < 5) { hit = e; break; } }
+        else if (e.kind === 'infantry' && d2 < 400) seen = true;
+      }
+      if (seen && !k.seen) { k.seen = true; w.events.push({ type: 'mineSpotted', mid: k.id, team: k.team, pos: { x: k.x, y: k.y, z: k.z } }); }
+      if (!hit) continue;
+      M.splice(i, 1);
+      const src = { wk: 'mine', team: k.team, uid: k.uid, owner: k.pid };
+      w.events.push({ type: 'mineBlast', mid: k.id, uid: hit.id, pos: { x: k.x, y: k.y, z: k.z }, team: k.team });
+      S.applyDamage(w, hit, W.dmg * k.mul, src, hit.pos);
+      for (const e of U) {
+        if (!e.alive || e.team === k.team || e === hit || (e.kind !== 'infantry' && e.kind !== 'vehicle')) continue;
+        const d = Math.hypot(e.pos.x - k.x, e.pos.z - k.z) - e.r;
+        if (d < W.splash) S.applyDamage(w, e, W.dmg * k.mul * 0.6 * (1 - Math.max(0, d) / W.splash), src, e.pos);
+      }
+      S.blastCover(w, k.x, k.y, k.z, W.splash, 150, 1);
+    }
+  }
+
+  // ── AA vehicle reinforcements ────────────────────────────────
+  function landReinforce(w, dt) {
+    if (w.tickN % 6 !== 0 || w.winner) return;
+    for (const f of E.TEAMS) {
+      const T = w.teams[f], LT = w.landT[f];
+      if (T.tickets <= 0) continue;
+      let n = 0; for (const u of w.units) if (u.alive && u.team === f && u.kind === 'vehicle' && u.type === 'aa') n++;
+      if (n >= 1) { LT.aa = 60; continue; }
+      LT.aa -= dt * 6;
+      if (LT.aa <= 0) {
+        LT.aa = 60;
+        const home = w.cps.find(c => c.home === f), c = home.owner === f ? home : S.spawnCP(w, f);
+        if (c) S.spawnUnit(w, 'vehicle', 'aa', f, S.ring(w, c.pos, c.r * 0.6, c.r * 1.1));
+      }
+    }
+  }
+
+  // ── objectives: building blocks the battle flow can compose ──
+  // S.addObjective(w, spec) -> obj. Specs:
+  //   { type:'destroy', target:uid, team:attackers }          done when the target dies
+  //   { type:'defend',  target:uid, team:defenders, duration } done when the timer runs out with the target alive (fails if it dies)
+  //   { type:'uplink',  pos:{x,z}, r, need:seconds, team:null } hold the site with the only infantry present; first side to `need` wins
+  // State on w.objs[]: { id, type, team, frac 0..1, done, success, winner, ... }; events objAdd / objProgress / objDone.
+  function addObjective(w, spec) {
+    const o = Object.assign({ id: w.objId++, done: false, success: null, winner: null, frac: 0, step: 0, t: 0, label: '' }, spec);
+    if (o.type === 'uplink') { o.r = o.r || 24; o.need = o.need || 60; o.prog = { aegis: 0, verdant: 0 }; o.holder = null; o.n = { aegis: 0, verdant: 0 }; o.contested = false; }
+    if (o.type === 'defend') o.duration = o.duration || 90;
+    const tu = o.target ? w.umap.get(o.target) : null;
+    if (tu) o.pos = { x: tu.pos.x, z: tu.pos.z };
+    w.objs.push(o);
+    w.events.push({ type: 'objAdd', id: o.id, otype: o.type, team: o.team || null, pos: o.pos ? { x: o.pos.x, z: o.pos.z } : null, target: o.target || 0 });
+    return o;
+  }
+  function objFinish(w, o, success, winner) {
+    o.done = true; o.success = success; o.winner = winner || null; o.frac = success ? 1 : o.frac;
+    w.events.push({ type: 'objDone', id: o.id, otype: o.type, team: winner || o.team || null, success });
+  }
+  function objSystem(w, dt) {
+    if (!w.objs.length) return;
+    for (const o of w.objs) {
+      if (o.done) continue;
+      o.t += dt;
+      let frac = o.frac;
+      if (o.type === 'destroy' || o.type === 'defend') {
+        const tu = w.umap.get(o.target);
+        if (tu && tu.alive) o.pos = { x: tu.pos.x, z: tu.pos.z };
+        if (o.type === 'destroy') {
+          if (!tu || !tu.alive) { objFinish(w, o, true, o.team); continue; }
+          frac = 1 - tu.hp / tu.maxHp;
+        } else {
+          if (!tu || !tu.alive) { objFinish(w, o, false, S.enemyOf(o.team)); continue; }
+          frac = o.t / o.duration;
+          if (frac >= 1) { objFinish(w, o, true, o.team); continue; }
+        }
+      } else if (o.type === 'uplink') {
+        o.n.aegis = 0; o.n.verdant = 0;
+        for (const u of w.units) if (u.alive && u.kind === 'infantry' && E.distXZ2(u.pos, o.pos) < o.r * o.r) o.n[u.team]++;
+        o.contested = o.n.aegis > 0 && o.n.verdant > 0;
+        for (const f of E.TEAMS) {
+          if (!o.contested && o.n[f] > 0 && (!o.team || o.team === f || true)) o.prog[f] = Math.min(o.need, o.prog[f] + dt * (0.6 + 0.4 * Math.min(4, o.n[f]) / 4));
+          else if (!o.contested) o.prog[f] = Math.max(0, o.prog[f] - dt * 0.3);
+        }
+        if (!o.contested && o.n[S.enemyOf('aegis')] > 0) o.prog.aegis = Math.max(0, o.prog.aegis - dt * 0.7);
+        if (!o.contested && o.n.aegis > 0) o.prog.verdant = Math.max(0, o.prog.verdant - dt * 0.7);
+        o.holder = o.prog.aegis > o.prog.verdant ? 'aegis' : o.prog.verdant > o.prog.aegis ? 'verdant' : null;
+        frac = Math.max(o.prog.aegis, o.prog.verdant) / o.need;
+        if (frac >= 1) { o.frac = 1; objFinish(w, o, true, o.prog.aegis >= o.need ? 'aegis' : 'verdant'); continue; }
+      }
+      o.frac = frac;
+      const step = Math.floor(frac * 10);
+      if (step > o.step) { o.step = step; w.events.push({ type: 'objProgress', id: o.id, otype: o.type, frac, team: o.holder || o.team || null }); }
+    }
+  }
+
+  // ── net ──────────────────────────────────────────────────────
+  S.net.world.land = {
+    pack(w) {
+      return {
+        m: (w.mines || []).map(k => [k.id, k.team, Math.round(k.x * 10) / 10, Math.round(k.z * 10) / 10, w.t >= k.armT ? 1 : 0, k.seen ? 1 : 0]),
+        c: (w.charges || []).map(c => [c.id, c.uid, c.team, Math.round((c.t - w.t) * 10) / 10]),
+        o: (w.objs || []).map(o => [o.id, o.type, o.team || 0, Math.round(o.frac * 1000) / 1000, o.done ? 1 : 0, o.success ? 1 : 0, o.pos ? Math.round(o.pos.x) : 0, o.pos ? Math.round(o.pos.z) : 0, o.r || 0, o.holder || 0, o.contested ? 1 : 0]),
+      };
+    },
+    apply(w, d) {
+      w.mines = d.m.map(r => ({ id: r[0], team: r[1], x: r[2], z: r[3], y: 0, armT: r[4] ? -1 : 1e9, seen: !!r[5] }));
+      w.charges = d.c.map(r => ({ id: r[0], uid: r[1], team: r[2], t: w.t + r[3] }));
+      w.objs = d.o.map(r => ({ id: r[0], type: r[1], team: r[2] || null, frac: r[3], done: !!r[4], success: !!r[5], pos: { x: r[6], z: r[7] }, r: r[8], holder: r[9] || null, contested: !!r[10] }));
+    },
+  };
+
+  S.systems.push(structureSystem, chargeSystem, mineSystem, landReinforce, objSystem);
+  Object.assign(S, { setupLand, shielded, structureDeath, structureFire, aiTurret, engRepair, engTool, engBuild, engSabotage, toolTarget, plantCharge, defuse, chargeOn,
+    layMine, addObjective, pickEmplacementTarget });
 })(window.E = window.E || {});
 
 // ---- js/sim/objectives.js ----
@@ -2349,6 +4174,7 @@
 
   // ── setup ────────────────────────────────────────────────────
   function setup(w) {
+    if (S.setupLand) S.setupLand(w); // land: cover, structures, objectives state
     for (const f of E.TEAMS) {
       const T = w.teams[f], home = w.cps.find(c => c.home === f), sgn = f === 'aegis' ? 1 : -1;
       for (let i = 0; i < T.infCap; i++) S.spawnUnit(w, 'infantry', S.pickClass(w), f, S.ring(w, home.pos, 6, home.r * 0.9));
@@ -2409,6 +4235,7 @@
     if (w.t - p.deadT < RESPAWN) return null;
     const u = S.spawnUnit(w, 'infantry', type, p.team, S.ring(w, c.pos, 4, c.r * 0.6));
     u.yaw = u.aimYaw = Math.atan2(-u.pos.x, -u.pos.z);
+    if (S.onDeploy) S.onDeploy(w, u, p); // land: apply the player's loadout
     possess(w, pid, u.id);
     return u;
   }

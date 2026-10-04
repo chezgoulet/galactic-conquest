@@ -22,7 +22,7 @@ test('capital ships hold station in the orbit band and are enormous', () => {
   run(w, 90);
   for (const u of w.units.filter(x => x.kind === 'capital')) {
     assert.ok(u.pos.y > E.SIM.ALT.space && Math.abs(u.pos.y - S.ALT.orbit) < 160, `${u.type} at ${u.pos.y}`);
-    assert.ok(Math.hypot(u.pos.x, u.pos.z) < w.layout.bound, 'inside the arena');
+    if (!u.retreat) assert.ok(Math.hypot(u.pos.x, u.pos.z) < w.layout.bound, 'inside the arena');   // a withdrawing ship leaves it on purpose
   }
   assert.ok(E.CAPITALS.dreadnought.len >= 700 && E.CAPITALS.frigate.len < E.CAPITALS.cruiser.len && E.CAPITALS.cruiser.len < E.CAPITALS.carrier.len);
   assert.strictEqual(S.CAP_ALT, S.ALT.orbit);
@@ -257,6 +257,7 @@ test('orbital strikes: need a live battery, blocked under a ground shield', () =
 test('point defence kills fighters and intercepts torpedoes; escort requests are raised', () => {
   const w = mk(); isolate(w);
   const a = find(w, 'aegis', 'carrier'); a.ai.thinkT = 1e9;
+  for (const u of ships(w, 'aegis')) u.launchCd = 1e9;   // no friendly wing scrambles to cover her
   // enemy bombers run at the carrier
   const bs = []; for (let i = 0; i < 4; i++) { const b = S.spawnUnit(w, 'fighter', 'bomber', 'verdant', { x: a.pos.x + 500, y: a.pos.y + 20 * i, z: a.pos.z + 80 * i }, { yaw: -Math.PI / 2 }); b.ai.thinkT = 1e9; bs.push(b); }
   run(w, 0.6);

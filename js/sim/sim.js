@@ -12,6 +12,7 @@
 
   // ── setup ────────────────────────────────────────────────────
   function setup(w) {
+    if (S.setupLand) S.setupLand(w); // land: cover, structures, objectives state
     for (const f of E.TEAMS) {
       const T = w.teams[f], home = w.cps.find(c => c.home === f), sgn = f === 'aegis' ? 1 : -1;
       for (let i = 0; i < T.infCap; i++) S.spawnUnit(w, 'infantry', S.pickClass(w), f, S.ring(w, home.pos, 6, home.r * 0.9));
@@ -72,6 +73,7 @@
     if (w.t - p.deadT < RESPAWN) return null;
     const u = S.spawnUnit(w, 'infantry', type, p.team, S.ring(w, c.pos, 4, c.r * 0.6));
     u.yaw = u.aimYaw = Math.atan2(-u.pos.x, -u.pos.z);
+    if (S.onDeploy) S.onDeploy(w, u, p); // land: apply the player's loadout
     possess(w, pid, u.id);
     return u;
   }
