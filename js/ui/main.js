@@ -35,7 +35,7 @@
         const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills; menu.saveProfile();
         let extra = `<div class="r-xp">+${(r.score + (r.won ? 500 : 100)).toLocaleString()} XP · ${E.Campaign.rank(P.xp).name}</div>`;
         if (ctx && ctx.campaign) {
-          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending);
+          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, E.Campaign.battleReport(game.world));
           ctx.res = res; menu.saveCampaign();
           extra += `<div class="r-camp">${res.defending ? (res.won ? `${res.planet} holds.` : `${res.planet} has fallen.`) : (res.won ? `${res.planet} is yours.` : `The assault on ${res.planet} failed.`)} +${res.reward} credits</div>`;
         }
@@ -43,7 +43,7 @@
       };
       game.onContinue = () => { const res = ctx && ctx.res; back(() => { if (ctx && ctx.campaign) menu.afterBattle(res || { defending: ctx.defending }); else menu.show(); }); };
       game.onQuit = () => {
-        if (ctx && ctx.campaign && ctx.defending) { E.Campaign.applyBattle(ctx.campaign, ctx.planet, false, 0, true); menu.saveCampaign(); }
+        if (ctx && ctx.campaign && ctx.defending) { E.Campaign.applyBattle(ctx.campaign, ctx.planet, false, 0, true, E.Campaign.battleReport(game.world)); menu.saveCampaign(); }
         back(() => { if (ctx && ctx.campaign) menu.showCampaign(); else menu.show(); });
       };
     });

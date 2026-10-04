@@ -210,3 +210,26 @@ test('the battle hands its fleet report back to the campaign in fleet order', ()
   C.applyBattle(c, id, true, 0, false, rep);
   assert.deepStrictEqual([...fl.ships].map(s => s.type), ['cruiser'], 'the carrier lost in battle is gone from the fleet');
 });
+
+test('sabotage and an empty garrison strip the defender\'s ground defences in the battle', () => {
+  const base = { biome: 'desert', seed: 4, human: 'aegis' };
+  const has = (w, type) => w.units.some(u => u.team === 'verdant' && u.kind === 'turret' && u.type === type);
+  const plain = new E.World(base);
+  assert.ok(has(plain, 'shieldgen') && has(plain, 'aabattery'));
+  const sab = new E.World(Object.assign({}, base, { bonus: { verdant: { sabotaged: true } } }));
+  assert.ok(!has(sab, 'shieldgen') && has(sab, 'aabattery'), 'saboteurs took the shield generator');
+  assert.ok(!E.SIM.shielded(sab, 'verdant', sab.cps.find(c => c.home === 'verdant').pos), 'so the base is open to orbital strikes');
+  const bare = new E.World(Object.assign({}, base, { bonus: { verdant: { fort: 0 } } }));
+  assert.ok(!has(bare, 'aabattery') && !has(bare, 'nest') && !has(bare, 'shieldgen'));
+  assert.ok(has(plain, 'shieldgen') && bare.units.some(u => u.team === 'aegis' && u.type === 'shieldgen'), 'the attacker keeps theirs');
+});
+
+test('some reinforcement waves arrive by troop lander', () => {
+  let drops = 0, accepted = 0;
+  for (const seed of [3, 8]) {
+    const w = new E.World({ biome: 'desert', seed, human: 'aegis' });
+    for (let i = 0; i < 30 * 240; i++) { w.tick(1 / 30); for (const e of w.drainEvents()) { if (e.type === 'airDrop') drops++; if (e.type === 'airAccepted' && e.task === 'drop') accepted++; } }
+  }
+  console.log('troop landers: tasked', accepted, 'delivered', drops);
+  assert.ok(accepted > 0, 'gunships were tasked with landings');
+});

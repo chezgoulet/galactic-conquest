@@ -35,6 +35,16 @@
       const cap = w.units.find(u => u.kind === 'capital' && u.team === f);
       for (let i = 0; i < T.airCap; i++) S.launchFighter(w, f, S.carrierFor(w, f, i) || cap, i);
     }
+    // campaign state shapes the defences: saboteurs take out the shield generator,
+    // and a world with no garrison left has no emplacements at all
+    for (const f of E.TEAMS) {
+      const B = w.teams[f].bonus;
+      for (const u of w.units) {
+        if (u.team !== f || u.kind !== 'turret') continue;
+        if ((B.sabotaged && u.type === 'shieldgen') || (B.fort === 0 && u.type !== 'ioncannon')) { u.alive = false; w.umap.delete(u.id); }
+      }
+    }
+    w.units = w.units.filter(u => u.alive);
     for (const u of w.units) u.bornT = -10;
     w.events.length = 0;
   }

@@ -5336,10 +5336,10 @@
   function reinforce(w, dt) {
     for (const f of E.TEAMS) {
       const T = w.teams[f];
-      let inf = 0, air = 0; const veh = { skiff: 0, tank: 0 }; let cap = null;
+      let inf = 0, air = 0, gun = 0, lander = false; const veh = { skiff: 0, tank: 0 }; let cap = null;
       for (const u of w.units) {
         if (!u.alive || u.team !== f) continue;
-        if (u.kind === 'infantry') inf++; else if (u.kind === 'fighter') air++; else if (u.kind === 'vehicle') veh[u.type]++; else if (u.kind === 'capital' && !cap) cap = u;
+        if (u.kind === 'infantry') inf++; else if (u.kind === 'fighter') { air++; if (u.type === 'gunship') { gun++; if (!u.pid && !(u.air && u.air.task) && u.hp > u.maxHp * 0.5) lander = true; } } else if (u.kind === 'vehicle') veh[u.type]++; else if (u.kind === 'capital' && !cap) cap = u;
       }
       T.alive = inf; T.capital = cap ? cap.id : 0;
       T.strikeT -= dt;
@@ -5348,7 +5348,12 @@
       if (T.waveT <= 0) {
         T.waveT = 5.5;
         const n = Math.min(5, T.infCap - inf, T.tickets - inf);
-        for (let i = 0; i < n; i++) { const c = spawnCP(w, f); if (!c) break; S.spawnUnit(w, 'infantry', S.pickClass(w), f, S.ring(w, c.pos, 5, c.r * 0.85)); }
+        // every other wave comes in by troop lander to a forward post, if a gunship is free:
+        // shoot the lander down on the way and the wave never arrives
+        T.waveN = (T.waveN || 0) + 1;
+        const lz = n >= 2 && T.waveN % 2 === 0 && lander && S.airDrop ? spawnCP(w, f) : null;
+        if (!(lz && !lz.home && S.airDrop(w, f, lz.pos, n)))
+          for (let i = 0; i < n; i++) { const c = spawnCP(w, f); if (!c) break; S.spawnUnit(w, 'infantry', S.pickClass(w), f, S.ring(w, c.pos, 5, c.r * 0.85)); }
       }
       for (const type of ['skiff', 'tank']) {
         if (veh[type] >= (T.vehCap[type] || 0)) { continue; }
@@ -5359,9 +5364,10 @@
           if (c) S.spawnUnit(w, 'vehicle', type, f, S.ring(w, c.pos, c.r * 0.6, c.r * 1.1));
         }
       }
+      // roster slot 2 is the gunship: a wing always keeps a troop lander
       if (air < T.airCap) {
         T.airT -= dt;
-        if (T.airT <= 0) { const bay = S.carrierFor(w, f); T.airT = bay ? 11 : 24; const u = S.launchFighter(w, f, bay, w.rng.i(6)); w.events.push({ type: 'launch', pos: V.clone(u.pos), team: f }); }
+        if (T.airT <= 0) { const bay = S.carrierFor(w, f); T.airT = bay ? 11 : 24; const u = S.launchFighter(w, f, bay, gun ? w.rng.i(6) : 2); w.events.push({ type: 'launch', pos: V.clone(u.pos), team: f }); }
       }
       // AI fleet calls an orbital strike on a massed enemy
       if (T.strikeT <= 0 && cap && !cap.pid) {
@@ -5436,6 +5442,16 @@
       const cap = w.units.find(u => u.kind === 'capital' && u.team === f);
       for (let i = 0; i < T.airCap; i++) S.launchFighter(w, f, S.carrierFor(w, f, i) || cap, i);
     }
+    // campaign state shapes the defences: saboteurs take out the shield generator,
+    // and a world with no garrison left has no emplacements at all
+    for (const f of E.TEAMS) {
+      const B = w.teams[f].bonus;
+      for (const u of w.units) {
+        if (u.team !== f || u.kind !== 'turret') continue;
+        if ((B.sabotaged && u.type === 'shieldgen') || (B.fort === 0 && u.type !== 'ioncannon')) { u.alive = false; w.umap.delete(u.id); }
+      }
+    }
+    w.units = w.units.filter(u => u.alive);
     for (const u of w.units) u.bornT = -10;
     w.events.length = 0;
   }
@@ -10739,7 +10755,7 @@
         const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills; menu.saveProfile();
         let extra = `<div class="r-xp">+${(r.score + (r.won ? 500 : 100)).toLocaleString()} XP · ${E.Campaign.rank(P.xp).name}</div>`;
         if (ctx && ctx.campaign) {
-          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending);
+          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, E.Campaign.battleReport(game.world));
           ctx.res = res; menu.saveCampaign();
           extra += `<div class="r-camp">${res.defending ? (res.won ? `${res.planet} holds.` : `${res.planet} has fallen.`) : (res.won ? `${res.planet} is yours.` : `The assault on ${res.planet} failed.`)} +${res.reward} credits</div>`;
         }
@@ -10747,7 +10763,7 @@
       };
       game.onContinue = () => { const res = ctx && ctx.res; back(() => { if (ctx && ctx.campaign) menu.afterBattle(res || { defending: ctx.defending }); else menu.show(); }); };
       game.onQuit = () => {
-        if (ctx && ctx.campaign && ctx.defending) { E.Campaign.applyBattle(ctx.campaign, ctx.planet, false, 0, true); menu.saveCampaign(); }
+        if (ctx && ctx.campaign && ctx.defending) { E.Campaign.applyBattle(ctx.campaign, ctx.planet, false, 0, true, E.Campaign.battleReport(game.world)); menu.saveCampaign(); }
         back(() => { if (ctx && ctx.campaign) menu.showCampaign(); else menu.show(); });
       };
     });
