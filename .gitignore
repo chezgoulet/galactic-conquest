@@ -1,0 +1,9 @@
+node_modules/
+dist/
+www/
+.pglite/
+*.log
+.DS_Store
+apps/play/dist/
+data/
+server/run/
