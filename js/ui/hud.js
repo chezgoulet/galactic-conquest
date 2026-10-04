@@ -139,9 +139,9 @@
           $.cap.querySelector('span').textContent = cp.contested ? 'CONTESTED — ' + cp.name.toUpperCase() : (mine < 0 ? 'NEUTRALIZING ' : 'CAPTURING ') + cp.name.toUpperCase();
           const i = $.cap.querySelector('i'); i.style.width = Math.abs(cp.cap) * 100 + '%'; i.style.background = COL[cp.cap >= 0 ? 'aegis' : 'verdant'];
         } else $.cap.style.display = 'none';
-        if (this.frameN % 20 === 0) $.hint.innerHTML = u.kind === 'fighter' ? '<b>Mouse</b> steer · <b>W/Shift</b> boost · <b>S</b> brake · <b>G</b> ' + (A ? A.name : '') + ' · <b>C</b> command · <b>F</b> switch unit'
-          : u.kind === 'capital' ? '<b>WASD</b> helm · <b>LMB</b> focus batteries · <b>G</b> orbital strike · <b>F</b> switch unit · <b>C</b> command'
-          : '<b>F</b> take control of a friendly · <b>Z/X/V</b> squad follow / move / dismiss · <b>C</b> command view';
+        if (this.frameN % 20 === 0) $.hint.innerHTML = u.kind === 'fighter' ? '<b>Mouse</b> steer · <b>W/Shift</b> boost · <b>S</b> brake · <b>G</b> ' + (A ? A.name : '') + ' · <b>M</b> command · <b>F</b> switch unit'
+          : u.kind === 'capital' ? '<b>WASD</b> helm · <b>LMB</b> focus batteries · <b>G</b> orbital strike · <b>F</b> switch unit · <b>M</b> command'
+          : '<b>F</b> take control of a friendly · <b>Z/X/V</b> squad follow / move / dismiss · <b>M</b> command view';
       } else { $.cap.style.display = 'none'; $.scope.style.display = 'none'; $.hint.innerHTML = st === 'commander' ? '<b>LMB</b> select · <b>drag</b> box · <b>RMB</b> move · <b>H</b> hold · <b>1/2/3</b> infantry / armor / air · <b>F</b> take control · <b>Enter</b> deploy' : ''; this._uid = 0; }
       $.dead.style.display = st === 'dead' ? '' : 'none';
       // deploy countdown
@@ -316,7 +316,7 @@
             <label>Volume<input type="range" class="p-vol" min="0" max="1" step="0.05" value="${s.volume == null ? 0.8 : s.volume}"></label>
             <label class="chk"><input type="checkbox" class="p-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
           </div>
-          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>C</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
+          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>M</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
           <button class="gc-btn p-quit">${g.role === 'sp' ? 'Abandon Battle' : 'Leave Match'}</button>
         </div>`);
       const L = this.$.layer, save = () => E.bus.emit('settings:changed', s);

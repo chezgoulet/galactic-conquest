@@ -69,7 +69,8 @@
     // ── player commands ────────────────────────────────────────
     addPlayer(pid, team, name) {
       const p = { id: pid, team, name: name || 'Commander', unitId: 0, deadT: -99, selected: [],
-        input: { mx: 0, mz: 0, moveYaw: 0, yaw: 0, pitch: 0, fire: false, abil: false, sprint: false, jump: false },
+        input: { mx: 0, mz: 0, moveYaw: 0, yaw: 0, pitch: 0, fire: false, abil: false, sprint: false, jump: false,
+                 roll: 0, crouch: false, abil2: false, cycle: false },
         score: 0, kills: 0, deaths: 0, captures: 0, streak: 0, best: 0 };
       this.players[pid] = p;
       return p;
@@ -80,6 +81,7 @@
     release(pid) { E.SIM.release(this, pid); }
     deploy(pid, type, cpId) { return E.SIM.deploy(this, pid, type, cpId); }
     order(pid, ids, type, pos) { E.SIM.order(this, pid, ids, type, pos); }
+    verb(pid, name, a, b) { return E.SIM.verb(this, pid, name, a, b); }
 
     tick(dt) { E.SIM.update(this, dt); }
     drainEvents() { const e = this.events; this.events = []; return e; }

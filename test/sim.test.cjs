@@ -5,7 +5,7 @@ const load = require('../tools/load.cjs');
 const E = load([
   'js/core/util.js', 'js/core/rng.js', 'js/core/vec3d.js', 'js/core/events.js', 'js/core/loop.js', 'js/core/noise.js',
   'js/data/factions.js', 'js/data/biomes.js', 'js/data/units.js',
-  'js/sim/terrain.js', 'js/sim/sim.js', 'js/sim/world.js',
+  ...load.files(['sim']),
 ]);
 
 const HZ = 30, DT = 1 / HZ;

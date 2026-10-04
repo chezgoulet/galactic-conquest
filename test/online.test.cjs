@@ -50,7 +50,7 @@ test('online: game client end-to-end against the real service', async () => {
   const E = load([
     'js/core/util.js', 'js/core/rng.js', 'js/core/vec3d.js', 'js/core/events.js', 'js/core/loop.js', 'js/core/noise.js',
     'js/data/factions.js', 'js/data/biomes.js', 'js/data/units.js',
-    'js/sim/terrain.js', 'js/sim/sim.js', 'js/sim/world.js',
+    ...load.files(['sim']),
     'js/net/net.js', 'js/net/relay.js', 'js/net/online.js',
   ], {
     fetch, WebSocket, RTCPeerConnection: MockRTC,

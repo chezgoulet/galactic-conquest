@@ -65,6 +65,7 @@
       else if (type === 'release') w.release(this.pid);
       else if (type === 'deploy') w.deploy(this.pid, a, b);
       else if (type === 'order') w.order(this.pid, a, b, c);
+      else if (type === 'verb') w.verb(this.pid, a, b, c);
     }
     unit() { return this.world.unitOf(this.pid); }
     player() { return this.world.player(this.pid); }
@@ -148,7 +149,8 @@
         const a = cam.aim(w, u, u.kind === 'capital' ? 3000 : 700); this.aimInfo = a;
         if (u.kind === 'infantry' || u.kind === 'vehicle' || u.kind === 'turret') { yaw = a.yaw; pitch = a.pitch; }
         const inp = { mx: (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0), mz: (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0), moveYaw: cam.yaw, yaw, pitch,
-          fire: this.mouse.l && (this.locked() || this.freeFire), abil: k.has('g') || k.has('q') || this.mouse.m, sprint: k.has('shift'), jump: k.has(' ') };
+          fire: this.mouse.l && (this.locked() || this.freeFire), abil: k.has('g') || this.mouse.m, sprint: k.has('shift'), jump: k.has(' '),
+          roll: (k.has('e') ? 1 : 0) - (k.has('q') ? 1 : 0), crouch: k.has('c'), abil2: k.has('r'), cycle: k.has('t') };
         this.cmd('input', inp);
       } else if (this.state === 'commander') {
         const c = cam.cmd, sp = c.dist * 1.1 * dt, fx = Math.sin(c.yaw), fz = Math.cos(c.yaw);
@@ -209,8 +211,8 @@
       if (this.paused || this.state === 'ended') return;
       if (k === 'tab') this.hud.scoreboard(true);
       if (this.state === 'play') {
-        if (k === 'f' || k === 'e') this.takeControl();
-        else if (k === 'c') this.toCommander();
+        if (k === 'f') this.takeControl();
+        else if (k === 'm') this.toCommander();
         else if (k === 'z') this.squadOrder('follow');
         else if (k === 'x') this.squadOrder('attack');
         else if (k === 'v') this.squadOrder('free');

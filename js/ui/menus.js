@@ -159,7 +159,7 @@
           <div class="m-h"><button class="m-back">‹ Back</button><h1>Codex</h1></div>
           <div class="m-sec">How a battle is won</div>
           <p class="m-lead">Each side has a pool of <b>reinforcements</b>. Every death spends one; holding more <b>command posts</b> than the enemy drains theirs. Stand inside a post's ring to capture it. Destroying the enemy <b>capital ship</b> costs them 25 at a stroke. Run them out and the world is yours.</p>
-          <p class="m-lead">You are never stuck in one body: press <b>F</b> while aiming at any friendly soldier, tank, fighter or the flagship itself to take control of it. Press <b>C</b> for the command view to order your army around the map.</p>
+          <p class="m-lead">You are never stuck in one body: press <b>F</b> while aiming at any friendly soldier, tank, fighter or the flagship itself to take control of it. Press <b>M</b> for the command view to order your army around the map.</p>
           <div class="m-sec">Factions</div>
           <div class="c-facs">${E.FACTION_LIST.map(f => `<div class="c-fac ${f.id}"><b>${f.name}</b><em>${f.tagline}</em><p>${f.culture.desc}</p><p class="dim">${f.culture.values}</p></div>`).join('')}</div>
           <div class="m-sec">Infantry</div><div class="c-grid">${Object.values(E.INFANTRY).map(d => unit(d, 'Infantry')).join('')}</div>
@@ -182,7 +182,7 @@
             <label>Volume<input type="range" class="s-vol" min="0" max="1" step="0.05" value="${s.volume}"></label>
             <label class="chk"><input type="checkbox" class="s-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
           </div>
-          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>C</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
+          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>M</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
           <button class="gc-btn s-reset">Reset career &amp; campaign</button>
         </div>`);
       this.bindCommon();

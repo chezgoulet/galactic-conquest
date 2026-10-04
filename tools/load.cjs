@@ -7,7 +7,11 @@
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const ROOT = path.join(__dirname, '..');
 
-module.exports = function load(files, extra) {
+module.exports = load;
+// every script in the given js/ layers, in the same order tools/build.cjs bundles them
+load.files = (layers) => layers.flatMap((d) => fs.readdirSync(path.join(ROOT, 'js', d)).filter((f) => f.endsWith('.js')).sort().map((f) => `js/${d}/${f}`));
+
+function load(files, extra) {
   const ctx = {
     console, Math, JSON, Date, setTimeout, clearTimeout, setInterval, clearInterval,
     crypto: globalThis.crypto, performance: globalThis.performance,
@@ -23,4 +27,4 @@ module.exports = function load(files, extra) {
   vm.createContext(ctx);
   for (const f of files) vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), ctx, { filename: f });
   return ctx.E;
-};
+}

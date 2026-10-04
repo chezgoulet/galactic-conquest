@@ -24,7 +24,8 @@
 
   // ── snapshot format ──────────────────────────────────────────
   // unit row: [id, kind, type, team, ax, ay, az, yaw, pitch, roll,
-  //            vx, vy, vz, hp, maxHp, shield, maxShield, heat, hot, lastFire, onGround, spd, flag]
+  //            vx, vy, vz, hp, maxHp, shield, maxShield, heat, hot, lastFire, onGround, spd, flag, x]
+  //            (x = the kind's extra state from E.SIM.net.unit, or 0)
   // cp row:   [id, owner, cap, contested, na, nv]
   // team:     [tickets, startTickets, cps, kills, deaths, strikesT]
   // player:   [pid, name, kills, deaths, captures, score]
@@ -34,7 +35,7 @@
       R1(p.x), R1(p.y), R1(p.z), R3(u.yaw), R2(u.pitch), R2(u.roll),
       R1(v ? v.x : 0), R1(v ? v.y : 0), R1(v ? v.z : 0),
       Math.round(u.hp), Math.round(u.maxHp), Math.round(u.shield || 0), Math.round(u.maxShield || 0),
-      R2(u.heat || 0), u.hot ? 1 : 0, R2(u.lastFire), u.onGround ? 1 : 0, R2(u.spd || 0), u.flag ? 1 : 0];
+      R2(u.heat || 0), u.hot ? 1 : 0, R2(u.lastFire), u.onGround ? 1 : 0, R2(u.spd || 0), u.flag ? 1 : 0, E.SIM.packUnit(u)];
   }
   function urowOf(u) { return urow(u); }
   function R1(x) { return Math.round(x * 10) / 10; }
@@ -64,7 +65,7 @@
       cp: CP, team: TEAM, pl: PL,
       ev: (ev || []).slice(-EV_RING),
       win: w.winner, I: R2(w.intensity || 0),
-      pj: PJ, str: STR,
+      pj: PJ, str: STR, x: E.SIM.packWorld(w),
     };
     s._U = now; // host-side: the full unit map this snapshot represents
     return s;
@@ -74,7 +75,7 @@
   // the renderer (which reads u.def, u.vel, u.lastFire, …) never sees undefined.
   function unitFrom(r) {
     const def = E.unitDef(r[1], r[2]) || {};
-    return {
+    const u = {
       id: r[0], kind: r[1], type: r[2], team: r[3], def, armor: def.armor,
       pos: { x: r[4], y: r[5], z: r[6] }, vel: { x: r[10], y: r[11], z: r[12] },
       yaw: r[7], pitch: r[8], roll: r[9], aimYaw: r[7], aimPitch: r[8],
@@ -82,6 +83,8 @@
       heat: r[17], hot: !!r[18], lastFire: r[19], onGround: !!r[20], spd: r[21],
       r: def.r || 2, h: def.h || 2, flag: !!r[22], alive: true, pid: null,
     };
+    E.SIM.unpackUnit(u, r[23]);
+    return u;
   }
 
   // A guest-side world. Same read interface the Renderer + Game + HUD use as the
@@ -124,6 +127,7 @@
       this._applyPlayers(s.pl);
       this._applyUnits(s);
       this._applyProjectiles(s);
+      E.SIM.unpackWorld(this, s.x);
       if (!this._ready) { this._ready = true; }
     }
     _applyCps(cp) {
@@ -163,6 +167,7 @@
     else if (c.t === 'release') w.release(pid);
     else if (c.t === 'deploy') w.deploy(pid, c.a, c.b);
     else if (c.t === 'order') w.order(pid, c.a, c.b, c.c);
+    else if (c.t === 'verb') w.verb(pid, c.a, c.b, c.c);
   }
 
   // The per-match session: host runs the sim and broadcasts snapshots; a guest
