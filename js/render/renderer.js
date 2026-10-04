@@ -27,7 +27,7 @@
       const biome = world.planet.biomeDef;
       this.sky = E.makeSky(S, world.planet, biome);
       S.setAtmosphere(this.sky.atmosphere);
-      S.setEnvironment(this.sky.dome);
+      S.setEnvironment(this.sky);
       this.planetGroup = E.buildTerrain(S, world.terrain, biome, S.qualityName);
       this.camera.terrain = world.terrain;
       this.fx.setBiome(biome, world.terrain);
@@ -63,7 +63,7 @@
       const tex = this._glowTex || (this._glowTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 64; const x = cv.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.3, 'rgba(255,255,255,0.4)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new T.CanvasTexture(cv); })());
       const n = org ? 3 : (u.type === 'dreadnought' ? 4 : 3), W = d.h * 2.5, H = d.h * 1.25;
       for (let i = 0; i < n; i++) {
-        const s = new T.Sprite(new T.SpriteMaterial({ map: tex, color: new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), blending: T.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+        const s = new T.Sprite(E.Mat.sprite({ map: tex, color: new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), additive: true }));
         s.scale.setScalar(H * 1.5); s.position.set((i - (n - 1) / 2) * W * (org ? 0.26 : 0.24), 0, -d.len * 0.57); r.m.body.add(s);
       }
     }
@@ -171,7 +171,7 @@
       for (const id of ids || []) {
         const r = this.models.get(id); if (!r) continue;
         let m = this.selRings[n];
-        if (!m) { m = new T.Mesh(new T.RingGeometry(0.86, 1, 32).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthTest: false, blending: T.AdditiveBlending, fog: false })); m.renderOrder = 9; this.scene.hud3d.add(m); this.selRings.push(m); }
+        if (!m) { m = new T.Mesh(new T.RingGeometry(0.86, 1, 32).rotateX(-Math.PI / 2), E.Mat.emissive({ opacity: 0.9, depthTest: false, additive: true })); m.renderOrder = 9; this.scene.hud3d.add(m); this.selRings.push(m); }
         m.visible = true; m.material.color.setRGB(col[0] * 2, col[1] * 2, col[2] * 2);
         const u = r.u, s = Math.max(1.4, u.r * 1.5); m.scale.setScalar(s);
         m.position.set(r.x, (u.kind === 'fighter' ? r.y - 2 : this.terrain.height(r.x, r.z) + 0.3), r.z); n++;
@@ -184,8 +184,6 @@
       this.time = t;
       const S = this.scene;
       S.gov(dt * 1000);
-      const pg = this.planetGroup;
-      if (pg) { if (pg.userData.water) pg.userData.water.material.uniforms.time.value = t; pg.userData.ground.userData.U.uTime.value = t; }
       const local = view.unit ? view.unit.id : 0;
       this.syncUnits(world, dt, t, local);
       this.updateDead(dt);
@@ -199,8 +197,23 @@
       const f = view.mode === 'unit' && view.unit ? view.pos : (view.mode === 'commander' ? { x: this.camera.cmd.x, y: 0, z: this.camera.cmd.z } : this.camera.orbit);
       const ext = view.mode === 'unit' && view.unit ? (view.unit.kind === 'infantry' ? 110 : view.unit.kind === 'capital' ? 700 : 240) : 520;
       S.focusShadows(f, ext);
-      S.atmo.uniforms.density.value = this.sky.atmosphere.density * (1 - E.smoothstep(300, 1400, cam.position.y) * 0.75);
+      this.postFor(view, dt);
       S.render(t);
+    }
+    // per-frame post-processing parameters from the camera mode: depth of field is off in first/third person
+    // gameplay and used by the cinematic (menu / orbit), commander and capital framings; motion blur follows camera speed.
+    postFor(view, dt) {
+      const S = this.scene, cam = S.camera, c = this.camera;
+      const mode = view.mode === 'commander' ? 'commander' : (view.mode === 'unit' && view.unit ? 'unit' : 'orbit');
+      const cinematic = mode !== 'unit';
+      let focus = 80, range = 90, bokeh = 2.5;
+      if (mode === 'commander') { focus = c.cmd.dist; range = Math.max(120, c.cmd.dist * 0.55); bokeh = 1.6; }
+      else if (mode === 'orbit') { const o = c.orbit; focus = Math.hypot(cam.position.x - o.x, cam.position.y - o.y, cam.position.z - o.z); range = Math.max(60, focus * 0.4); bokeh = 2.8; }
+      S.post.set({ dof: { on: cinematic, focus, range, bokeh } });
+      const p = cam.position, l = this._pp || (this._pp = { x: p.x, y: p.y, z: p.z });
+      const sp = Math.hypot(p.x - l.x, p.y - l.y, p.z - l.z) / Math.max(dt, 1e-3); l.x = p.x; l.y = p.y; l.z = p.z;
+      this._sp = (this._sp || 0) * 0.9 + Math.min(sp, 400) * 0.1;
+      S.post.set({ motionBlur: mode === 'unit' && view.unit && view.unit.kind !== 'infantry' ? Math.min(1, this._sp / 120) * 0.6 : Math.min(1, this._sp / 200) * 0.25 });
     }
     dispose() { window.removeEventListener('resize', this._resize); this.clear(); this.scene.dispose(); }
   }

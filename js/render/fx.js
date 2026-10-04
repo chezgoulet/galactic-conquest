@@ -41,17 +41,15 @@
       this.p = new Float32Array(n * 3); this.v = new Float32Array(n * 3); this.c = new Float32Array(n * 4); this.s = new Float32Array(n);
       this.life = new Float32Array(n); this.max = new Float32Array(n); this.s0 = new Float32Array(n); this.s1 = new Float32Array(n);
       this.c0 = new Float32Array(n * 4); this.drag = new Float32Array(n); this.grav = new Float32Array(n);
-      const g = new T.BufferGeometry();
-      g.setAttribute('position', new T.BufferAttribute(this.p, 3).setUsage(T.DynamicDrawUsage));
-      g.setAttribute('aColor', new T.BufferAttribute(this.c, 4).setUsage(T.DynamicDrawUsage));
-      g.setAttribute('aSize', new T.BufferAttribute(this.s, 1).setUsage(T.DynamicDrawUsage));
-      this.mat = new T.ShaderMaterial({
-        transparent: true, depthWrite: false, blending: additive ? T.AdditiveBlending : T.NormalBlending,
-        uniforms: { map: { value: tex }, uScale: { value: 600 } },
-        vertexShader: 'attribute vec4 aColor; attribute float aSize; varying vec4 vC; uniform float uScale; void main(){ vC = aColor; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = min(aSize * uScale / max(-mv.z, 0.1), 900.0); gl_Position = projectionMatrix * mv; }',
-        fragmentShader: 'varying vec4 vC; uniform sampler2D map; void main(){ float a = texture2D(map, gl_PointCoord).r; gl_FragColor = vec4(vC.rgb' + (additive ? ' * a * vC.a, 1.0' : ', a * vC.a') + '); }',
-      });
-      this.pts = new T.Points(g, this.mat); this.pts.frustumCulled = false; this.pts.renderOrder = additive ? 6 : 5;
+      // instanced billboards: one quad, per-instance centre / colour / size attributes (WebGPU has no point sprites)
+      const q = new T.PlaneGeometry(1, 1), g = new T.InstancedBufferGeometry();
+      g.index = q.index; g.setAttribute('position', q.attributes.position); g.setAttribute('uv', q.attributes.uv); g.setAttribute('normal', q.attributes.normal);
+      g.instanceCount = n;
+      g.setAttribute('aPos', new T.InstancedBufferAttribute(this.p, 3).setUsage(T.DynamicDrawUsage));
+      g.setAttribute('aColor', new T.InstancedBufferAttribute(this.c, 4).setUsage(T.DynamicDrawUsage));
+      g.setAttribute('aSize', new T.InstancedBufferAttribute(this.s, 1).setUsage(T.DynamicDrawUsage));
+      this.mat = E.Mat.particle({ tex, additive });
+      this.pts = new T.Mesh(g, this.mat); this.pts.frustumCulled = false; this.pts.renderOrder = additive ? 6 : 5;
       this.geo = g; scene.fx.add(this.pts);
     }
     emit(x, y, z, vx, vy, vz, life, s0, s1, r, g, b, a, drag, grav) {
@@ -75,7 +73,7 @@
         const fade = k < 0.12 ? k / 0.12 : 1 - (k - 0.12) / 0.88;
         c[q] = c0[q]; c[q + 1] = c0[q + 1] * (1 - k * 0.45); c[q + 2] = c0[q + 2] * (1 - k * 0.8); c[q + 3] = c0[q + 3] * fade;
       }
-      this.geo.attributes.position.needsUpdate = true; this.geo.attributes.aColor.needsUpdate = true; this.geo.attributes.aSize.needsUpdate = true;
+      this.geo.attributes.aPos.needsUpdate = true; this.geo.attributes.aColor.needsUpdate = true; this.geo.attributes.aSize.needsUpdate = true;
     }
   }
 
@@ -100,12 +98,12 @@
       const a = new T.PlaneGeometry(1, 1).rotateX(Math.PI / 2), b = new T.PlaneGeometry(1, 1).rotateX(Math.PI / 2).rotateZ(Math.PI / 2);
       const bg = T.mergeGeometries([a, b]);
       this.boltN = 1400;
-      this.bolts = new T.InstancedMesh(bg, new T.MeshBasicMaterial({ map: boltTex(), transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false }), this.boltN);
+      this.bolts = new T.InstancedMesh(bg, E.Mat.emissive({ map: boltTex(), additive: true, side: 'double' }), this.boltN);
       this.bolts.frustumCulled = false; this.bolts.count = 0; this.bolts.renderOrder = 7;
       this.bolts.setColorAt(0, new T.Color(1, 1, 1));
       scene.fx.add(this.bolts);
       // solid ordnance (grenades, bombs)
-      this.shells = new T.InstancedMesh(new T.IcosahedronGeometry(1, 0), new T.MeshStandardMaterial({ color: 0x15171c, roughness: 0.5, metalness: 0.7, emissive: 0xff5a1a, emissiveIntensity: 0.6 }), 128);
+      this.shells = new T.InstancedMesh(new T.IcosahedronGeometry(1, 0), E.Mat.pbr({ color: 0x15171c, roughness: 0.5, metalness: 0.7, emissive: 0xff5a1a, emissiveIntensity: 0.6 }), 128);
       this.shells.frustumCulled = false; this.shells.count = 0; scene.fx.add(this.shells);
       // shockwave rings + markers
       this.rings = []; this.ringPool = [];
@@ -120,26 +118,32 @@
     setBiome(biome, terrain) {
       const T = E.THREE, c = biome.palette.low;
       this.dustCol = [c[0] / 255 * 0.9, c[1] / 255 * 0.9, c[2] / 255 * 0.9]; this.terrain = terrain;
-      if (this.weather) { this.scene.fx.remove(this.weather); this.weather.geometry.dispose(); this.weather = null; }
+      if (this.weather) { this.scene.fx.remove(this.weather); this.weather.geometry.dispose(); this.weather.material.dispose(); this.weather = null; }
       const W = WEATHER[(biome.weather || {}).kind]; if (!W) return;
       const n = Math.round(W.n * this.q * (biome.weather.density || 0.5) * 1.4), pos = new Float32Array(n * 3), r = E.RNG(99);
       for (let i = 0; i < n * 3; i++) pos[i] = r.next();
-      const g = new T.BufferGeometry(); g.setAttribute('position', new T.BufferAttribute(pos, 3));
-      const m = new T.ShaderMaterial({
-        transparent: true, depthWrite: false, blending: W.add ? T.AdditiveBlending : T.NormalBlending,
-        uniforms: { time: { value: 0 }, cam: { value: new T.Vector3() }, col: { value: new T.Vector3(W.col[0], W.col[1], W.col[2]) }, size: { value: W.size }, fall: { value: W.fall }, wind: { value: W.wind }, alpha: { value: W.a }, uScale: { value: 600 }, stretch: { value: W.stretch } },
-        vertexShader: `uniform float time, size, fall, wind, uScale, stretch; uniform vec3 cam; varying float vA;
-          void main(){ vec3 B = vec3(90.0, 60.0, 90.0);
-            vec3 p = position * B; p.y -= time * fall; p.x += time * wind + sin(time * 0.7 + position.z * 40.0) * 1.5; p.z += time * wind * 0.4;
-            p = mod(p - cam, B) - B * 0.5 + cam;
-            vec4 mv = modelViewMatrix * vec4(p, 1.0); float d = max(-mv.z, 0.1);
-            vA = smoothstep(45.0, 28.0, length(p - cam)) * smoothstep(0.6, 3.0, d);
-            gl_PointSize = min(size * (1.0 + stretch * 5.0) * uScale / d, 64.0); gl_Position = projectionMatrix * mv; }`,
-        fragmentShader: `uniform vec3 col; uniform float alpha, stretch; varying float vA;
-          void main(){ vec2 c = gl_PointCoord - 0.5; float a = stretch > 0.5 ? smoothstep(0.09, 0.0, abs(c.x + c.y * 0.12)) * smoothstep(0.5, 0.2, abs(c.y)) : smoothstep(0.5, 0.1, length(c));
-            gl_FragColor = vec4(col, a * alpha * vA); }`,
-      });
-      this.weather = new T.Points(g, m); this.weather.frustumCulled = false; this.weather.renderOrder = 8;
+      // weather: instanced billboards whose positions are wrapped around the camera entirely in the vertex stage
+      const X = T.TSL, { uniform, attribute, vec2, vec3, vec4, float, mod, smoothstep, length, abs, sin, uv, select, positionView, max, min, cameraPosition } = X;
+      const q = new T.PlaneGeometry(1, 1), g = new T.InstancedBufferGeometry();
+      g.index = q.index; g.setAttribute('position', q.attributes.position); g.setAttribute('uv', q.attributes.uv); g.setAttribute('normal', q.attributes.normal);
+      g.instanceCount = n; g.setAttribute('aRnd', new T.InstancedBufferAttribute(pos, 3));
+      const time = uniform(0), cam = uniform(new T.Vector3()), col = uniform(new T.Color(W.col[0], W.col[1], W.col[2]));
+      const rnd = attribute('aRnd', 'vec3'), B = vec3(90, 60, 90);
+      let p = rnd.mul(B).toVar();
+      p = vec3(p.x.add(time.mul(W.wind)).add(sin(time.mul(0.7).add(rnd.z.mul(40))).mul(1.5)), p.y.sub(time.mul(W.fall)), p.z.add(time.mul(W.wind * 0.4)));
+      const wp = mod(p.sub(cam), B).sub(B.mul(0.5)).add(cam);
+      const m = E.Mat.node('sprite');
+      m.positionNode = wp;
+      const mv = T.TSL.modelViewMatrix.mul(vec4(wp, 1)), d = max(mv.z.negate(), 0.1);
+      const vA = smoothstep(45, 28, length(wp.sub(cam))).mul(smoothstep(0.6, 3.0, d));
+      m.scaleNode = vec2(W.size, W.size * (1 + W.stretch * 5));
+      const cc = uv().sub(0.5);
+      const a = W.stretch ? smoothstep(0.09, 0.0, abs(cc.x.add(cc.y.mul(0.12)))).mul(smoothstep(0.5, 0.2, abs(cc.y))) : smoothstep(0.5, 0.1, length(cc));
+      m.colorNode = vec4(col, a.mul(W.a).mul(vA));
+      m.transparent = true; m.depthWrite = false; m.fog = false; m.sizeAttenuation = true;
+      m.blending = W.add ? T.AdditiveBlending : T.NormalBlending;
+      m.userData = { time, cam };
+      this.weather = new T.Mesh(g, m); this.weather.frustumCulled = false; this.weather.renderOrder = 8;
       this.scene.fx.add(this.weather);
     }
 
@@ -163,7 +167,7 @@
     ring(p, r1, col, life, flat) {
       const T = E.THREE;
       let m = this.ringPool.pop();
-      if (!m) { m = new T.Mesh(this.ringGeo, new T.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false })); m.renderOrder = 6; this.scene.fx.add(m); }
+      if (!m) { m = new T.Mesh(this.ringGeo, E.Mat.emissive({ additive: true, side: 'double' })); m.renderOrder = 6; this.scene.fx.add(m); }
       m.visible = true; m.position.set(p.x, p.y + 0.3, p.z); m.material.color.setRGB(col[0] * 2, col[1] * 2, col[2] * 2);
       this.rings.push({ m, t: 0, life: life || 0.5, r1, flat: !!flat });
     }
@@ -224,7 +228,7 @@
       }
     }
     _marker(p, r) {
-      const T = E.THREE, m = new T.Mesh(this.ringGeo, new T.MeshBasicMaterial({ color: new T.Color(3, 0.25, 0.1), transparent: true, depthWrite: false, depthTest: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false }));
+      const T = E.THREE, m = new T.Mesh(this.ringGeo, E.Mat.emissive({ color: new T.Color(3, 0.25, 0.1), additive: true, depthTest: false, side: 'double' }));
       m.position.set(p.x, (this.terrain ? this.terrain.height(p.x, p.z) : p.y) + 0.6, p.z); m.scale.setScalar(r); m.renderOrder = 6; this.scene.fx.add(m);
       return m;
     }
@@ -260,8 +264,6 @@
     }
 
     update(dt, t, cam) {
-      const sc = this.scene.renderer.domElement.height / (2 * Math.tan(cam.fov * Math.PI / 360));
-      this.add.mat.uniforms.uScale.value = sc; this.smoke.mat.uniforms.uScale.value = sc;
       // continuous emitters (burning wrecks, falling debris)
       for (let i = this.emitters.length - 1; i >= 0; i--) {
         const e = this.emitters[i]; e.t += dt; e.acc += dt * e.rate;
@@ -281,7 +283,7 @@
         else { const s = r.r1 * (0.15 + 0.85 * (1 - (1 - k) * (1 - k))); r.m.scale.setScalar(s); r.m.material.opacity = (1 - k) * 0.85; }
       }
       for (const l of this.lights) if (l.userData.t > 0) { l.userData.t -= dt * 3.2; l.intensity = Math.max(0, l.userData.t) * l.userData.p; }
-      if (this.weather) { const u = this.weather.material.uniforms; u.time.value = t; u.cam.value.copy(cam.position); u.uScale.value = sc; }
+      if (this.weather) { const u = this.weather.material.userData; u.time.value = t; u.cam.value.copy(cam.position); }
     }
   }
 

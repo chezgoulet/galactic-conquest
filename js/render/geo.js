@@ -81,44 +81,9 @@
     }
   }
 
-  // Shared hull material: PBR + vertex colours + procedural panel lines,
-  // lit windows and HDR emissive (engines, visors) that the bloom pass picks up.
-  let hullMat = null;
-  function material() {
-    if (hullMat) return hullMat;
-    const T = E.THREE;
-    const m = new T.MeshStandardMaterial({ vertexColors: true, metalness: 0.62, roughness: 0.5, envMapIntensity: 0.9 });
-    m.onBeforeCompile = (sh) => {
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec2 aFx; varying vec2 vFx; varying vec3 vOPos;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFx = aFx; vOPos = position;');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', `#include <common>
-          varying vec2 vFx; varying vec3 vOPos;
-          float gcHash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }`)
-        .replace('#include <color_fragment>', `#include <color_fragment>
-          float gcMode = floor(vFx.y + 0.5), gcPn = 0.5, gcWin = 0.0;
-          if (gcMode > 0.5) {
-            float fq = gcMode < 1.5 ? 2.6 : 0.16;
-            vec3 pc = vOPos * fq;
-            gcPn = gcHash(floor(pc));
-            vec3 fr = abs(fract(pc) - 0.5);
-            float seam = smoothstep(0.455, 0.5, max(fr.x, max(fr.y, fr.z)));
-            diffuseColor.rgb *= (0.84 + 0.3 * gcPn) * (1.0 - seam * 0.3);
-            if (gcMode > 2.5) {
-              vec3 wc = vOPos * vec3(0.55, 0.9, 0.3);
-              vec3 wf = abs(fract(wc) - 0.5);
-              float lit = step(0.63, gcHash(floor(wc) + 7.0));
-              gcWin = lit * step(wf.y, 0.16) * step(max(wf.x, wf.z), 0.3);
-            }
-          }`)
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + (gcPn - 0.5) * 0.3, 0.08, 1.0);')
-        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-          totalEmissiveRadiance += vColor.rgb * vFx.x + vec3(1.0, 0.86, 0.6) * gcWin * 1.8;`);
-    };
-    hullMat = m;
-    return m;
-  }
+  // Shared hull material (PBR + vertex colour + procedural panels/windows/emissive) lives in the
+  // material factory: see E.Mat.hull() in mat.js.
+  const material = () => E.Mat.hull();
 
   E.Geo = { Builder, material, lin, shade };
 })(window.E = window.E || {});
