@@ -194,3 +194,19 @@ test('a world with no garrison and no fleet has no ships in orbit, and the battl
   for (let i = 0; i < 30 * 20; i++) w.tick(1 / 30);
   assert.ok(w.units.some(u => u.team === 'verdant' && u.kind === 'infantry'), 'the defenders still fight on the ground');
 });
+
+test('the battle hands its fleet report back to the campaign in fleet order', () => {
+  const c = mk(), fl = myFleet(c);
+  fl.ships.push({ type: 'carrier', hp: 1 });
+  const id = C.attackable(c)[0], res = C.moveFleet(c, fl.id, id);
+  const w = new E.World(res.options);
+  for (let i = 0; i < 30 * 30; i++) w.tick(1 / 30);
+  const cu = w.units.find(u => u.kind === 'capital' && u.team === 'aegis' && u.type === 'carrier');
+  E.SIM.kill(w, cu, { team: 'verdant', uid: 0, owner: null, wk: 'turbo' });
+  for (let i = 0; i < 30; i++) w.tick(1 / 30);
+  const rep = C.battleReport(w);
+  assert.deepStrictEqual([...w.fleetReport.aegis].slice(0, 2).map(s => s.type), ['cruiser', 'carrier']);
+  assert.strictEqual(rep.aegis[1].lost, true);
+  C.applyBattle(c, id, true, 0, false, rep);
+  assert.deepStrictEqual([...fl.ships].map(s => s.type), ['cruiser'], 'the carrier lost in battle is gone from the fleet');
+});

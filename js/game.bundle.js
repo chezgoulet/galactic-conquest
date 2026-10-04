@@ -899,6 +899,7 @@
   };
   // power = weight in the strategic odds; upkeep = fuel per turn
   const SHIPS = {
+    frigate:     { name: 'Frigate',     credits: 110, fuel: 20,  power: 0.45, upkeep: 2 },
     cruiser:     { name: 'Cruiser',     credits: 220, fuel: 40,  power: 1,   upkeep: 5 },
     carrier:     { name: 'Carrier',     credits: 320, fuel: 60,  power: 1.4, upkeep: 8 },
     dreadnought: { name: 'Dreadnought', credits: 520, fuel: 110, power: 2.2, upkeep: 12 },
@@ -1132,6 +1133,13 @@
     ensureFleet(c, pf); ensureFleet(c, ef);
     return { reward, planet: p.name, won: !!won, defending: !!defending, victory: c.victory };
   }
+  // What a finished battle (a World) did to each side's ships, in fleet order,
+  // in the shape applyBattle takes. Ships that withdrew survive with their damage.
+  function battleReport(w) {
+    const out = {};
+    for (const f in (w.fleetReport || {})) out[f] = w.fleetReport[f].map(s => ({ hp: s.hullFrac, lost: s.status === 'destroyed' || s.status === 'captured' }));
+    return out;
+  }
   // Settle a battle without fighting it, at the strategic odds.
   function autoResolve(c, id, defending) {
     defending = defending === undefined ? true : defending;
@@ -1351,7 +1359,7 @@
 
   E.Campaign = { newCampaign, neighbors, attackable, perks, income, fuelIncome, upkeep, owned, supplied, visible, blockaded, fleetScale, bonusFor,
     fleet, fleetsOf, fleetsAt, reach, forces, forecast, moveFleet, build, buy, op, opCost,
-    matchOptions, applyBattle, autoResolve, enemyTurn, endTurn: enemyTurn, summary, quickBattle, rank,
+    matchOptions, applyBattle, battleReport, autoResolve, enemyTurn, endTurn: enemyTurn, summary, quickBattle, rank,
     VERSION, PERKS, TRAITS, UPGRADES, SHIPS, BUILD, OPS, LIMITS, JUMP_FUEL, RANKS };
 })(window.E = window.E || {});
 
