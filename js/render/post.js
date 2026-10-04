@@ -22,7 +22,7 @@
   const BIOME_GRADE = {
     tundra:   { lift: [0.0, 0.004, 0.012], gamma: [1, 1, 1.02], gain: [0.97, 1.0, 1.06], sat: 0.96, contrast: 1.04 },
     desert:   { lift: [0.006, 0.004, 0.004], gamma: [1, 1, 1], gain: [1.02, 1.0, 0.96], sat: 0.94, contrast: 1.03 },
-    jungle:   { lift: [0, 0.008, 0.004], gamma: [0.98, 1.02, 0.98], gain: [0.95, 1.05, 0.95], sat: 1.12, contrast: 1.03 },
+    jungle:   { lift: [0.004, 0.004, 0.004], gamma: [1, 1, 1], gain: [1.0, 1.0, 0.97], sat: 0.95, contrast: 1.03 },
     urban:    { lift: [0.01, 0.004, 0.012], gamma: [1.02, 1, 0.98], gain: [1.08, 0.98, 0.92], sat: 1.05, contrast: 1.08 },
     volcanic: { lift: [0.012, 0.0, 0.0], gamma: [1.02, 0.98, 0.96], gain: [1.1, 0.94, 0.84], sat: 1.1, contrast: 1.1 },
     ocean:    { lift: [0, 0.004, 0.01], gamma: [0.98, 1, 1.02], gain: [0.94, 1.02, 1.08], sat: 1.04, contrast: 1.03 },
@@ -127,7 +127,7 @@
       // ── screen-space reflections (SSR): metals, glass canopies, water ──
       if (Q.ssr) {
         const mr = sp.getTextureNode('metalrough');
-        const ssrP = track(XX.ssr(color, depthN, normalN, { metalnessNode: mr.r, roughnessNode: mr.g, camera: cam, reflectNonMetals: true }));
+        const ssrP = track(XX.ssr(convertToTexture(color), depthN, normalN, { metalnessNode: mr.r, roughnessNode: mr.g, camera: cam, reflectNonMetals: true }));
         ssrP.resolutionScale = Q.ssr.scale; ssrP.quality.value = Q.ssr.quality; ssrP.maxDistance.value = 600; ssrP.thickness.value = 2.0; ssrP.intensity.value = 1.0;
         color = vec4(color.rgb.add(ssrP.getTextureNode().rgb.mul(u.ssrI).mul(0.9).mul(skyMask)), color.a);
       }

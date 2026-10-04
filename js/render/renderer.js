@@ -207,7 +207,7 @@
       const mode = view.mode === 'commander' ? 'commander' : (view.mode === 'unit' && view.unit ? 'unit' : 'orbit');
       const cinematic = mode !== 'unit';
       let focus = 80, range = 90, bokeh = 2.5;
-      if (mode === 'commander') { focus = c.cmd.dist; range = Math.max(120, c.cmd.dist * 0.55); bokeh = 1.6; }
+      if (mode === 'commander') { focus = c.cmd.dist; range = Math.max(200, c.cmd.dist * 1.1); bokeh = 1.2; }
       else if (mode === 'orbit') { const o = c.orbit; focus = Math.hypot(cam.position.x - o.x, cam.position.y - o.y, cam.position.z - o.z); range = Math.max(60, focus * 0.4); bokeh = 2.8; }
       S.post.set({ dof: { on: cinematic, focus, range, bokeh } });
       const p = cam.position, l = this._pp || (this._pp = { x: p.x, y: p.y, z: p.z });
