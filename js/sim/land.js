@@ -80,15 +80,12 @@
     if (wk === 'rocket' && m.seek !== 1) p.seek *= m.seek;
     return true;
   }
-  // seeker launch helper: use the AIR engineer's lock-on if it exists, else pass the target id
+  // Seeker launch helper. Ground targets lock at once; aircraft need the AIR
+  // lock-on (S.lockOn), which builds over time — so call this every tick the
+  // target is tracked. Returns the target id once locked, else 0.
   function lockId(w, u, tg) {
-    if (typeof S.lockOn === 'function') {
-      let r = null; try { r = S.lockOn(w, u, tg); } catch (e) { r = null; }
-      if (r && typeof r === 'object' && r.id) return r.id;
-      if (typeof r === 'number' && r > 0) return r;
-      if (r === false || r === 0) return 0;
-    }
-    return tg.id;
+    if (tg.kind !== 'fighter' || !S.lockOn) return tg.id;
+    return S.lockOn(w, u, tg, 1 / 30) ? tg.id : 0;
   }
 
   // ── infantry movement ────────────────────────────────────────
@@ -329,7 +326,7 @@
     if (inp.fire && !u.aimLimited) landFire(w, u, tmpA, 0);
     if (inp.abil) {
       let lk = 0;
-      if (u.def.alt === 'aamissile') { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; }
+      if (u.def.alt === 'aamissile') { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; if (!lk) return; }   // hold to build the lock; it fires when it has one
       landAlt(w, u, tmpA, lk);
     }
   }
@@ -341,7 +338,7 @@
     if (inp.fire) landFire(w, u, tmpA, 0);
     if (inp.abil && u.def.alt) {
       let lk = 0;
-      if (u.def.aa) { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; }
+      if (u.def.aa) { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; if (!lk) return; }
       landAlt(w, u, tmpA, lk);
     }
   }

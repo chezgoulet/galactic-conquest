@@ -258,12 +258,12 @@ test('point defence kills fighters and intercepts torpedoes; escort requests are
   const w = mk(); isolate(w);
   const a = find(w, 'aegis', 'carrier'); a.ai.thinkT = 1e9;
   for (const u of ships(w, 'aegis')) u.launchCd = 1e9;   // no friendly wing scrambles to cover her
-  // enemy bombers run at the carrier
-  const bs = []; for (let i = 0; i < 4; i++) { const b = S.spawnUnit(w, 'fighter', 'bomber', 'verdant', { x: a.pos.x + 500, y: a.pos.y + 20 * i, z: a.pos.z + 80 * i }, { yaw: -Math.PI / 2 }); b.ai.thinkT = 1e9; bs.push(b); }
+  // enemy bombers run at the carrier from above, clear of every hull
+  const bs = []; for (let i = 0; i < 4; i++) { const b = S.spawnUnit(w, 'fighter', 'bomber', 'verdant', { x: a.pos.x, y: a.pos.y + 300 + 20 * i, z: a.pos.z + 80 * i }, { yaw: -Math.PI / 2 }); b.ai.thinkT = 1e9; bs.push(b); }
   run(w, 0.6);
   assert.ok(a.needsEscort && a.threat >= 1, 'needs escort flag'); assert.ok(S.needsEscort(w, 'aegis').includes(a));
   assert.ok(w.events.some(e => e.type === 'escortRequest' && e.uid === a.id));
-  let kills = 0; run(w, 8, () => { for (const b of bs) if (!b.alive && !b.k) { b.k = 1; kills++; } for (const b of bs) if (b.alive) { b.pos.x = a.pos.x + 300; b.pos.z = a.pos.z + 100; b.pos.y = a.pos.y; } });
+  let kills = 0; run(w, 8, () => { for (const b of bs) if (!b.alive && !b.k) { b.k = 1; kills++; } for (const b of bs) if (b.alive) { b.pos.x = a.pos.x; b.pos.z = a.pos.z + 100; b.pos.y = a.pos.y + 300; b.vel.x = b.vel.y = b.vel.z = 0; } });   // pinned: a true loiter, so the guns' lead is honest
   assert.ok(kills >= 1, `flak killed ${kills} loitering bombers`); assert.ok(w.events.some(e => e.type === 'pdKill'));
   // torpedo interception
   let hit = 0;

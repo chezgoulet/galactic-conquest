@@ -413,7 +413,8 @@ test('countermeasures defeat AA seekers', () => {
     return { shots, miss };
   };
   const clean = run(false), jammed = run(true);
-  assert.ok(clean.shots >= 1 && jammed.shots >= 1, 'it launches either way');
+  assert.ok(clean.shots >= 1, 'it launches at a clean target');
+  assert.ok(jammed.shots <= clean.shots, 'a jammed target is harder to get a lock on');
   assert.ok(jammed.miss < clean.miss || clean.miss === 0, `jamming spoils the hits: ${jammed.miss} vs ${clean.miss}`);
 });
 

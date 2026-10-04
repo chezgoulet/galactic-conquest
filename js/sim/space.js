@@ -274,7 +274,7 @@
     const P = w.projectiles, L = lists(w);
     for (let i = P.length - 1; i >= 0; i--) {
       const p = P[i];
-      if (p.wk !== 'torpedo' && p.wk !== 'missile') continue;
+      if (p.wk !== 'torpedo' && p.wk !== 'missile' && p.wk !== 'ptorp') continue;
       const caps = L.caps[p.team === 'aegis' ? 'verdant' : 'aegis'];
       for (let k = 0; k < caps.length; k++) {
         const c = caps[k], d2 = V.distance2(c.pos, p.pos), env = 450 + c.def.r;
@@ -308,8 +308,8 @@
     for (const u of L.all) {
       const en = u.team === 'aegis' ? 'verdant' : 'aegis';
       let threat = 0, cover = 0;
-      for (const f of L.fighters[en]) if (f.type === 'bomber' && V.distance2(f.pos, u.pos) < 1400 * 1400) threat++;
-      for (const p of w.projectiles) if (p.wk === 'torpedo' && p.team === en && V.distance2(p.pos, u.pos) < 1000 * 1000) threat++;
+      for (const f of L.fighters[en]) if ((f.type === 'bomber' || f.type === 'strike') && V.distance2(f.pos, u.pos) < 1400 * 1400) threat++;
+      for (const p of w.projectiles) if ((p.wk === 'torpedo' || p.wk === 'ptorp') && p.team === en && V.distance2(p.pos, u.pos) < 1000 * 1000) threat++;
       for (const f of L.fighters[u.team]) if (f.type === 'interceptor' && V.distance2(f.pos, u.pos) < 1000 * 1000) cover++;
       const need = threat > 0 && cover < 2;
       u.threat = threat; u.escortT -= 0.5;

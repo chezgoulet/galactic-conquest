@@ -600,8 +600,18 @@
 })(window.E = window.E || {});
 
 // ---- js/data/air.js ----
-// AIR roster: fighters, bombers and their weapons. See units.js for armor
-// classes and the shared lookup helpers.
+// AIR roster: fighters, bombers, gunships, strike craft and their weapons. See
+// units.js for armor classes and the shared lookup helpers.
+//
+// Craft fields (all optional unless noted):
+//   speed   cruise speed at the default throttle (m/s)      boost   top speed on afterburner / in space
+//   stall   stall speed at sea-level air density            corner  best cornering speed
+//   turn    max pitch rate at corner speed (rad/s)           roll    max roll rate (rad/s)
+//   accel   thrust acceleration at full throttle (m/s^2)     gmax    structural turn-rate limit scale
+//   vtol    hovers on lift jets at low speed                 carry   troop capacity (gunship)
+//   ord     rounds of the alt weapon carried, rearmed one per `rearm` seconds
+//   cm      countermeasure charges                           arc     gun traverse (rad) around the nose
+//   role    doctrine key used by the air AI
 (function (E) {
   'use strict';
 
@@ -609,14 +619,37 @@
     // ── air ──
     laser:    { name: 'Wing Lasers',      kind: 'bolt', dmg: 24, rate: 9,   speed: 560, range: 720, spread: 0.008, heat: 0.035, scale: 1.6, vs: { heavy: 0.45, cap: 0.22 }, sfx: 'lance' },
     missile:  { name: 'Hunter Missile',   kind: 'missile', dmg: 280, speed: 210, range: 900, seek: 2.6, splash: 9, cd: 5, vs: { inf: 0.6, cap: 1.5 }, sfx: 'missile' },
-    bomb:     { name: 'Plasma Bomb',      kind: 'bomb', dmg: 420, speed: 0, grav: 32, splash: 24, cd: 1.1, vs: { cap: 1.6, heavy: 1.2 }, sfx: 'launch' },
+    bomb:     { name: 'Plasma Bomb',      kind: 'bomb', dmg: 520, speed: 0, grav: 32, splash: 26, cd: 1.1, vs: { cap: 1.6, heavy: 1.25 }, sfx: 'launch' },
+    chin:     { name: 'Chin Cannon',      kind: 'bolt', dmg: 15, rate: 11,  speed: 430, range: 560, spread: 0.016, heat: 0.028, scale: 1.3, vs: { heavy: 0.5, cap: 0.08, inf: 1.3 }, sfx: 'pulse' },
+    pod:      { name: 'Rocket Pod',       kind: 'rocket', dmg: 75, speed: 240, range: 650, spread: 0.02, splash: 8, cd: 0.3, scale: 1.4, vs: { inf: 1.15, heavy: 0.85, cap: 0.3 }, sfx: 'launch' },
+    ptorp:    { name: 'Proton Torpedo',   kind: 'missile', dmg: 620, speed: 175, range: 1500, seek: 1.1, splash: 18, cd: 6, scale: 2.2, vs: { cap: 1.8, heavy: 1.0 }, sfx: 'missile' },
+  });
+
+  // Tunables shared by the flight model and the air AI (sim/air*.js).
+  Object.assign(E.AIR = E.AIR || {}, {
+    G: 18,                  // gravity at the surface (m/s^2); scales with density
+    boostDrain: 0.26, boostRegen: 0.1, boostLockout: 0.3,   // boost resource (0..1) per second
+    driftMax: 2.2, driftRegen: 0.3,                         // seconds of drift per full charge
+    evadeTime: 1.15, evadeCooldown: 7,                      // barrel roll / break turn
+    cmCooldown: 5.5, cmJam: 2.4, cmRegen: 14,               // countermeasures
+    lockCone: 0.3, lockTime: 1.4, lockDecay: 1.6, lockGrace: 0.5,
+    hullRepair: 0.05,                                       // hp fraction / s near a friendly carrier
+    callCooldown: 25,                                       // per team close-air-support call-in
   });
 
   E.FIGHTERS = {
-    interceptor: { name: 'Lancer', hp: 260, shield: 120, speed: 115, boost: 175, minSpeed: 55, turn: 1.9, r: 4.2, h: 2.4, weapon: 'laser', alt: 'missile', armor: 'light', cost: 2,
-                   desc: 'Air-superiority fighter. Wing lasers and hunter missiles.' },
-    bomber:      { name: 'Mauler', hp: 420, shield: 160, speed: 90,  boost: 135, minSpeed: 45, turn: 1.3, r: 5.2, h: 3.0, weapon: 'laser', alt: 'bomb',    armor: 'light', cost: 2,
-                   desc: 'Strike bomber. Plasma bombs crack armor and capital hulls.' },
+    interceptor: { name: 'Lancer', role: 'interceptor', hp: 260, shield: 120, speed: 115, boost: 195, minSpeed: 55, stall: 48, corner: 105, turn: 2.1, roll: 3.6, accel: 42, gmax: 1,
+                   r: 4.2, h: 2.4, weapon: 'laser', alt: 'missile', ord: 4, rearm: 12, cm: 3, armor: 'light', cost: 2, lockCone: 0.32, lockTime: 1.25,
+                   desc: 'Air-superiority fighter. Fast and agile; wing lasers, hunter missiles and countermeasures.' },
+    bomber:      { name: 'Mauler', role: 'bomber', hp: 560, shield: 180, speed: 85, boost: 135, minSpeed: 45, stall: 42, corner: 88, turn: 1.15, roll: 1.8, accel: 28, gmax: 0.8,
+                   r: 5.2, h: 3.0, weapon: 'laser', alt: 'bomb', ord: 6, rearm: 8, cm: 2, armor: 'light', cost: 2, lockCone: 0.2, lockTime: 1.0,
+                   desc: 'Strike bomber. Plasma bombs crack armor and capital hulls; fragile in a turning fight.' },
+    gunship:     { name: 'Drake', role: 'gunship', hp: 820, shield: 280, speed: 55, boost: 95, minSpeed: 0, stall: 24, corner: 52, turn: 1.0, roll: 1.2, accel: 22, gmax: 0.6,
+                   r: 6.5, h: 3.4, weapon: 'chin', alt: 'pod', ord: 16, rearm: 3, cm: 4, armor: 'light', cost: 3, vtol: true, carry: 6, arc: 1.35,
+                   desc: 'VTOL gunship. Slow and tough; chin cannon and rocket pods for close air support, and a hold for six troops.' },
+    strike:      { name: 'Reaver', role: 'strike', hp: 330, shield: 140, speed: 135, boost: 215, minSpeed: 60, stall: 55, corner: 120, turn: 1.5, roll: 2.6, accel: 46, gmax: 0.9,
+                   r: 4.6, h: 2.6, weapon: 'laser', alt: 'ptorp', ord: 2, rearm: 18, cm: 3, armor: 'light', cost: 3, lockCone: 0.45, lockTime: 0.9,
+                   desc: 'Fast strike craft. Proton torpedoes for capital-ship and subsystem runs.' },
   };
 })(window.E = window.E || {});
 
@@ -1723,112 +1756,1319 @@
 })(window.E = window.E || {});
 
 // ---- js/sim/air.js ----
-// AIR: fighters and bombers — the flight model, launching from carriers, bot
-// dogfighting / bombing runs and player control.
+// AIR: the flight model for everything that flies and is not a capital ship —
+// fighters, bombers, gunships and strike craft. Attitude is a body basis driven
+// by pitch/yaw/roll rates; velocity is a real vector shaped by thrust, drag,
+// gravity and lift, all scaled by the local air density so one model runs from
+// the ground, through the cloud deck and thin air, out to orbit.
+//   air.js     flight model, launching, player control, hulls and ground (this file)
+//   airwpn.js  lock-on, countermeasures, guns, bombs, torpedoes
+//   airai.js   per-role bot doctrine
+//   airops.js  troop drops, close-air-support call-ins, repair
 (function (E) {
   'use strict';
   const S = E.SIM = E.SIM || {}, V = E.V3;
   const tmpA = V.make(), tmpB = V.make(), tmpC = V.make();
-  function launchFighter(w, f, cap, i) {
-    const type = (i % 3 === 2) ? 'bomber' : 'interceptor';
-    let pos, yaw;
-    if (cap && cap.alive) {
-      const fx = Math.sin(cap.yaw), fz = Math.cos(cap.yaw);
-      pos = { x: cap.pos.x + fx * 40 - fz * (i % 2 ? 60 : -60), y: cap.pos.y - cap.h - 12 - (i % 3) * 8, z: cap.pos.z + fz * 40 + fx * (i % 2 ? 60 : -60) }; yaw = cap.yaw;
-    } else {
-      const home = w.cps.find(c => c.home === f) || w.cps[0];
-      pos = { x: home.pos.x * 2.2, y: home.pos.y + 420, z: home.pos.z + w.rng.f(-200, 200) }; yaw = f === 'aegis' ? Math.PI / 2 : -Math.PI / 2;
+  const clamp = E.clamp, clamp01 = E.clamp01, smooth = E.smooth;
+  // the control sheet every pilot (bot or human) fills in each tick
+  const CT = { dx: 0, dy: 0, dz: 1, thr: 0.65, boost: false, roll: 0, drift: false, brake: false, full: false, vy: NaN, mvx: NaN, mvz: 0, evade: 0 };
+  const AP = { q: 0, r: 0, p: 0 };
+
+  // ── attitude basis ───────────────────────────────────────────
+  // f = nose, r = right wing, u = up (u = r x f). Bank is positive when banked
+  // left (left wing down), the same sense the renderer already reads from u.roll.
+  function setBasis(F, yaw, pitch, bank) {
+    const cp = Math.cos(pitch), fx = Math.sin(yaw) * cp, fy = Math.sin(pitch), fz = Math.cos(yaw) * cp;
+    const rx = -Math.cos(yaw), rz = Math.sin(yaw);
+    let ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
+    const l = Math.hypot(ux, uy, uz) || 1; ux /= l; uy /= l; uz /= l;
+    const c = Math.cos(bank), s = Math.sin(bank);
+    F.fx = fx; F.fy = fy; F.fz = fz;
+    F.ux = ux * c - rx * s; F.uy = uy * c; F.uz = uz * c - rz * s;
+    F.rx = rx * c + ux * s; F.ry = uy * s; F.rz = rz * c + uz * s;
+  }
+  function deriveAngles(u, F) {
+    const cp = Math.hypot(F.fx, F.fz);
+    if (cp > 0.02) u.yaw = Math.atan2(F.fx, F.fz);
+    u.pitch = Math.asin(clamp(F.fy, -1, 1));
+    const r0x = -Math.cos(u.yaw), r0z = Math.sin(u.yaw);
+    let lx = -r0z * F.fy, ly = r0z * F.fx - r0x * F.fz, lz = r0x * F.fy;
+    const l = Math.hypot(lx, ly, lz) || 1; lx /= l; ly /= l; lz /= l;
+    u.roll = Math.atan2(-(F.ux * r0x + F.uz * r0z), F.ux * lx + F.uy * ly + F.uz * lz);
+    u.aimYaw = u.yaw; u.aimPitch = u.pitch;
+  }
+  function orthonormalize(F) {
+    let l = Math.hypot(F.fx, F.fy, F.fz) || 1; F.fx /= l; F.fy /= l; F.fz /= l;
+    const d = F.rx * F.fx + F.ry * F.fy + F.rz * F.fz;
+    F.rx -= F.fx * d; F.ry -= F.fy * d; F.rz -= F.fz * d;
+    l = Math.hypot(F.rx, F.ry, F.rz) || 1; F.rx /= l; F.ry /= l; F.rz /= l;
+    F.ux = F.ry * F.fz - F.rz * F.fy; F.uy = F.rz * F.fx - F.rx * F.fz; F.uz = F.rx * F.fy - F.ry * F.fx;
+  }
+  const noseDir = (u, o) => { const F = u.fl; if (F) { o.x = F.fx; o.y = F.fy; o.z = F.fz; return o; } return S.dirOf(u.yaw, u.pitch, o); };
+
+  // ── per-craft state ──────────────────────────────────────────
+  function initAir(u) {
+    const d = u.def, F = u.fl = { fx: 0, fy: 0, fz: 1, rx: -1, ry: 0, rz: 0, ux: 0, uy: 1, uz: 0, wp: 0, wq: 0, wr: 0 };
+    setBasis(F, u.yaw, u.pitch, u.roll);
+    Object.assign(u, {
+      thr: 0.65, thrCmd: 0.65, boostE: 1, boosting: false, boostLock: false, stall: 0, stallWarn: false, inCloud: false, dens: 1,
+      g: 0, sens: 0, drift: false, driftE: 1, driftLock: false, evT: 0, evCd: 0, evDir: 1,
+      cm: d.cm || 0, cmCd: 0, cmT: 0, jamT: -1, ord: d.ord || 0, ordT: 0,
+      lockId: 0, lockT: 0, locked: false, lockOut: 0, warn: 0, warnT: -1, lockedT: -1, mslT: -1, mslD: 0, trackT: -1,
+      carry: 0, load: null, band: 0, oob: 0, agl: 0, landed: false, pilot: false, prevCycle: false, launchT: u.launchT !== undefined ? u.launchT : -99,
+      air: { mode: '', modeT: 0, thinkT: 0, tid: 0, px: 0, py: 0, pz: 0, hasPt: false, side: 1, reactT: -1, task: null, clear: 60, clrT: 0 },
+    });
+    return F;
+  }
+  function bandOf(y) { return y < S.ALT.cloudLo ? 0 : y <= S.ALT.cloudHi ? 1 : y < S.ALT.space ? 2 : 3; }
+
+  // does the segment a-b pass through the cloud deck? (locks and sight can't)
+  function cloudBlocks(a, b) {
+    const lo = a.y < b.y ? a.y : b.y, hi = a.y < b.y ? b.y : a.y;
+    return hi >= S.ALT.cloudLo && lo <= S.ALT.cloudHi;
+  }
+
+  // ── autopilot: world direction -> body rates ─────────────────
+  // Mouse-aim for humans, steering for bots: roll to put the lift vector toward
+  // the target, then pull; rudder mops up. Banking is limited unless C.full.
+  function autopilot(u, F, C, auth, o) {
+    const d = u.def;
+    const ex = C.dx * F.rx + C.dy * F.ry + C.dz * F.rz, ey = C.dx * F.ux + C.dy * F.uy + C.dz * F.uz, ez = C.dx * F.fx + C.dy * F.fy + C.dz * F.fz;
+    const h = Math.hypot(ex, ey), th = Math.atan2(h, ez);
+    const sx = h > 1e-6 ? ex / h : 0, sy = h > 1e-6 ? ey / h : 1;
+    const vt = d.vtol ? 1 : 0;
+    o.q = clamp(th * sy * 3.4, -auth, auth);
+    const ya = auth * (vt ? 0.95 : 0.55);
+    o.r = clamp(th * sx * 2.6, -ya, ya);
+    const rollMax = d.roll * (1 - 0.5 * u.stall);
+    if (C.roll) { o.p = C.roll * rollMax; return; }
+    const bank = u.roll;
+    let wt = clamp01((th - 0.05) / 0.25) * (vt ? 0.25 : 1);
+    let want = Math.atan2(ex, ey);
+    if (!C.full) { const nb = clamp(bank - want, -1.25, 1.25); want = bank - nb; }
+    o.p = clamp(want * 3.6, -rollMax, rollMax) * wt + clamp(bank * 1.1, -rollMax * 0.6, rollMax * 0.6) * (1 - wt);
+  }
+
+  function startEvade(w, u, dir) {
+    const K = E.AIR;
+    if (u.evT > 0 || u.evCd > 0) return false;
+    u.evT = Math.max(K.evadeTime, E.TAU / (u.def.roll * 1.35)); u.evCd = K.evadeCooldown; u.evDir = dir < 0 ? -1 : 1;
+    w.events.push({ type: 'evade', uid: u.id, dir: u.evDir, to: u.pid, pos: V.clone(u.pos) });
+    return true;
+  }
+
+  // ── the flight step ──────────────────────────────────────────
+  function stepFlight(w, u, dt, C) {
+    const d = u.def, K = E.AIR, T = w.terrain, G = K.G;
+    const F = u.fl || initAir(u);
+    const vel = u.vel, pos = u.pos;
+    let v = Math.hypot(vel.x, vel.y, vel.z);
+    const rho = S.density(pos.y), rs = smooth(rho * 3.5);   // rs: 1 in the air, 0 in space, blended between
+    const vc = d.corner * u.spM, vmax = d.speed * 1.2 * u.spM, vBoost = d.boost * u.spM, spaceMax = vBoost * 1.35;
+    u.dens = rho;
+
+    // upkeep: ordnance rearm, countermeasures, cooldowns
+    if (u.ord < d.ord) { u.ordT += dt; if (u.ordT >= d.rearm) { u.ordT = 0; u.ord++; } } else u.ordT = 0;
+    if (u.cm < d.cm) { u.cmT += dt; if (u.cmT >= K.cmRegen) { u.cmT = 0; u.cm++; } }
+    u.cmCd -= dt; u.evCd -= dt;
+
+    // afterburner resource
+    let boosting = false;
+    if (u.boostHold > 0) u.boostHold -= dt;
+    if ((C.boost || u.boostHold > 0) && u.boostE > 0 && !u.boostLock) {
+      if (!u.boosting) u.boostHold = 0.6; boosting = true; u.boostE -= K.boostDrain * dt; if (u.boostE <= 0) { u.boostE = 0; u.boostLock = true; } }
+    else { u.boostE = Math.min(1, u.boostE + K.boostRegen * dt * (C.boost ? 0.4 : 1)); if (u.boostLock && u.boostE > K.boostLockout) u.boostLock = false; }
+    if (boosting !== u.boosting) { u.boosting = boosting; w.events.push({ type: 'boost', uid: u.id, on: boosting, to: u.pid }); }
+    // drift: decouple heading from velocity for a moment
+    let drift = false;
+    if (C.drift && !d.vtol && u.driftE > 0 && !u.driftLock) { drift = true; u.driftE -= dt / K.driftMax; if (u.driftE <= 0) { u.driftE = 0; u.driftLock = true; } }
+    else { u.driftE = Math.min(1, u.driftE + dt * K.driftRegen); if (u.driftLock && u.driftE > 0.35) u.driftLock = false; }
+    u.drift = drift;
+
+    // throttle spools toward its command
+    u.thr += clamp(C.thr - u.thr, -dt * 1.6, dt * 1.6);
+
+    // stall: lift is gone below the stall speed, but only in real air
+    const sw = smooth((rho - 0.2) / 0.25), vs = d.stall / Math.sqrt(Math.max(rho, 0.35));
+    const vtolW = d.vtol ? clamp01((0.75 * vc - v) / (0.5 * vc)) * rs : 0;
+    const st = sw * clamp01((vs - v) / (0.2 * vs)) * (1 - vtolW);
+    const was = u.stall;
+    u.stall += (st - u.stall) * Math.min(1, dt * (st > u.stall ? 4 : 1.6));
+    u.stallWarn = sw > 0.2 && v < vs * 1.25 && vtolW < 0.5;
+    if ((was < 0.5) !== (u.stall < 0.5)) w.events.push({ type: 'stall', uid: u.id, on: u.stall >= 0.5, to: u.pid, pos: V.clone(pos) });
+
+    // control authority: aerodynamic (best at corner speed) or thruster-limited
+    const cornerF = clamp(Math.min(v / vc, vc / Math.max(v, 1)), 0.35, 1);
+    const aero = d.turn * Math.sqrt(rho) * cornerF;
+    const rcs = d.turn * 0.55 * (boosting ? 1.25 : 1);
+    const auth = Math.max(aero, rcs, d.turn * 0.9 * vtolW) * (1 - 0.65 * u.stall);
+
+    // evasive manoeuvre request
+    if (C.evade && u.evT <= 0) startEvade(w, u, C.evade);
+    autopilot(u, F, C, auth, AP);
+    if (u.stall > 0.05) {
+      AP.q -= u.stall * sw * 1.3;
+      AP.p += u.stall * Math.sin(w.t * 5 + u.id) * 0.9;
     }
-    const u = S.spawnUnit(w, 'fighter', type, f, pos, { yaw });
-    u.spd = u.speed; u.aimYaw = yaw;
+    if (u.evT > 0 && rho > 0.3 && !u.pid && pos.y - Math.max(T.height(pos.x, pos.z), T.waterLevel) < 180 - Math.min(0, vel.y) * 1.6) u.evT = 0;   // bots never barrel-roll into the ground
+    if (u.evT > 0) {
+      u.evT -= dt;
+      const k = Math.min(1, u.evT * 6 + 0.3);
+      AP.p = u.evDir * d.roll * 1.35 * k; AP.q = Math.max(AP.q * 0.3, auth * 0.4 * k); AP.r *= 0.3;
+    }
+    const kr = Math.min(1, dt * 7);
+    F.wq += (AP.q - F.wq) * kr; F.wr += (AP.r - F.wr) * kr; F.wp += (AP.p - F.wp) * kr;
+    // rotate the basis: pitch about r, yaw about u, roll about f
+    let a = F.wq * dt, c = Math.cos(a), s = Math.sin(a), x, y, z;
+    x = F.fx * c + F.ux * s; y = F.fy * c + F.uy * s; z = F.fz * c + F.uz * s;
+    F.ux = F.ux * c - F.fx * s; F.uy = F.uy * c - F.fy * s; F.uz = F.uz * c - F.fz * s; F.fx = x; F.fy = y; F.fz = z;
+    a = F.wr * dt; c = Math.cos(a); s = Math.sin(a);
+    x = F.fx * c + F.rx * s; y = F.fy * c + F.ry * s; z = F.fz * c + F.rz * s;
+    F.rx = F.rx * c - F.fx * s; F.ry = F.ry * c - F.fy * s; F.rz = F.rz * c - F.fz * s; F.fx = x; F.fy = y; F.fz = z;
+    a = F.wp * dt; c = Math.cos(a); s = Math.sin(a);
+    x = F.ux * c + F.rx * s; y = F.uy * c + F.ry * s; z = F.uz * c + F.rz * s;
+    F.rx = F.rx * c - F.ux * s; F.ry = F.ry * c - F.uy * s; F.rz = F.rz * c - F.uz * s; F.ux = x; F.uy = y; F.uz = z;
+    orthonormalize(F);
+
+    // forces
+    const bm = boosting ? (vBoost / vmax) * (vBoost / vmax) : 1;
+    const fade = clamp01((S.ALT.ceiling - pos.y) / 300);
+    let ax = 0, ay = 0, az = 0;
+    const thrust = d.accel * u.thr * bm * fade;
+    // atmosphere: thrust, drag, gravity (all by density)
+    if (rs > 0) {
+      const kd = d.accel / (vmax * vmax) * rho * (1 + (drift ? 0.6 : 0) + (C.brake ? 2.5 : 0));
+      ax += F.fx * thrust * rs - kd * v * vel.x * rs; ay += F.fy * thrust * rs - kd * v * vel.y * rs; az += F.fz * thrust * rs - kd * v * vel.z * rs;
+      const gs = G * clamp01(rho * 1.6) * rs;
+      ay -= gs;
+      // lift cancels the part of gravity across the flight path (the part along it
+      // still trades height for speed); it fades away below the stall speed
+      if (v > 1) {
+        const liftC = (1 - u.stall) * clamp01((v - 0.5 * vs) / (0.5 * vs)), vyn = vel.y / v;
+        ax += gs * liftC * (-vyn * vel.x / v); ay += gs * liftC * (1 - vyn * vyn); az += gs * liftC * (-vyn * vel.z / v);
+      }
+    }
+    // space: thrust-limited, no drag. Flight assist holds the nose-axis speed to the
+    // throttle setpoint and bleeds lateral drift; crouch (drift) switches it off.
+    const aw = 1 - rs;
+    if (aw > 0) {
+      const vf = vel.x * F.fx + vel.y * F.fy + vel.z * F.fz;
+      if (drift) { if (boosting) { ax += F.fx * thrust * aw; ay += F.fy * thrust * aw; az += F.fz * thrust * aw; } }
+      else {
+        const vset = u.thr * spaceMax * (boosting ? 1 : 0.7);
+        const acc = vf < vset ? thrust * (vset > 0 ? 1 : 0) : -d.accel * 0.5;
+        const gain = vf < vset ? Math.min(1, (vset - vf) * 0.2) : 1;
+        ax += F.fx * acc * gain * aw; ay += F.fy * acc * gain * aw; az += F.fz * acc * gain * aw;
+        const lk = Math.exp(-0.9 * aw * dt);
+        const lx = vel.x - F.fx * vf, ly = vel.y - F.fy * vf, lz = vel.z - F.fz * vf;
+        vel.x -= lx * (1 - lk); vel.y -= ly * (1 - lk); vel.z -= lz * (1 - lk);
+      }
+    }
+    // VTOL lift jets: hold the craft up and steer its ground velocity at low speed
+    if (vtolW > 0) {
+      const wantVy = isNaN(C.vy) ? 0 : C.vy;
+      ay += vtolW * (G * clamp01(rho * 1.6) + clamp((wantVy - vel.y) * 1.6, -9, 9));
+      if (!isNaN(C.mvx)) {
+        let hx = (C.mvx - vel.x) * 1.4, hz = (C.mvz - vel.z) * 1.4; const hl = Math.hypot(hx, hz), lim = d.accel * 0.6;
+        if (hl > lim) { hx *= lim / hl; hz *= lim / hl; }
+        ax += hx * vtolW; az += hz * vtolW;
+      }
+      const dk = 0.35 * vtolW; vel.x -= vel.x * dk * dt; vel.z -= vel.z * dk * dt;
+    }
+    vel.x += ax * dt; vel.y += ay * dt; vel.z += az * dt;
+
+    // lift: the velocity vector follows the nose, bleeding speed in hard turns
+    v = Math.hypot(vel.x, vel.y, vel.z);
+    let omega = 0;
+    if (rs > 0.02 && v > 1 && !drift) {
+      const c0 = clamp((vel.x * F.fx + vel.y * F.fy + vel.z * F.fz) / v, -1, 1);
+      if (c0 < 0.99999) {
+        const liftF = (1 - u.stall) * clamp(v / vc, 0.25, 1.4) * (1 - vtolW);
+        const al = Math.acos(c0);
+        let dl = al * (1 - Math.exp(-3.4 * rho * liftF * dt));
+        dl = Math.min(dl, d.turn * 1.25 * Math.sqrt(rho) * Math.min(1, vc / Math.max(v, vc)) * dt);
+        if (dl > 1e-6) {
+          // rotate the velocity direction by dl toward the nose
+          const hx = vel.x / v, hy = vel.y / v, hz = vel.z / v;
+          let ex = F.fx - hx * c0, ey = F.fy - hy * c0, ez = F.fz - hz * c0; const el = Math.hypot(ex, ey, ez) || 1;
+          ex /= el; ey /= el; ez /= el;
+          const cd = Math.cos(dl), sd = Math.sin(dl);
+          vel.x = (hx * cd + ex * sd) * v; vel.y = (hy * cd + ey * sd) * v; vel.z = (hz * cd + ez * sd) * v;
+          omega = dl / dt;
+          const nv = Math.max(v * 0.4, v - 0.045 * omega * omega * v * dt * rs);
+          const k = nv / v; vel.x *= k; vel.y *= k; vel.z *= k; v = nv;
+        }
+      }
+    }
+    u.g += (omega * v / 40 - u.g) * Math.min(1, dt * 5);
+    // speed ceiling
+    if (v > spaceMax) { const k = spaceMax / v; vel.x *= k; vel.y *= k; vel.z *= k; v = spaceMax; }
+
+    // integrate
+    const px = pos.x, py = pos.y, pz = pos.z;
+    pos.x += vel.x * dt; pos.y += vel.y * dt; pos.z += vel.z * dt;
+    u.spd = v; u.vy = vel.y;
+    // soft arena bound
+    const hd = Math.hypot(pos.x, pos.z), B = w.layout.bound * 1.3;
+    if (hd > B) { const k = B / hd; pos.x *= k; pos.z *= k; const vo = (vel.x * pos.x + vel.z * pos.z) / B; if (vo > 0) { vel.x -= pos.x / B * vo; vel.z -= pos.z / B * vo; } }
+    // ceiling
+    if (pos.y > S.ALT.ceiling) { pos.y = S.ALT.ceiling; if (vel.y > 0) vel.y = 0; }
+
+    // ground and water
+    const gh = Math.max(T.height(pos.x, pos.z), T.waterLevel), gm = Math.max(T.height((px + pos.x) * 0.5, (pz + pos.z) * 0.5), T.waterLevel);
+    u.agl = pos.y - gh;
+    u.landed = false;
+    if (pos.y < gh + 1.5 || (py + pos.y) * 0.5 < gm + 1.2) {
+      const water = T.height(pos.x, pos.z) < T.waterLevel;
+      if (d.vtol && v < 20 && vel.y > -9 && !water) { pos.y = gh + 1.5; vel.y = 0; vel.x *= 0.85; vel.z *= 0.85; u.landed = true; }
+      else {
+        pos.y = Math.max(pos.y, gh + 1.5);
+        w.events.push({ type: 'crash', uid: u.id, pos: V.clone(pos), vel: V.clone(vel), surf: water ? 'water' : 'ground', team: u.team, kind: u.type });
+        S.kill(w, u, { team: null, uid: 0, owner: null, wk: 'crash' });
+        return;
+      }
+    }
+    hullCollide(w, u, v);
+    if (!u.alive) return;
+
+    // derived presentation state
+    deriveAngles(u, F);
+    u.inCloud = pos.y >= S.ALT.cloudLo && pos.y <= S.ALT.cloudHi;
+    u.sens = v / vBoost;
+    const b = bandOf(pos.y);
+    if (b !== u.band) { u.band = b; w.events.push({ type: 'band', uid: u.id, band: b, to: u.pid }); }
+  }
+
+  // capital hulls are solid: a fast hit is fatal, a graze hurts and bounces
+  function hullCollide(w, u, v) {
+    if (w.t - u.launchT < 7) return;
+    const U = w.units;
+    for (let i = 0; i < U.length; i++) {
+      const c = U[i];
+      if (c.kind !== 'capital' || !c.alive) continue;
+      const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw), hl = c.def.len * 0.5 - c.h, rc = c.h * 1.25 + u.r;
+      const rx = u.pos.x - c.pos.x, ry = u.pos.y - c.pos.y, rz = u.pos.z - c.pos.z;
+      if (Math.abs(ry) > rc * 1.6 + 8) continue;
+      const a = clamp(rx * fx + rz * fz, -hl, hl), qx = rx - fx * a, qz = rz - fz * a;
+      const d2 = qx * qx + ry * ry * 1.6 + qz * qz;
+      if (d2 >= rc * rc) continue;
+      const dmg = 70 + v * 2.2;
+      w.events.push({ type: 'crash', uid: u.id, pos: V.clone(u.pos), vel: V.clone(u.vel), surf: 'hull', cap: c.id, team: u.team, kind: u.type });
+      u.hp -= dmg; u.hitT = 0;
+      if (u.hp <= 0) { S.kill(w, u, { team: null, uid: 0, owner: null, wk: 'crash' }); return; }
+      let nx = qx, ny = ry, nz = qz; const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      u.pos.x = c.pos.x + fx * a + nx * (rc + 1); u.pos.y = c.pos.y + ny * (rc + 1) / 1.26; u.pos.z = c.pos.z + fz * a + nz * (rc + 1);
+      const vn = u.vel.x * nx + u.vel.y * ny + u.vel.z * nz;
+      if (vn < 0) { u.vel.x -= 1.6 * vn * nx; u.vel.y -= 1.6 * vn * ny; u.vel.z -= 1.6 * vn * nz; }
+      return;
+    }
+  }
+
+  // ── launching ────────────────────────────────────────────────
+  const ROSTER = ['interceptor', 'bomber', 'gunship', 'interceptor', 'strike', 'interceptor'];
+  // false when the ship's hangar has been shot out (subsystems are optional)
+  function canLaunch(w, cap) {
+    if (!cap || !cap.alive) return false;
+    const h = cap.sys && cap.sys.hangar;
+    if (h && (h.alive === false || h.dead || h.hp <= 0)) return false;
+    return true;
+  }
+  function launchFighter(w, f, cap, i) {
+    const type = ROSTER[(i % ROSTER.length + ROSTER.length) % ROSTER.length];
+    let pos, yaw, sp;
+    if (canLaunch(w, cap)) {
+      const fx = Math.sin(cap.yaw), fz = Math.cos(cap.yaw);
+      pos = { x: cap.pos.x + fx * 40 - fz * (i % 2 ? 60 : -60), y: cap.pos.y - cap.h - 12 - (i % 3) * 8, z: cap.pos.z + fz * 40 + fx * (i % 2 ? 60 : -60) }; yaw = cap.yaw; sp = Math.max(0, cap.spd || 0) + 60;
+    } else {   // no usable hangar: scramble from the home airfield instead
+      const home = w.cps.find(c => c.home === f) || w.cps[0];
+      pos = { x: home.pos.x * 2.2, y: home.pos.y + 420, z: home.pos.z + w.rng.f(-200, 200) }; yaw = f === 'aegis' ? Math.PI / 2 : -Math.PI / 2; sp = 80;
+    }
+    const u = S.spawnUnit(w, 'fighter', type, f, pos, { yaw, launchT: w.t });
+    initAir(u);
+    const d = u.def; sp = Math.min(sp, d.speed * u.spM * 1.1);
+    u.vel.x = Math.sin(yaw) * sp; u.vel.z = Math.cos(yaw) * sp; u.spd = sp; u.aimYaw = yaw;
     return u;
   }
 
-  // ── flight model ─────────────────────────────────────────────
+  // compat shim: old callers steer toward a yaw/pitch at a speed
   function stepFighter(w, u, dt, desYaw, desPitch, speed) {
-    const d = u.def, mt = d.turn * dt;
-    const dy = S.angDiff(desYaw, u.yaw);
-    u.yaw += E.clamp(dy, -mt, mt);
-    u.roll += (E.clamp(dy * 1.8, -1.25, 1.25) - u.roll) * Math.min(1, dt * 3.5);
-    u.pitch += E.clamp(E.clamp(desPitch, -1.2, 1.2) - u.pitch, -mt, mt);
-    u.spd += (speed - u.spd) * Math.min(1, dt * 1.4);
-    S.dirOf(u.yaw, u.pitch, tmpA);
-    u.vel.x = tmpA.x * u.spd; u.vel.y = tmpA.y * u.spd; u.vel.z = tmpA.z * u.spd;
-    u.pos.x += u.vel.x * dt; u.pos.y += u.vel.y * dt; u.pos.z += u.vel.z * dt;
-    u.aimYaw = u.yaw; u.aimPitch = u.pitch;
-    const g = Math.max(w.terrain.height(u.pos.x, u.pos.z), w.terrain.waterLevel);
-    if (u.pos.y < g + 1.5) { u.pos.y = g + 1.5; S.kill(w, u, { team: null, uid: 0, owner: null, wk: 'crash' }); }
-  }
-
-  // ── AI: fighters ─────────────────────────────────────────────
-  function aiFighter(w, u, dt) {
-    const ai = u.ai, d = u.def, W = E.WEAPONS[d.weapon], T = w.terrain;
-    S.think(w, u, dt);
-    const tg = S.target(w, u);
-    let desYaw = u.yaw, desPitch = 0, speed = u.speed;
-    if (ai.state === 'break') {
-      ai.stateT -= dt; desYaw = ai.bYaw; desPitch = ai.bPitch; speed = d.boost * u.spM;
-      if (ai.stateT <= 0) ai.state = '';
-    } else if (tg) {
-      const bombRun = d.alt === 'bomb' && tg.kind !== 'fighter';
-      S.leadPoint(u, tg, W, tmpA);
-      if (bombRun) { S.centerOf(tg, tmpA); tmpA.y += tg.kind === 'capital' ? tg.h + 90 : 150; }
-      const dx = tmpA.x - u.pos.x, dy = tmpA.y - u.pos.y, dz = tmpA.z - u.pos.z, hd = Math.hypot(dx, dz), dist = Math.hypot(hd, dy);
-      desYaw = Math.atan2(dx, dz) + ai.errY; desPitch = Math.atan2(dy, hd) + ai.errP;
-      S.dirOf(u.yaw, u.pitch, tmpB);
-      const ang = Math.acos(E.clamp((dx * tmpB.x + dy * tmpB.y + dz * tmpB.z) / (dist || 1), -1, 1));
-      if (bombRun) {
-        const dh = u.pos.y - (tg.pos.y + (tg.kind === 'capital' ? tg.h : 0)), tf = Math.sqrt(Math.max(0.1, 2 * dh / E.WEAPONS.bomb.grav)), lead = u.spd * tf;
-        if (u.altT <= 0 && dh > 20 && Math.abs(hd - lead) < (tg.kind === 'capital' ? 70 : 16) && Math.abs(S.angDiff(Math.atan2(dx, dz), u.yaw)) < 0.3) S.fireAlt(w, u, tmpB, 0);
-        if (hd < 30) { ai.state = 'break'; ai.stateT = 3.5; ai.bYaw = u.yaw + ai.strafe * 0.5; ai.bPitch = 0.25; }
-      } else {
-        if (ang < 0.06 && dist < W.range) S.firePrimary(w, u, tmpB, 0);
-        if (d.alt === 'missile' && u.altT <= 0 && ang < 0.16 && dist > 140 && dist < E.WEAPONS.missile.range && tg.kind !== 'infantry') S.fireAlt(w, u, tmpB, tg.id);
-        const brk = tg.kind === 'capital' ? 430 : tg.kind === 'fighter' ? 60 : 170;
-        if (dist < brk) { ai.state = 'break'; ai.stateT = 2 + w.rng.next() * 1.6; ai.bYaw = u.yaw + ai.strafe * (1.1 + w.rng.next()); ai.bPitch = tg.kind === 'fighter' ? (w.rng.next() - 0.3) * 0.7 : 0.5; }
-      }
-      if (dist > 500) speed = d.boost * u.spM;
-    } else {
-      // patrol a lazy circle over the front
-      const a = w.t * 0.12 + u.id, px = Math.cos(a) * 520 + (u.team === 'aegis' ? -200 : 200), pz = Math.sin(a) * 520;
-      desYaw = Math.atan2(px - u.pos.x, pz - u.pos.z);
-      desPitch = E.clamp((T.height(u.pos.x, u.pos.z) + 300 - u.pos.y) * 0.004, -0.4, 0.4);
-    }
-    // safety
-    const g = Math.max(T.height(u.pos.x, u.pos.z), T.waterLevel), g2 = Math.max(T.height(u.pos.x + u.vel.x * 1.6, u.pos.z + u.vel.z * 1.6), T.waterLevel);
-    const agl = u.pos.y - g, ahead = u.pos.y + u.vel.y * 1.6 - g2;
-    if (agl < 55 || ahead < 45) desPitch = Math.max(desPitch, agl < 28 || ahead < 20 ? 1.0 : 0.6);
-    if (u.pos.y > 1250) desPitch = Math.min(desPitch, -0.25);
-    if (Math.hypot(u.pos.x, u.pos.z) > w.layout.bound) desYaw = Math.atan2(-u.pos.x, -u.pos.z);
-    // steer clear of capital hulls
-    for (const c of w.units) if (c.kind === 'capital' && c.alive && V.distance2(c.pos, u.pos) < (c.def.len * 0.62) * (c.def.len * 0.62) && ai.state !== 'break') {
-      ai.state = 'break'; ai.stateT = 1.6; ai.bYaw = Math.atan2(u.pos.x - c.pos.x, u.pos.z - c.pos.z); ai.bPitch = u.pos.y > c.pos.y ? 0.5 : -0.4;
-    }
-    stepFighter(w, u, dt, desYaw, desPitch, speed);
+    S.dirOf(desYaw, desPitch, tmpA);
+    CT.dx = tmpA.x; CT.dy = tmpA.y; CT.dz = tmpA.z; CT.thr = clamp((speed / (u.def.speed * 1.2 * u.spM)) ** 2, 0, 1);
+    CT.boost = speed > u.def.speed * 1.4 * u.spM; CT.roll = 0; CT.drift = false; CT.brake = false; CT.full = false; CT.vy = NaN; CT.mvx = NaN; CT.evade = 0;
+    stepFlight(w, u, dt, CT);
   }
 
   // ── player control ───────────────────────────────────────────
   function playerFighter(w, u, p, dt) {
-    const inp = p.input, mz = E.clamp(inp.mz || 0, -1, 1);
-    const d = u.def, sp = (inp.sprint || mz > 0) ? d.boost : mz < 0 ? d.minSpeed : d.speed;
-    let dy = inp.yaw, dp = inp.pitch;
-    if (Math.hypot(u.pos.x, u.pos.z) > w.layout.bound * 1.12) dy = Math.atan2(-u.pos.x, -u.pos.z);
-    if (u.pos.y > 1600) dp = Math.min(dp, -0.2);
-    stepFighter(w, u, dt, dy, dp, sp * u.spM);
-    if (!u.alive) return;
-    S.dirOf(u.yaw, u.pitch, tmpA); S.dirOf(inp.yaw, inp.pitch, tmpC);
-    const conv = (tmpA.x * tmpC.x + tmpA.y * tmpC.y + tmpA.z * tmpC.z) > 0.985 ? tmpC : tmpA; // slight gimbal
-    if (inp.fire) S.firePrimary(w, u, conv, 0);
-    if (inp.abil) {
-      const lk = d.alt === 'missile' ? S.aimTarget(w, u, u.pos, tmpA, 0.3, E.WEAPONS.missile.range, S.lockable) : null;
-      if (d.alt !== 'missile' || lk) S.fireAlt(w, u, tmpA, lk ? lk.id : 0);
+    const inp = p.input, d = u.def, F = u.fl || initAir(u);
+    if (!u.pilot) { u.pilot = true; u.thrCmd = u.thr; }
+    const mz = clamp(inp.mz || 0, -1, 1), mx = clamp(inp.mx || 0, -1, 1);
+    const hover = d.vtol && u.spd < 0.55 * d.corner * u.spM;
+    u.thrCmd = clamp(u.thrCmd + mz * 0.5 * dt, d.vtol ? 0 : 0.12, 1);
+    S.dirOf(inp.yaw, inp.pitch, tmpA);
+    let dx = tmpA.x, dy = tmpA.y, dz = tmpA.z;
+    // outer bound: the nose swings back toward the battle
+    const hd = Math.hypot(u.pos.x, u.pos.z), B = w.layout.bound;
+    u.oob = clamp01((hd - B * 1.02) / (B * 0.2));
+    if (u.oob > 0) {
+      const il = 1 / (hd || 1), k = u.oob;
+      dx = dx * (1 - k) - u.pos.x * il * k; dz = dz * (1 - k) - u.pos.z * il * k;
+      const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
     }
+    CT.dx = dx; CT.dy = dy; CT.dz = dz;
+    let thr = u.thrCmd;
+    const vs = d.stall / Math.sqrt(Math.max(u.dens, 0.35));
+    if (!d.vtol && u.dens > 0.3 && u.spd < vs * 1.3) thr = Math.max(thr, 0.9);     // stall protection for new pilots
+    CT.thr = thr; CT.roll = clamp(inp.roll || 0, -1, 1); CT.drift = !!inp.crouch && !d.vtol; CT.brake = !!inp.crouch && !!d.vtol; CT.full = false;
+    CT.boost = !!inp.sprint && !d.vtol; CT.vy = NaN; CT.mvx = NaN; CT.evade = 0;
+    if (d.vtol) {
+      CT.vy = inp.sprint ? 8 : inp.crouch ? -7 : 0;
+      if (hover) {   // WASD flies the lift jets: forward along the aim heading, strafe sideways
+        const fx = Math.sin(inp.yaw), fz = Math.cos(inp.yaw), sp = 16 * (0.25 + u.thrCmd);
+        CT.mvx = fx * mz * sp - fz * mx * sp; CT.mvz = fz * mz * sp + fx * mx * sp; CT.thr = 0;
+      }
+    }
+    if (inp.abil2 && u.evT <= 0 && u.evCd <= 0) CT.evade = inp.roll < 0 ? -1 : inp.roll > 0 ? 1 : (u.evDir = -u.evDir);
+    if (inp.jump) S.airCM(w, u);
+    stepFlight(w, u, dt, CT);
+    if (!u.alive) return;
+    S.airPilotWeapons(w, u, inp, dt);
   }
 
   const C = S.ctl = S.ctl || {};
-  C.fighter = { ai: aiFighter, player: playerFighter };
+  C.fighter = Object.assign(C.fighter || {}, { player: playerFighter, death: onDeath });
+  function onDeath(w, u) {
+    if (u.carry > 0) {
+      const T = w.teams[u.team]; T.tickets = Math.max(0, T.tickets - u.carry);
+      w.events.push({ type: 'troopsLost', uid: u.id, team: u.team, n: u.carry, pos: V.clone(u.pos) });
+      u.carry = 0; u.load = null;
+    }
+  }
 
-  Object.assign(S, { launchFighter, stepFighter, aiFighter, playerFighter });
+  // ── multiplayer: what guests need to draw the cockpit and effects ──
+  const r2 = (x) => Math.round(x * 100) / 100;
+  S.net = S.net || { unit: {}, world: {} };
+  S.net.unit.fighter = {
+    pack(u) {
+      const fl = (u.boosting ? 1 : 0) | (u.stall >= 0.5 ? 2 : 0) | (u.stallWarn ? 4 : 0) | (u.inCloud ? 8 : 0) | (u.drift ? 16 : 0) | (u.evT > 0 ? 32 : 0) | (u.locked ? 64 : 0) | ((u.warn | 0) << 7) | (u.landed ? 512 : 0);
+      return [r2(u.thr), r2(u.boostE), r2(u.lockT), fl, u.cm | 0, r2(u.g), r2(u.sens), u.carry | 0, u.lockId | 0, u.ord | 0, r2(u.driftE), r2(u.oob), r2(u.dens)];
+    },
+    apply(u, a) {
+      u.thr = a[0]; u.boostE = a[1]; u.lockT = a[2]; const fl = a[3];
+      u.boosting = !!(fl & 1); u.stall = fl & 2 ? 1 : 0; u.stallWarn = !!(fl & 4); u.inCloud = !!(fl & 8); u.drift = !!(fl & 16); u.evT = fl & 32 ? 0.5 : 0; u.locked = !!(fl & 64); u.warn = (fl >> 7) & 3; u.landed = !!(fl & 512);
+      u.cm = a[4]; u.g = a[5]; u.sens = a[6]; u.carry = a[7]; u.lockId = a[8]; u.ord = a[9]; u.driftE = a[10]; u.oob = a[11]; u.dens = a[12];
+    },
+  };
+
+  Object.assign(S, { launchFighter, canLaunch, stepFighter, stepFlight, initAir, startEvade, playerFighter, noseDir, cloudBlocks, bandOf, setBasis, deriveAngles });
+  S.airCT = CT;
+})(window.E = window.E || {});
+
+// ---- js/sim/airai.js ----
+// AIR AI: doctrine per role. Every craft runs the same loop: perceive -> react
+// to threats -> role doctrine fills a control sheet -> safety layer (terrain,
+// ceiling, stall, hulls, bounds) edits it -> flight model. Interceptors fly
+// combat air patrol and hunt strike craft; bombers and strike craft plan
+// ingress / run / egress passes; gunships orbit the ground push and ferry troops.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3;
+  const clamp = E.clamp, clamp01 = E.clamp01;
+  const C = { dx: 0, dy: 0, dz: 1, thr: 0.65, boost: false, roll: 0, drift: false, brake: false, full: false, vy: NaN, mvx: NaN, mvz: 0, evade: 0 };
+  const P = { x: 0, y: 0, z: 0, vx: 0, vz: 0 };      // target / aim point scratch
+  const tmpA = V.make(), tmpB = V.make(), tmpN = V.make(), tmpL = V.make();
+
+  const PREF = {
+    interceptor: { fighter: { interceptor: 1.5, strike: 2.4, bomber: 2.8, gunship: 2.5 }, vehicle: 0.4, turret: 0.12, infantry: 0.12 },
+    gunship:     { vehicle: 1.4, infantry: 1.0, turret: 0.5 },
+    bomber:      { capital: 0.7, vehicle: 1.6, turret: 1.2, infantry: 0.25 },
+    strike:      { capital: 3.0, vehicle: 1.2, turret: 0.5 },
+  };
+  const SENSE = { interceptor: 1700, gunship: 800, bomber: 1000, strike: 1200 };
+  const gAt = (w, x, z) => Math.max(w.terrain.height(x, z), w.terrain.waterLevel);
+  const air = (u) => u.air;
+  function setMode(a, m, t) { a.mode = m; a.modeT = t || 0; }
+  function look(u, x, y, z) {
+    const dx = x - u.pos.x, dy = y - u.pos.y, dz = z - u.pos.z, l = Math.hypot(dx, dy, dz);
+    if (l < 1e-3) { S.noseDir(u, tmpN); C.dx = tmpN.x; C.dy = tmpN.y; C.dz = tmpN.z; return 0; }
+    C.dx = dx / l; C.dy = dy / l; C.dz = dz / l; return l;
+  }
+  function lookDir(x, y, z) { const l = Math.hypot(x, y, z) || 1; C.dx = x / l; C.dy = y / l; C.dz = z / l; }
+  const home = (w, u) => w.cps.find(c => c.home === u.team) || w.cps[0];
+  const ownCap = (w, u) => { for (const c of w.units) if (c.kind === 'capital' && c.alive && c.team === u.team) return c; return null; };
+
+  // ── perception ───────────────────────────────────────────────
+  function perceive(w, u, a) {
+    const role = u.def.role, pref = PREF[role] || PREF.interceptor, sense = SENSE[role] || 1200, R = w.rng;
+    const picks = role === 'interceptor' || role === 'gunship';      // bombers / strike craft plan their own targets
+    let best = null, bs = 0, thr = null, td = 1e9;
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      const dx = e.pos.x - u.pos.x, dy = e.pos.y - u.pos.y, dz = e.pos.z - u.pos.z, d = Math.hypot(dx, dy, dz);
+      if (e.kind === 'fighter' && e.fl && d < 700 && d < td && !e.inCloud) {   // is somebody pointing at me?
+        if ((e.fl.fx * -dx + e.fl.fy * -dy + e.fl.fz * -dz) / (d || 1) > 0.86) { thr = e; td = d; }
+      }
+      if (!picks) continue;
+      let pf = e.kind === 'fighter' ? (pref.fighter && pref.fighter[e.type]) : pref[e.kind];
+      if (e.kind === 'vehicle' && e.type === 'tank' && pref.vehicle) pf = pref.vehicle * 1.2;
+      if (!pf || (d > sense && e.kind !== 'capital')) continue;
+      if (e.inCloud || u.inCloud && d > 220) continue;              // lost in the cloud
+      if (S.cloudBlocks(u.pos, e.pos)) continue;
+      if (a.cas && e.kind !== 'capital') { const cx = e.pos.x - a.cas.x, cz = e.pos.z - a.cas.z; if (cx * cx + cz * cz > 450 * 450) continue; }
+      let s = pf * 1000 / (d + 80);
+      if (e.id === a.tid) s *= 1.35;
+      if (s > bs) { bs = s; best = e; }
+    }
+    if (!picks) { /* planned target stays */ }
+    else if (best) { a.tid = best.id; a.lx = best.pos.x; a.ly = best.pos.y; a.lz = best.pos.z; a.lostT = w.t; }
+    else if (a.tid) { a.tid = 0; }
+    a.threat = thr ? thr.id : 0; a.threatD = td;
+    const k = w.cfg.aiErr * 0.55;
+    a.eY = R.gauss() * k; a.eP = R.gauss() * k * 0.6;
+  }
+  const tgt = (w, a) => { const t = a.tid ? w.umap.get(a.tid) : null; return t && t.alive ? t : null; };
+
+  // ── shared helpers ───────────────────────────────────────────
+  // the friendly front: where the ground fight is
+  function frontPoint(w, u, a, o) {
+    if (w.t < (a.frontT || 0)) { o.x = a.fx; o.z = a.fz; return o; }
+    a.frontT = w.t + 8; const en = S.enemyOf(u.team);
+    let best = w.cps[2] || w.cps[0], bs = -1;
+    for (const c of w.cps) {
+      const s = (c.n[en] * 2 + c.n[u.team] * 0.5 + (c.owner !== u.team ? 2 : 0.5) + (c.contested ? 3 : 0)) * (0.8 + ((c.id * 7 + u.id) % 5) * 0.1);
+      if (s > bs) { bs = s; best = c; }
+    }
+    a.fx = best.pos.x; a.fz = best.pos.z; o.x = a.fx; o.z = a.fz; return o;
+  }
+  // patrol orbit over (x, z) at `agl` above the ground
+  function patrolPoint(w, u, a, x, z, rad, agl) {
+    const th = w.t * 0.14 * a.side + u.id * 1.7, px = x + Math.cos(th) * rad, pz = z + Math.sin(th) * rad;
+    const y = Math.min(gAt(w, px, pz) + agl, S.ALT.cloudLo - 60);
+    return look(u, px, y, pz);
+  }
+  function startJink(w, u, a, t) {
+    if (a.mode === 'jink') return;
+    a.prev = a.mode; setMode(a, 'jink', t); a.side = w.rng.sign();
+    S.noseDir(u, tmpN); const h = Math.hypot(tmpN.x, tmpN.z) || 1; a.jx = tmpN.x / h; a.jz = tmpN.z / h;
+  }
+
+  function reflexes(w, u, a, dt) {
+    const R = w.rng;
+    if (u.mslT > w.t && u.mslD < 700) {
+      if (a.reactT < 0) a.reactT = w.t + 0.3 + R.next() * 0.45;
+      if (w.t >= a.reactT) {
+        if (u.mslD < 520) S.airCM(w, u);
+        if (u.mslD < 330 && u.evCd <= 0 && (u.agl > 220 || u.dens < 0.3)) S.startEvade(w, u, R.sign());
+        startJink(w, u, a, 1.5);
+      }
+    } else a.reactT = -1;
+    if (u.warn === 2 && a.mode !== 'jink' && a.mode !== 'run' && u.def.role !== 'gunship' && R.next() < dt * 0.5) startJink(w, u, a, 1.2);
+  }
+
+  // ── the safety layer ─────────────────────────────────────────
+  function safety(w, u, a, dt, runMode) {
+    const d = u.def, T = w.terrain, vx = u.vel.x, vz = u.vel.z, spd = u.spd;
+    const hover = d.vtol && spd < 28;
+    const clear = hover ? 22 : runMode ? 38 : 58;
+    // terrain: look ahead along the actual velocity
+    let worst = 0;
+    const H0 = runMode ? 0.5 : 0.9, H1 = runMode ? 1.0 : 1.8, H2 = runMode ? 1.6 : 3.0;
+    for (let i = 0; i < 3; i++) {
+      const t = i === 0 ? H0 : i === 1 ? H1 : H2;
+      const m = u.pos.y + u.vel.y * t - gAt(w, u.pos.x + vx * t, u.pos.z + vz * t) - clear;
+      if (m < 0) worst = Math.max(worst, clamp01(-m / (clear * 0.8)) * (1 - i * 0.12));
+    }
+    if (u.agl < clear * 0.5) worst = Math.max(worst, 1 - u.agl / (clear * 0.5));
+    // pull-out budget: how steep may we dive and still recover above `clear`?
+    if (!hover && u.dens > 0.25 && u.agl < 900) {
+      const vc = d.corner * u.spM, om = Math.max(0.3, d.turn * Math.sqrt(u.dens) * clamp(Math.min(spd / vc, vc / Math.max(spd, 1)), 0.35, 1) * (1 - 0.65 * u.stall));
+      const room = u.agl - clear;
+      let lo = 0, hi = 1.4;
+      for (let i = 0; i < 6; i++) { const m = (lo + hi) * 0.5; (spd / om * (1 - Math.cos(m)) + 0.4 * spd * Math.sin(m) <= room) ? lo = m : hi = m; }
+      const sinMax = Math.sin(lo);
+      if (C.dy < -sinMax) { const hh = Math.hypot(C.dx, C.dz) || 1, k = Math.sqrt(1 - sinMax * sinMax) / hh; C.dx *= k; C.dz *= k; C.dy = -sinMax; }
+      if (spd > 1 && u.vel.y < 0) { const gc = Math.asin(clamp(-u.vel.y / spd, 0, 1)); if (gc > lo) worst = Math.max(worst, clamp01((gc - lo) / 0.25)); }
+    }
+    if (worst > 0 && !(hover && u.agl > 8)) {
+      let hx = vx, hz = vz; const hl = Math.hypot(hx, hz);
+      if (hl < 3) { S.noseDir(u, tmpN); hx = tmpN.x; hz = tmpN.z; }
+      const l = Math.hypot(hx, hz) || 1;
+      C.dx = C.dx * (1 - worst) + hx / l * 0.5 * worst; C.dy = C.dy * (1 - worst) + 0.87 * worst; C.dz = C.dz * (1 - worst) + hz / l * 0.5 * worst;
+      lookDir(C.dx, C.dy, C.dz);
+      if (worst > 0.3) { C.thr = 1; if (worst > 0.55 && spd < d.speed * 1.1) C.boost = true; }
+      if (hover) { C.vy = 6; }
+    }
+    // ceiling
+    if (u.pos.y > S.ALT.ceiling - 250 && C.dy > -0.1) lookDir(C.dx, -0.1, C.dz);
+    // energy: don't stall in real air
+    if (!d.vtol && u.dens > 0.3) {
+      const vs = d.stall / Math.sqrt(Math.max(u.dens, 0.35)), k = clamp01((vs * 1.4 - spd) / (vs * 0.4));
+      if (k > 0) { lookDir(C.dx, Math.min(C.dy, 0.2) - 0.55 * k, C.dz); C.thr = 1; if (k > 0.5) C.boost = true; }
+    }
+    // capital hulls
+    for (let i = 0; i < w.units.length; i++) {
+      const c = w.units[i];
+      if (c.kind !== 'capital' || !c.alive) continue;
+      const own = a.mode === 'rtb' && a.cap === c.id;
+      const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw), hl = c.def.len * 0.5 - c.h, rc = c.h * 1.25 + u.r + (own ? 28 : 60 + spd * 1.3);
+      const rx = u.pos.x - c.pos.x, ry = u.pos.y - c.pos.y, rz = u.pos.z - c.pos.z;
+      if (Math.abs(ry) > rc * 1.6) continue;
+      const q = clamp(rx * fx + rz * fz, -hl, hl), qx = rx - fx * q, qz = rz - fz * q;
+      const dd = Math.sqrt(qx * qx + ry * ry * 1.6 + qz * qz);
+      if (dd >= rc) continue;
+      const k = clamp01(1 - dd / rc) * 2.6 + 0.15, nl = dd || 1;
+      const nx = qx / nl, ny = ry / nl + 0.15, nz = qz / nl;
+      lookDir(C.dx * (1 - Math.min(1, k)) + nx * k, C.dy * (1 - Math.min(1, k)) + ny * k, C.dz * (1 - Math.min(1, k)) + nz * k);
+      if (k > 0.5) C.thr = 1;
+    }
+    // arena bound
+    const hd = Math.hypot(u.pos.x, u.pos.z), B = w.layout.bound * 0.93;
+    if (hd > B) { const k = clamp01((hd - B) / (w.layout.bound * 0.2)); lookDir(C.dx * (1 - k) - u.pos.x / hd * k, C.dy, C.dz * (1 - k) - u.pos.z / hd * k); }
+  }
+
+  // ── weapons the bots use ─────────────────────────────────────
+  function aimErr(a, dir) {
+    if (!a.eY && !a.eP) return dir;
+    const y = Math.atan2(dir.x, dir.z) + a.eY, p = Math.asin(clamp(dir.y, -1, 1)) + a.eP;
+    return S.dirOf(y, p, tmpL);
+  }
+  function aiGuns(w, u, a, tg) {
+    const d = u.def, W = E.WEAPONS[d.weapon];
+    S.leadPoint(u, tg, W, tmpA);
+    const rx = tmpA.x - u.pos.x, ry = tmpA.y - u.pos.y, rz = tmpA.z - u.pos.z, L = Math.hypot(rx, ry, rz) || 1;
+    if (L > W.range * 0.92) return false;
+    S.noseDir(u, tmpN);
+    const ang = Math.acos(clamp((rx * tmpN.x + ry * tmpN.y + rz * tmpN.z) / L, -1, 1));
+    if (ang > (d.arc ? d.arc : 0.05)) return false;
+    tmpB.x = rx / L; tmpB.y = ry / L; tmpB.z = rz / L;
+    return S.airFirePrimary(w, u, aimErr(a, tmpB), false);
+  }
+  function aiGuided(w, u, a, tg, dt) {
+    const wk = u.def.alt; if (wk !== 'missile' && wk !== 'ptorp') return;
+    if (!(u.ord > 0)) return;
+    const W = E.WEAPONS[wk], L = V.distance(u.pos, tg.pos);
+    if (L > W.range * 1.05) { if (u.lockId === tg.id) S.dropLock(w, u); return; }
+    if (tg.kind === 'infantry' || (wk === 'ptorp' && tg.kind !== 'capital' && tg.kind !== 'vehicle')) return;
+    if (S.lockOn(w, u, tg, dt) && u.altT <= 0 && L > (wk === 'missile' ? 140 : 250)) {
+      S.airAlt(w, u, S.noseDir(u, tmpN), tg.id);
+      if (a.task) a.task.fired = true;
+    }
+  }
+
+  // ── interceptor ──────────────────────────────────────────────
+  function doInterceptor(w, u, a, dt) {
+    const d = u.def, W = E.WEAPONS[d.weapon], tg = tgt(w, a), vc = d.corner * u.spM, vmax = d.speed * 1.2 * u.spM;
+    a.runMode = false;
+    if (a.mode === 'jink') return jink(w, u, a, dt);
+    if (!tg) {
+      // lost it in the cloud? head for where it was, then back on patrol
+      if (a.lostT !== undefined && w.t - a.lostT < 3 && a.lx !== undefined) { look(u, a.lx, a.ly, a.lz); C.thr = 0.9; return; }
+      frontPoint(w, u, a, tmpA);
+      patrolPoint(w, u, a, tmpA.x, tmpA.z, 430, 360);
+      C.thr = 0.75; if (u.pos.y > S.ALT.cloudHi + 80 || Math.hypot(u.pos.x - tmpA.x, u.pos.z - tmpA.z) > 1800) C.boost = true;
+      if (a.mode === 'egress') a.mode = '';
+      return;
+    }
+    const rx = tg.pos.x - u.pos.x, ry = tg.pos.y - u.pos.y, rz = tg.pos.z - u.pos.z, L = Math.hypot(rx, ry, rz) || 1;
+    S.noseDir(u, tmpN);
+    const cosA = (rx * tmpN.x + ry * tmpN.y + rz * tmpN.z) / L, ang = Math.acos(clamp(cosA, -1, 1));
+    if (tg.kind === 'fighter') {
+      const tf = tg.fl || { fx: 0, fy: 0, fz: 1 };
+      const aspect = (tf.fx * -rx + tf.fy * -ry + tf.fz * -rz) / L;          // 1: it points at me
+      const closure = -((tg.vel.x - u.vel.x) * rx + (tg.vel.y - u.vel.y) * ry + (tg.vel.z - u.vel.z) * rz) / L;
+      a.engT = (a.engT || 0) + dt;
+      if (a.mode === 'yoyo') {
+        a.modeT -= dt; if (a.modeT <= 0) setMode(a, '', 0);
+        // high yo-yo: trade speed for height, roll over the top and come back down on the target
+        lookDir(tmpN.x * 0.5 + a.sx * 0.35, 0.75, tmpN.z * 0.5 + a.sz * 0.35); C.thr = 1; C.full = true; return;
+      }
+      if (a.mode === 'extend') {
+        a.modeT -= dt; if (a.modeT <= 0 || u.spd > vc * 1.15 && a.modeT < 1.5) { setMode(a, '', 0); a.engT = 0; }
+        const hl = Math.hypot(rx, rz) || 1; lookDir(-rx / hl, -0.3, -rz / hl); C.thr = 1; C.boost = u.boostE > 0.5 && L < 400; return;
+      }
+      if (aspect > 0.78 && L < 600 && cosA < -0.1) {            // it is behind me and tracking: break
+        startJink(w, u, a, 1.4 + w.rng.next() * 0.8); if (L < 320 && u.evCd <= 0 && (u.agl > 220 || u.dens < 0.3)) S.startEvade(w, u, a.side);
+        return jink(w, u, a, dt);
+      }
+      if (L < 110 && closure > 25 && ang < 1.3) {              // about to overshoot: yo-yo
+        S.noseDir(u, tmpN); a.sx = -rz / (Math.hypot(rx, rz) || 1) * a.side; a.sz = rx / (Math.hypot(rx, rz) || 1) * a.side;
+        setMode(a, 'yoyo', 1.5); return;
+      }
+      if ((u.spd < vc * 0.82 && u.dens > 0.3 && L > 160) || a.engT > 13) { setMode(a, 'extend', 2.6 + w.rng.next()); a.engT = 0; return; }
+      // pursuit: lead when closing from behind, lag when overshooting
+      S.leadPoint(u, tg, W, tmpA);
+      if (L < 230 && closure > 12) { tmpA.x -= tg.vel.x * 0.35; tmpA.y -= tg.vel.y * 0.35; tmpA.z -= tg.vel.z * 0.35; }
+      look(u, tmpA.x, tmpA.y, tmpA.z);
+      const vt = Math.hypot(tg.vel.x, tg.vel.y, tg.vel.z);
+      C.thr = ang > 0.9 ? 1 : clamp((vt * 1.05 / vmax) ** 2 + 0.12, 0.5, 1);
+      C.boost = L > 650 || (ang > 1.2 && u.boostE > 0.6 && L < 500);
+      if (ang < 0.05 && L < W.range) aiGuns(w, u, a, tg);
+      aiGuided(w, u, a, tg, dt);
+      return;
+    }
+    // ground run: dive on it, rake it, pull off
+    a.runMode = true;
+    if (a.mode === 'egress') {
+      a.modeT -= dt; lookDir(a.jx, 0.45, a.jz); C.thr = 1; if (a.modeT <= 0) setMode(a, '', 0); return;
+    }
+    const aim = S.centerOf(tg, tmpA); look(u, aim.x, aim.y + 6, aim.z);
+    C.thr = 0.9; C.boost = L > 900;
+    if (ang < 0.07 && L < W.range) aiGuns(w, u, a, tg);
+    aiGuided(w, u, a, tg, dt);
+    if (L < 150 && tg.kind !== 'capital' || L < 420 && tg.kind === 'capital') {
+      const hl = Math.hypot(u.vel.x, u.vel.z) || 1; a.jx = u.vel.x / hl; a.jz = u.vel.z / hl; setMode(a, 'egress', 2 + w.rng.next());
+    }
+  }
+
+  // hard break: turn across the threat, dive for speed, flares on the way
+  function jink(w, u, a, dt) {
+    a.modeT -= dt; a.runMode = false;
+    if (a.modeT <= 0) { setMode(a, a.prev && a.prev !== 'jink' ? a.prev : '', 1); return; }
+    if (((a.modeT * 2.2) | 0) !== (((a.modeT + dt) * 2.2) | 0)) a.side = -a.side;
+    if (u.def.vtol) {   // a gunship sidesteps on its lift jets, nose steady
+      const gh = Math.hypot(u.pos.x, u.pos.z) || 1;
+      C.thr = 0; C.mvx = a.jz * a.side * 17 + (u.vel.x * 0.2); C.mvz = -a.jx * a.side * 17 + (u.vel.z * 0.2);
+      C.vy = u.agl < 60 ? 5 : 0; C.dy = Math.max(C.dy, -0.3); lookDir(C.dx, C.dy, C.dz); return;
+    }
+    const c = Math.cos(1.25 * a.side), s = Math.sin(1.25 * a.side);
+    const hx = a.jx * c - a.jz * s, hz = a.jx * s + a.jz * c;
+    lookDir(hx, u.pos.y > 150 + (u.pos.y - u.agl) ? -0.28 : 0.3, hz); C.thr = 1; C.boost = u.boostE > 0.35;
+    a.jx = hx * 0.6 + a.jx * 0.4; a.jz = hz * 0.6 + a.jz * 0.4;
+  }
+
+  // ── bomber / strike craft ────────────────────────────────────
+  // where the strike aims: a live subsystem, the hull top, or the ground under a unit
+  function strikeAim(w, u, a, o) {
+    const t = tgt(w, a);
+    if (t) {
+      o.vx = t.vel.x; o.vz = t.vel.z;
+      if (t.kind === 'capital') {
+        const nm = S.pickSys(t, tmpB);
+        if (nm) { o.x = tmpB.x; o.y = tmpB.y; o.z = tmpB.z; } else { o.x = t.pos.x; o.y = t.pos.y + t.h * 0.9; o.z = t.pos.z; }
+      } else { o.x = t.pos.x; o.y = t.pos.y; o.z = t.pos.z; }
+      return t;
+    }
+    if (a.hasPt) { o.x = a.px; o.z = a.pz; o.y = gAt(w, a.px, a.pz) + 1; o.vx = 0; o.vz = 0; return {}; }
+    return null;
+  }
+  function planStrike(w, u, a) {
+    const pref = PREF[u.def.role], R = w.rng; let best = null, bs = 0;
+    a.hasPt = false;
+    if (a.cas) {   // a call-in: hit something near the marked point, or the point itself
+      for (const e of w.units) {
+        if (!e.alive || e.team === u.team || e.kind === 'fighter' || e.kind === 'capital') continue;
+        const dx = e.pos.x - a.cas.x, dz = e.pos.z - a.cas.z, d2 = dx * dx + dz * dz;
+        if (d2 > 130 * 130) continue;
+        const s = (pref[e.kind] || 0.2) * (e.type === 'tank' ? 1.5 : 1) / (Math.sqrt(d2) + 40);
+        if (s > bs) { bs = s; best = e; }
+      }
+      if (best) { a.tid = best.id; return; }
+      a.tid = 0; a.px = a.cas.x; a.pz = a.cas.z; a.hasPt = true; return;
+    }
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      let pf = pref[e.kind]; if (!pf) continue;
+      if (e.kind === 'vehicle' && e.type === 'tank') pf *= 1.3;
+      const d = V.distance(u.pos, e.pos);
+      if (e.kind === 'infantry' && d > 2500) continue;
+      let s = pf * 1000 / (d + 700) * (0.85 + R.next() * 0.3);
+      if (e.id === a.lastTid) s *= 0.5;       // vary targets between passes
+      if (s > bs) { bs = s; best = e; }
+    }
+    a.tid = best ? best.id : 0;
+  }
+
+  function doStrike(w, u, a, dt) {
+    const d = u.def, torp = d.alt === 'ptorp';
+    a.runMode = a.mode === 'run';
+    if (a.mode === 'jink') return jink(w, u, a, dt);
+    if (a.mode === 'reload' || (u.ord < 1 && a.mode !== 'egress')) {
+      if (a.mode !== 'reload') setMode(a, 'reload', 0);
+      if (u.ord >= Math.min(d.ord, 3)) { setMode(a, '', 0); }
+      else {   // loiter behind friendly lines while the racks refill
+        const h = home(w, u); patrolPoint(w, u, a, h.pos.x * 0.6, h.pos.z, 500, 420); C.thr = 0.7; return;
+      }
+    }
+    if (a.mode === 'egress') {
+      a.modeT -= dt; lookDir(a.jx, a.jy, a.jz); C.thr = 1; C.boost = u.hp < u.maxHp * 0.6 && u.boostE > 0.3;
+      if (a.modeT <= 0) { setMode(a, '', 0); a.lastTid = a.tid; a.tid = 0; a.hasPt = false; }
+      return;
+    }
+    if (a.cas && w.t > a.cas.until) { a.cas = null; a.task = null; a.tid = 0; a.hasPt = false; }
+    let t = a.tid ? tgt(w, a) : null;
+    if (!t && !a.hasPt) {
+      if (w.t >= a.planT) { a.planT = w.t + 1.2; planStrike(w, u, a); t = tgt(w, a); }
+    }
+    if (!t && a.tid) { a.tid = 0; }
+    const aim = strikeAim(w, u, a, P);
+    if (!aim) {   // nothing to hit: hold over the friendly front
+      frontPoint(w, u, a, tmpA);
+      patrolPoint(w, u, a, tmpA.x * 0.5 + home(w, u).pos.x * 0.5, tmpA.z, 500, 420); C.thr = 0.75; return;
+    }
+    const cap = aim.kind === 'capital';
+    const dxh = P.x - u.pos.x, dzh = P.z - u.pos.z, hd = Math.hypot(dxh, dzh), dist = Math.hypot(hd, P.y - u.pos.y);
+    S.noseDir(u, tmpN);
+    const hn = Math.hypot(tmpN.x, tmpN.z) || 1, align = (dxh * tmpN.x + dzh * tmpN.z) / (hn * (hd || 1));
+    if (a.mode !== 'run') {
+      // ingress: fly to the initial point on our own side of the target, then turn in
+      const h = home(w, u), hx = (cap ? ownCapX(w, u, h) : h.pos.x) - P.x, hz = (cap ? ownCapZ(w, u, h) : h.pos.z) - P.z, hl = Math.hypot(hx, hz) || 1;
+      const lead = torp ? 1900 : cap ? 1300 : 1100;
+      const ipx = P.x + hx / hl * lead, ipz = P.z + hz / hl * lead;
+      const ipy = cap ? P.y + (torp ? 10 : 100) : Math.max(P.y, gAt(w, ipx, ipz)) + (torp ? 260 : 300);
+      const dip = Math.hypot(ipx - u.pos.x, ipz - u.pos.z);
+      const above = !cap || torp || u.pos.y > P.y + 30;     // bombs fall: a capital run is flown from above
+      if (above && (dip < 320 || (hd < lead + 200 && align > 0.9 && hd > 500))) { setMode(a, 'run', 18); }
+      else {
+        look(u, ipx, ipy, ipz); C.thr = 0.85; C.boost = dip > 1200 && u.boostE > 0.3 && u.pos.y < S.ALT.space;
+        if (a.cas) a.task && (a.task.inbound || (a.task.inbound = true, w.events.push({ type: 'airInbound', uid: u.id, team: u.team, pos: { x: a.cas.x, z: a.cas.z }, to: a.cas.pid })));
+        return;
+      }
+    }
+    // run: straight at it, release on the ballistic solution / fire the torpedo
+    a.runMode = true;
+    a.modeT -= dt;
+    const tt = dist / Math.max(60, u.spd);
+    if (cap && !torp && u.pos.y < P.y - 5 && hd < 700) { setMode(a, '', 0); return; }
+    look(u, P.x + P.vx * tt, P.y + (cap ? (torp ? 0 : 70) : 6), P.z + P.vz * tt);
+    C.thr = 0.95;
+    let done = false;
+    if (torp) {
+      const t2 = tgt(w, a);
+      if (t2) aiGuided(w, u, a, t2, dt);
+      if (u.ord < 1 || a.modeT <= 0) done = true;
+      if (a.task && a.task.fired) done = true;
+      if (hd < (cap ? 420 : 160)) done = true;
+    } else {
+      const g = P.y;
+      let rel = false;
+      if (cap && aim.def) {
+        const s = S.bombSolution(w, u, P.x, P.y, P.z, P.vx, P.vz);
+        if (s && Math.abs(s.along) < aim.def.len * 0.35 && Math.abs(s.lat) < aim.def.len * 0.12 + 20 && u.altT <= 0) rel = S.airAlt(w, u, S.noseDir(u, tmpN), 0);
+      } else rel = S.bombRelease(w, u, P.x, g, P.z, P.vx, P.vz, 16);
+      if (rel) { a.dropped = (a.dropped || 0) + 1; if (a.task) { if (!a.task.fired) w.events.push({ type: 'airWeaponsAway', uid: u.id, team: u.team, pos: { x: P.x, z: P.z }, to: a.task.pid }); a.task.fired = true; } }
+      if (!cap && a.dropped && a.dropped >= 1) { const s = S.bombSolution(w, u, P.x, g, P.z, P.vx, P.vz); if (!s || s.along > 40 || u.ord < 1) done = true; }
+      if (cap && (u.ord < 1 || (a.dropped >= 3))) done = true;
+      if (a.modeT <= 0 || hd < 45 || (hd < 200 && align < 0.0)) done = true;
+    }
+    if (done) {
+      const hl = Math.hypot(u.vel.x, u.vel.z) || 1; a.jx = u.vel.x / hl; a.jz = u.vel.z / hl; a.jy = cap ? 0.12 : 0.3;
+      a.dropped = 0; setMode(a, 'egress', cap ? 5.5 : 4.5);
+      if (a.cas && a.task && a.task.fired) { w.events.push({ type: 'airComplete', uid: u.id, team: u.team, to: a.cas.pid }); a.cas = null; a.task = null; a.hasPt = false; }
+    }
+  }
+  const ownCapX = (w, u, h) => { const c = ownCap(w, u); return c ? c.pos.x : h.pos.x; };
+  const ownCapZ = (w, u, h) => { const c = ownCap(w, u); return c ? c.pos.z : h.pos.z; };
+
+  // ── gunship ──────────────────────────────────────────────────
+  // fly to (x, z) at `agl`; slow into a hover over the last stretch
+  function hoverTo(w, u, a, x, z, agl, vmax) {
+    const dx = x - u.pos.x, dz = z - u.pos.z, hd = Math.hypot(dx, dz);
+    const gy = gAt(w, u.pos.x, u.pos.z);
+    C.vy = clamp((gAt(w, x, z) + agl - u.pos.y) * 0.45, -9, 9);
+    const high = u.agl > 300;
+    if (hd > 380 || u.spd > 34 && hd > 120 || high) {   // transit
+      look(u, x, gAt(w, x, z) + agl, z);
+      C.mvx = NaN; C.brake = false;
+      if (high) { if (C.dy < -0.8) lookDir(C.dx, -0.8, C.dz); C.thr = 0.7; return hd; }
+      C.thr = 0.78; C.brake = hd < 520 && u.spd > 40;
+      if (u.pos.y > gy + agl + 150) C.dy = Math.min(C.dy, -0.25);
+      else if (u.pos.y < gy + agl - 20 && C.dy < 0.15) lookDir(C.dx, 0.15, C.dz);
+      if (hd < 450) { C.thr = u.spd > 24 ? 0 : 0.3; C.brake = u.spd > 24; }
+      return hd;
+    }
+    const sp = Math.min(vmax || 16, hd * 0.22);
+    C.mvx = hd > 1 ? dx / hd * sp : 0; C.mvz = hd > 1 ? dz / hd * sp : 0; C.thr = 0; C.brake = false;
+    return hd;
+  }
+  function doGunship(w, u, a, dt) {
+    const d = u.def, W = E.WEAPONS[d.weapon];
+    a.runMode = false;
+    const hp = u.hp / u.maxHp;
+    if (a.mode === 'jink') return jink(w, u, a, dt);
+    const task = a.task;
+    // damaged: back to the carrier / airfield to mend
+    if (hp < 0.35 && a.mode !== 'rtb' && !(task && task.type === 'drop' && u.carry > 0 && hp > 0.2)) { setMode(a, 'rtb', 0); }
+    if (a.mode === 'rtb') return doRtb(w, u, a);
+    if (task && task.type === 'drop') return doDrop(w, u, a, task, dt);
+    if (a.cas && w.t > a.cas.until) { a.cas = null; a.task = null; }
+    // support the ground push: orbit the best target (or the front) and shoot it
+    const tg = tgt(w, a);
+    let fx, fz;
+    if (tg) { fx = tg.pos.x; fz = tg.pos.z; a.fx = fx; a.fz = fz; a.focusT = w.t; }
+    else if (a.cas) { fx = a.cas.x; fz = a.cas.z; }
+    else { frontPoint(w, u, a, tmpA); fx = tmpA.x; fz = tmpA.z; }
+    const R = tg ? 230 : 260;
+    const dx = u.pos.x - fx, dz = u.pos.z - fz, dd = Math.hypot(dx, dz) || 1;
+    if (dd > R + 450) hoverTo(w, u, a, fx + dx / dd * R, fz + dz / dd * R, a.agl, 16);
+    else {
+      // orbit tangentially, nose on the target so both guns and pods bear
+      const th = Math.atan2(dz, dx) + 0.5 * a.side, px = fx + Math.cos(th) * R, pz = fz + Math.sin(th) * R;
+      hoverTo(w, u, a, px, pz, a.agl, 15);
+      if (!isNaN(C.mvx)) { const tx = -dz / dd * a.side * -1, tz = dx / dd * a.side * -1; C.mvx = C.mvx * 0.55 + tx * 9; C.mvz = C.mvz * 0.55 + tz * 9; }
+      if (u.agl > 300) { /* still coming down: keep the descent heading */ }
+      else if (tg) {
+        S.leadPoint(u, tg, W, tmpA); look(u, tmpA.x, tmpA.y, tmpA.z);
+        if (C.dy < -0.45) lookDir(C.dx, -0.45, C.dz);
+        const L = V.distance(u.pos, tg.pos);
+        S.noseDir(u, tmpN);
+        const ang = Math.acos(clamp(((tmpA.x - u.pos.x) * tmpN.x + (tmpA.y - u.pos.y) * tmpN.y + (tmpA.z - u.pos.z) * tmpN.z) / (Math.hypot(tmpA.x - u.pos.x, tmpA.y - u.pos.y, tmpA.z - u.pos.z) || 1), -1, 1));
+        if (tg.kind !== 'fighter') {
+          aiGuns(w, u, a, tg);
+          if (ang < 0.25 && L < E.WEAPONS.pod.range * 0.9 && L > 90 && (tg.kind === 'vehicle' || tg.kind === 'turret') && u.altT <= 0 && u.ord > 0) {
+            if (a.salvo === undefined || a.salvo <= 0) { if (w.t > (a.salvoT || 0)) { a.salvo = 4; a.salvoT = w.t + 3.5; } }
+            if (a.salvo > 0 && S.airAlt(w, u, S.noseDir(u, tmpN), 0)) a.salvo--;
+          }
+          if (a.cas && !a.cas.fired && L < 600) { a.cas.fired = true; w.events.push({ type: 'airWeaponsAway', uid: u.id, team: u.team, pos: { x: a.cas.x, z: a.cas.z }, to: a.cas.pid }); }
+        }
+      } else {
+        // hold station; the nose follows the orbit
+        look(u, px, u.pos.y, pz);
+      }
+    }
+    if (a.cas && !a.cas.inbound && dd < 700) { a.cas.inbound = true; w.events.push({ type: 'airInbound', uid: u.id, team: u.team, pos: { x: a.cas.x, z: a.cas.z }, to: a.cas.pid }); }
+  }
+
+  // landing-zone ferry: collect at the airfield, fly to the LZ, hover, unload
+  function doDrop(w, u, a, task, dt) {
+    const h = home(w, u);
+    if (u.carry <= 0 && task.stage !== 'deliver') task.stage = 'pickup';
+    if (task.stage === 'pickup') {
+      const hd = hoverTo(w, u, a, h.pos.x, h.pos.z, 14, 14);
+      if (hd < 40 && u.agl < 40 && u.spd < 14) {
+        a.loadT = (a.loadT || 0) + dt;
+        if (a.loadT > 2.5) { S.airLoad(w, u, task.n); a.loadT = 0; task.stage = 'deliver'; }
+      } else a.loadT = 0;
+      look(u, task.pos.x, u.pos.y, task.pos.z);
+      return;
+    }
+    task.stage = 'deliver';
+    task.t = (task.t || 0) + dt;
+    const hd = hoverTo(w, u, a, task.pos.x, task.pos.z, hd2agl(w, u, task), 14);
+    if (hd < 380) { a.dropAgl = 9; }
+    S.noseDir(u, tmpN);
+    if (!isNaN(C.mvx) && hd > 20) look(u, task.pos.x, u.pos.y, task.pos.z);
+    if (hd < 32 && u.agl < 24 && u.spd < 13) {
+      S.airUnload(w, u, task.pos);
+      task.done = true; a.task = null; setMode(a, '', 0);
+    } else if (task.t > 140) { a.task = null; setMode(a, '', 0); }     // could not get in: abort
+  }
+  const hd2agl = (w, u, task) => Math.hypot(task.pos.x - u.pos.x, task.pos.z - u.pos.z) < 380 ? 9 : 70;
+
+  // ── damaged craft go home to mend ────────────────────────────
+  function doRtb(w, u, a) {
+    const cap = ownCap(w, u);
+    a.runMode = false;
+    if (u.hp > u.maxHp * 0.85) { setMode(a, '', 0); return; }
+    if (cap) {
+      a.cap = cap.id;
+      const ab = cap.h * 1.25 + 110, sg = a.side;   // hold abeam of the hull, inside the repair zone
+      look(u, cap.pos.x - Math.cos(cap.yaw) * ab * sg, cap.pos.y, cap.pos.z + Math.sin(cap.yaw) * ab * sg);
+      C.thr = 0.9; C.boost = u.pos.y < S.ALT.space && cap.pos.y > S.ALT.space && u.boostE > 0.4;
+      if (Math.hypot(cap.pos.x - u.pos.x, cap.pos.z - u.pos.z) < cap.def.len * 0.5 + 200) C.thr = 0.55;
+      if (u.def.vtol) { const d = Math.hypot(cap.pos.x - u.pos.x, cap.pos.z - u.pos.z); if (d < 300) { C.thr = 0; C.brake = true; C.mvx = (cap.pos.x - u.pos.x) * 0.2; C.mvz = (cap.pos.z - u.pos.z) * 0.2; C.vy = clamp((cap.pos.y - u.pos.y) * 0.4, -8, 8); } }
+    } else {
+      const h = home(w, u);
+      if (u.def.vtol) hoverTo(w, u, a, h.pos.x, h.pos.z, 25, 14);
+      else { patrolPoint(w, u, a, h.pos.x, h.pos.z, 160, 120); C.thr = 0.6; }
+    }
+  }
+
+  // ── entry point ──────────────────────────────────────────────
+  function aiFighter(w, u, dt) {
+    if (!u.fl) S.initAir(u);
+    const a = u.air, d = u.def;
+    u.pilot = false;
+    a.thinkT -= dt;
+    if (a.thinkT <= 0) {
+      a.thinkT = 0.32 + w.rng.next() * 0.2;
+      if (!a.agl) { a.agl = 90 + w.rng.next() * 50; a.side = w.rng.sign(); a.planT = 0; }
+      perceive(w, u, a);
+    }
+    if (a.cas && w.t > a.cas.until) { a.cas = null; if (a.task && a.task.type === 'cas') a.task = null; }
+    // defaults
+    C.thr = 0.65; C.boost = false; C.roll = 0; C.drift = false; C.brake = false; C.full = false; C.vy = NaN; C.mvx = NaN; C.mvz = 0; C.evade = 0;
+    S.noseDir(u, tmpN); C.dx = tmpN.x; C.dy = tmpN.y; C.dz = tmpN.z;
+    a.modeT = a.modeT || 0;
+    reflexes(w, u, a, dt);
+    // a damaged fighter or strike craft goes home; gunships decide for themselves
+    if (d.role !== 'gunship' && u.hp < u.maxHp * 0.3 && a.mode !== 'rtb') setMode(a, 'rtb', 0);
+    const role = d.role;
+    if (a.mode === 'rtb' && role !== 'gunship') doRtb(w, u, a);
+    else if (role === 'interceptor') doInterceptor(w, u, a, dt);
+    else if (role === 'gunship') doGunship(w, u, a, dt);
+    else doStrike(w, u, a, dt);
+    if (d.vtol && u.agl < 250 && C.dy < -0.45) lookDir(C.dx, -0.45, C.dz);
+    safety(w, u, a, dt, a.runMode);
+    // full-roll pursuit in a dogfight, else bank-limited
+    if (role === 'interceptor' && a.mode !== 'run') C.full = true;
+    S.stepFlight(w, u, dt, C);
+    if (!u.alive) return;
+    // defensive guns for bombers / strike craft against a fighter on their tail
+    if (role === 'bomber' || role === 'strike') { const th = a.threat ? w.umap.get(a.threat) : null; if (th && th.alive && V.distance(th.pos, u.pos) < 480) { /* nothing aft: rely on flares and the break */ } }
+  }
+
+  const Ctl = S.ctl = S.ctl || {};
+  Ctl.fighter = Object.assign(Ctl.fighter || {}, { ai: aiFighter });
+  Object.assign(S, { aiFighter, frontPoint });
+})(window.E = window.E || {});
+
+// ---- js/sim/airops.js ----
+// AIR operations: troop-lander gunships, close-air-support call-ins, and
+// mending / rearming near the carrier or the airfield.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3;
+
+  // ── troop landers ────────────────────────────────────────────
+  // Put n troopers aboard (instant; the AI flies to the airfield first).
+  function airLoad(w, u, n) {
+    n = Math.max(0, Math.min(n | 0, u.def.carry || 0));
+    u.load = []; for (let i = 0; i < n; i++) u.load.push(S.pickClass(w));
+    u.carry = n;
+    w.events.push({ type: 'airLoad', uid: u.id, team: u.team, n, to: u.pid });
+    return n;
+  }
+  // Set them down around `pos`; returns the spawned infantry.
+  function airUnload(w, u, pos) {
+    const out = [], R = w.rng;
+    for (const type of (u.load || [])) {
+      const a = R.angle(), r = 4 + R.next() * 9;
+      out.push(S.spawnUnit(w, 'infantry', type, u.team, { x: pos.x + Math.cos(a) * r, z: pos.z + Math.sin(a) * r }));
+    }
+    w.events.push({ type: 'airDrop', uid: u.id, team: u.team, n: out.length, pos: { x: pos.x, z: pos.z }, to: u.pid });
+    u.carry = 0; u.load = null;
+    return out;
+  }
+  // Task a gunship to ferry n troops to a landing zone. Returns the gunship, or
+  // null (and an 'airUnavailable' event) if none is free. The lead wires the
+  // reinforcement system to this instead of spawning at a command post.
+  function airDrop(w, team, pos, n, pid) {
+    let best = null, bs = 1e12;
+    const h = w.cps.find(c => c.home === team) || w.cps[0];
+    for (const u of w.units) {
+      if (!u.alive || u.kind !== 'fighter' || u.team !== team || u.type !== 'gunship' || u.pid) continue;
+      if (u.air.task || u.air.mode === 'rtb' || u.hp < u.maxHp * 0.5) continue;
+      const d = u.carry > 0 ? E.distXZ(u.pos, pos) : E.distXZ(u.pos, h.pos) + E.distXZ(h.pos, pos);
+      if (d < bs) { bs = d; best = u; }
+    }
+    if (!best) { w.events.push({ type: 'airUnavailable', team, reason: 'none', what: 'drop', to: pid || null }); return null; }
+    const cnt = Math.min(n | 0, best.def.carry);
+    best.air.task = { type: 'drop', pos: { x: pos.x, z: pos.z }, n: cnt, stage: best.carry > 0 ? 'deliver' : 'pickup', t: 0, pid: pid || null };
+    best.air.mode = '';
+    w.events.push({ type: 'airAccepted', uid: best.id, team, role: 'gunship', task: 'drop', pos: { x: pos.x, z: pos.z }, n: cnt, eta: Math.round(bs / 45), to: pid || null });
+    return best;
+  }
+
+  // ── close air support ────────────────────────────────────────
+  const CAS_ROLES = { bomber: 1, gunship: 1, strike: 1 };
+  // Request a strike at pos {x, z}. role: 'bomber' | 'gunship' | 'strike' | 'any'.
+  // Returns the tasked aircraft or null. Events: airAccepted, airInbound,
+  // airWeaponsAway, airComplete, airUnavailable.
+  function taskAir(w, team, role, pos, pid) {
+    const K = E.AIR; w.air = w.air || { callT: {} };
+    const last = w.air.callT[team];
+    if (last !== undefined && w.t < last + K.callCooldown) {
+      w.events.push({ type: 'airUnavailable', team, reason: 'cooldown', wait: Math.ceil(last + K.callCooldown - w.t), to: pid || null });
+      return null;
+    }
+    let best = null, bs = 1e12;
+    for (const u of w.units) {
+      if (!u.alive || u.kind !== 'fighter' || u.team !== team || u.pid || !CAS_ROLES[u.def.role]) continue;
+      if (role && role !== 'any' && u.def.role !== role) continue;
+      const a = u.air;
+      if (a.cas || (a.task && a.task.type === 'drop') || a.mode === 'rtb' || a.mode === 'reload' || u.hp < u.maxHp * 0.45 || !(u.ord > 0)) continue;
+      let s = E.distXZ(u.pos, pos);
+      if (role === 'any' && u.def.role === 'strike') s += 800;       // strike craft are for capitals
+      if (s < bs) { bs = s; best = u; }
+    }
+    if (!best) { w.events.push({ type: 'airUnavailable', team, reason: 'none', to: pid || null }); return null; }
+    w.air.callT[team] = w.t;
+    const a = best.air;
+    a.cas = { x: pos.x, z: pos.z, until: w.t + 80, pid: pid || null, fired: false, inbound: false };
+    a.task = { type: 'cas', pos: { x: pos.x, z: pos.z }, pid: pid || null, fired: false };
+    a.tid = 0; a.hasPt = false; a.mode = ''; a.planT = 0;
+    w.events.push({ type: 'airAccepted', uid: best.id, team, role: best.def.role, task: 'cas', pos: { x: pos.x, z: pos.z }, eta: Math.round(bs / Math.max(40, best.spd)), to: pid || null });
+    return best;
+  }
+
+  S.verbs = S.verbs || {};
+  // a ground player / commander marks a position for a strike
+  S.verbs.callAir = function (w, pid, a, b) {
+    const p = w.players[pid]; if (!p || !a || w.winner) return null;
+    const u = taskAir(w, p.team, typeof b === 'string' ? b : 'any', { x: a.x, z: a.z }, pid);
+    return u ? { uid: u.id, role: u.def.role, eta: Math.round(E.distXZ(u.pos, a) / Math.max(40, u.spd)) } : null;
+  };
+  // the pilot of a loaded gunship sets the troops down (hover low and slow)
+  S.verbs.drop = function (w, pid) {
+    const p = w.players[pid], u = p && p.unitId ? w.umap.get(p.unitId) : null;
+    if (!u || u.kind !== 'fighter' || !(u.carry > 0) || u.agl > 45 || u.spd > 22) return null;
+    return S.airUnload(w, u, u.pos).length;
+  };
+
+  // ── mending and rearming ─────────────────────────────────────
+  function airOpsSystem(w, dt) {
+    const K = E.AIR, U = w.units;
+    for (let i = 0; i < U.length; i++) {
+      const u = U[i];
+      if (u.kind !== 'fighter' || !u.alive || !u.fl) continue;
+      if (w.tickN % 3 !== 0) continue;
+      const step = dt * 3;
+      let near = false;
+      for (let j = 0; j < U.length && !near; j++) {
+        const c = U[j];
+        if (c.kind === 'capital' && c.alive && c.team === u.team) {
+          const r = c.def.len * 0.5 + 220, dx = u.pos.x - c.pos.x, dz = u.pos.z - c.pos.z;
+          if (dx * dx + dz * dz < r * r && Math.abs(u.pos.y - c.pos.y) < 260) near = true;
+        }
+      }
+      if (!near && u.def.vtol && u.agl < 40 && u.spd < 18) {      // hovering over the home airfield
+        const h = w.cps.find(c => c.home === u.team);
+        if (h && E.distXZ2(u.pos, h.pos) < 60 * 60) near = true;
+      }
+      if (near && u.hitT > 2) {
+        if (u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + u.maxHp * K.hullRepair * step);
+        if (u.ord < u.def.ord) u.ordT += step * 2.5;
+        if (u.cm < u.def.cm) u.cmT += step * 3;
+      }
+      // a human gunship picks up troops hovering over the airfield
+      if (u.pid && u.def.carry && u.carry === 0 && u.agl < 35 && u.spd < 14) {
+        const h = w.cps.find(c => c.home === u.team);
+        if (h && E.distXZ2(u.pos, h.pos) < 45 * 45) { u.loadT = (u.loadT || 0) + step; if (u.loadT > 3) { airLoad(w, u, u.def.carry); u.loadT = 0; } } else u.loadT = 0;
+      }
+    }
+  }
+  S.systems = S.systems || []; S.systems.push(airOpsSystem);
+
+  Object.assign(S, { airLoad, airUnload, airDrop, taskAir });
+})(window.E = window.E || {});
+
+// ---- js/sim/airwpn.js ----
+// AIR weapons: lock-on with warnings, countermeasures, converging guns with
+// lead, ballistic bomb release, torpedoes and subsystem aiming, and the
+// per-tick world system that raises missile/lock warnings.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3;
+  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make(), tmpN = V.make(), tmpD = V.make();
+  const clamp = E.clamp;
+  const BS = { t: 0, along: 0, lat: 0, miss: 0, ix: 0, iz: 0 };   // bomb solution scratch
+
+  const aimOf = (u, o) => u.kind === 'fighter' ? S.noseDir(u, o) : S.dirOf(u.aimYaw, u.aimPitch, o);
+
+  // ── lock-on ──────────────────────────────────────────────────
+  // Call every tick while trying to hold `target`; returns true while locked.
+  // Works for anything with a facing (aircraft, turrets, infantry): the AA built
+  // by the land code calls this too. Progress is u.lockT (0..1) on u.lockId.
+  // Per-unit optional def fields: lockCone (rad), lockTime (s), lockRange (m).
+  function lockOn(w, u, tg, dt) {
+    const K = E.AIR, d = u.def;
+    if (u.lockId === undefined) { u.lockId = 0; u.lockT = 0; u.locked = false; u.lockOut = 0; }
+    if (!tg || !tg.alive || tg.team === u.team) { dropLock(w, u); return false; }
+    if (u.lockId !== tg.id) { dropLock(w, u); u.lockId = tg.id; }
+    const W = E.WEAPONS[d.alt] || {};
+    const cone = d.lockCone || K.lockCone, range = d.lockRange || W.range || 900;
+    let time = d.lockTime || K.lockTime;
+    if (tg.kind === 'capital') time *= 0.5;
+    S.eyeOf(u, tmpA); S.centerOf(tg, tmpB);
+    const dx = tmpB.x - tmpA.x, dy = tmpB.y - tmpA.y, dz = tmpB.z - tmpA.z, L = Math.hypot(dx, dy, dz) || 1;
+    aimOf(u, tmpC);
+    const ang = Math.acos(clamp((dx * tmpC.x + dy * tmpC.y + dz * tmpC.z) / L, -1, 1)) - Math.atan2(tg.r || 1, L);
+    let ok = L <= range && L > 15 && ang < cone && !S.cloudBlocks(tmpA, tmpB);
+    if (ok && (tg.jamT > w.t)) ok = false;
+    if (ok && (u.kind !== 'fighter' || tg.kind !== 'fighter') && (w.tickN + u.id) % 4 === 0) u.lockLos = S.los(w, tmpA, tmpB);
+    if (ok && u.lockLos === false && (u.kind !== 'fighter' || tg.kind !== 'fighter')) ok = false;
+    const was = u.locked;
+    if (tg.jamT > w.t) { u.lockT = 0; u.lockOut = 0; }
+    else if (ok) {
+      u.lockOut = 0;
+      u.lockT = Math.min(1, u.lockT + dt / time * (tg.evT > 0 ? 0.4 : 1));
+    } else {
+      u.lockOut += dt;
+      if (u.lockOut > K.lockGrace) u.lockT = Math.max(0, u.lockT - dt * K.lockDecay / time);
+    }
+    u.locked = u.lockT >= 1;
+    if (u.lockT > 0.12 && tg.kind === 'fighter') {   // the victim feels it
+      if (u.locked) tg.lockedT = w.t + 0.4;
+      tg.warnT = w.t + 0.4; tg.warnBy = u.id;
+    }
+    if (u.locked !== was) w.events.push({ type: u.locked ? 'lockAcquired' : 'lockLost', uid: u.id, tid: tg.id, to: u.pid, team: u.team });
+    return u.locked;
+  }
+  function dropLock(w, u) {
+    if (u.locked) w.events.push({ type: 'lockLost', uid: u.id, tid: u.lockId, to: u.pid, team: u.team });
+    u.lockId = 0; u.lockT = 0; u.locked = false; u.lockOut = 0;
+  }
+
+  // the pilot's target selection: hold the current lock, or take what is in the cone
+  function updateLock(w, u, dt, cycle) {
+    const d = u.def, K = E.AIR;
+    const pred = d.alt === 'ptorp' ? (e => e.kind === 'capital' || e.kind === 'vehicle') : (e => e.kind !== 'infantry' && e.kind !== 'turret');
+    let tg = u.lockId ? w.umap.get(u.lockId) : null;
+    if (tg && (!tg.alive || tg.team === u.team)) tg = null;
+    if (cycle || !tg) {
+      const W = E.WEAPONS[d.alt], cur = tg ? tg.id : 0;
+      const nt = S.aimTarget(w, u, u.pos, S.noseDir(u, tmpD), d.lockCone || K.lockCone, W.range, e => e.id !== cur && pred(e) && !S.cloudBlocks(u.pos, e.pos));
+      if (nt) tg = nt;
+    }
+    if (tg) lockOn(w, u, tg, dt);
+    else { if (u.locked) dropLock(w, u); u.lockT = Math.max(0, u.lockT - dt * 2); u.lockId = 0; }
+  }
+
+  // ── countermeasures ──────────────────────────────────────────
+  function airCM(w, u) {
+    const K = E.AIR;
+    if (!(u.cm > 0) || u.cmCd > 0) return false;
+    u.cm--; u.cmCd = K.cmCooldown; u.jamT = w.t + K.cmJam;
+    w.events.push({ type: 'flare', uid: u.id, pos: V.clone(u.pos), vel: V.clone(u.vel), team: u.team, to: u.pid, left: u.cm });
+    return true;
+  }
+
+  // ── guns: converge on the aim point, lead moving targets ──────
+  // dir: where the pilot is aiming (unit). Returns true if a round went out.
+  function airFirePrimary(w, u, dir, assist) {
+    const d = u.def, W = E.WEAPONS[d.weapon];
+    if (u.fireT > 0 || u.hot) return false;
+    const nose = S.noseDir(u, tmpN);
+    let ax = dir.x, ay = dir.y, az = dir.z;
+    // traverse limit (gunship turret) or a small gimbal for fixed wing guns
+    const arc = d.arc || 0.1, c = ax * nose.x + ay * nose.y + az * nose.z;
+    if (c < Math.cos(arc)) {
+      let px = ax - nose.x * c, py = ay - nose.y * c, pz = az - nose.z * c; const pl = Math.hypot(px, py, pz) || 1;
+      const s = Math.sin(arc), k = Math.cos(arc);
+      ax = nose.x * k + px / pl * s; ay = nose.y * k + py / pl * s; az = nose.z * k + pz / pl * s;
+    }
+    tmpA.x = ax; tmpA.y = ay; tmpA.z = az;
+    // converge on whatever is under the reticle (and lead it for human pilots)
+    const tgt = S.aimTarget(w, u, u.pos, tmpA, assist ? 0.05 : 0.02, W.range, null);
+    let R = d.conv || 380;
+    if (tgt) {
+      R = clamp(V.distance(u.pos, tgt.pos), 60, W.range);
+      if (assist) { S.leadPoint(u, tgt, W, tmpB); tmpA.x = tmpB.x - u.pos.x; tmpA.y = tmpB.y - u.pos.y; tmpA.z = tmpB.z - u.pos.z; V.normalize(tmpA); R = V.distance(u.pos, tmpB); }
+    }
+    const s = u.gunSide * u.r * 0.55;
+    const mx = u.pos.x + tmpA.x * u.r - Math.cos(u.yaw) * s, my = u.pos.y + tmpA.y * u.r - 0.3, mz = u.pos.z + tmpA.z * u.r + Math.sin(u.yaw) * s;
+    tmpB.x = u.pos.x + tmpA.x * R - mx; tmpB.y = u.pos.y + tmpA.y * R - my; tmpB.z = u.pos.z + tmpA.z * R - mz;
+    V.normalize(tmpB);
+    return S.firePrimary(w, u, tmpB, tgt ? tgt.id : 0);
+  }
+
+  // ── ordnance ─────────────────────────────────────────────────
+  const GUIDED = { missile: 1, ptorp: 1 };
+  function airAlt(w, u, dir, tid) {
+    const d = u.def, wk = d.alt;
+    if (!wk || u.altT > 0 || !(u.ord > 0)) return false;
+    if (GUIDED[wk] && !tid) return false;
+    const tg = tid ? w.umap.get(tid) : null;
+    const ok = S.fireAlt(w, u, dir, tid || 0);
+    if (!ok) return false;
+    u.ord--; u.ordT = 0;
+    const p = w.projectiles[w.projectiles.length - 1];
+    if (wk === 'bomb') w.events.push({ type: 'bombAway', uid: u.id, pos: V.clone(u.pos), vel: V.clone(u.vel), team: u.team, to: u.pid, ord: u.ord });
+    if (GUIDED[wk] && tg && tg.kind === 'fighter') { tg.warnT = w.t + 0.4; tg.warnBy = u.id; tg.mslBy = u.id; tg.mslT = w.t + 0.4; }
+    if (wk === 'ptorp' && p && p.uid === u.id && tg && tg.kind === 'capital' && S.sysPos && tg.sys) {
+      const name = pickSys(tg, tmpD);
+      if (name) { p.sysCap = tg.id; p.sysName = name; p.tid = 0; }
+    }
+    return true;
+  }
+  const SYS_PRI = ['shield', 'shields', 'generator', 'reactor', 'bridge', 'engine', 'engines', 'hangar'];
+  function sysAlive(s) { return s && !(s.alive === false || s.dead || s.hp <= 0 || s === 0); }
+  // a live subsystem on a capital, if the SPACE code gives it any (defensive)
+  function pickSys(cap, out) {
+    if (!S.sysPos || !cap.sys) return null;
+    for (const n of SYS_PRI) if (sysAlive(cap.sys[n]) && S.sysPos(cap, n, out)) return n;
+    for (const n of Object.keys(cap.sys)) if (sysAlive(cap.sys[n]) && S.sysPos(cap, n, out)) return n;
+    return null;
+  }
+
+  // ── bombs: ballistic release solution ────────────────────────
+  // Where would a bomb dropped now land, relative to a (moving) target point?
+  // BS.along: + long / - short (m, along the track); BS.lat: sideways; BS.t: fall time.
+  function bombSolution(w, u, tx, ty, tz, tvx, tvz) {
+    const g = E.WEAPONS.bomb.grav, nose = S.noseDir(u, tmpN);
+    const ox = u.pos.x + nose.x * u.r, oy = u.pos.y + nose.y * u.r, oz = u.pos.z + nose.z * u.r;
+    const vy0 = u.vel.y - 4, h = oy - ty;
+    if (h <= 1) return null;
+    const t = (vy0 + Math.sqrt(vy0 * vy0 + 2 * g * h)) / g;
+    BS.t = t; BS.ix = ox + u.vel.x * t; BS.iz = oz + u.vel.z * t;
+    const ex = BS.ix - (tx + tvx * t), ez = BS.iz - (tz + tvz * t), vh = Math.hypot(u.vel.x, u.vel.z) || 1;
+    BS.along = (ex * u.vel.x + ez * u.vel.z) / vh; BS.lat = (-ex * u.vel.z + ez * u.vel.x) / vh; BS.miss = Math.hypot(ex, ez);
+    return BS;
+  }
+  // predicted impact point of a bomb dropped now (for a bomb sight): {x, z}, null if it would not fall
+  function bombImpact(w, u, o) {
+    const g = E.WEAPONS.bomb.grav, nose = S.noseDir(u, tmpN), gy = w.terrain.height(u.pos.x, u.pos.z);
+    let ix = u.pos.x, iz = u.pos.z, gh = gy;
+    for (let i = 0; i < 3; i++) {
+      const h = u.pos.y + nose.y * u.r - gh; if (h <= 1) return null;
+      const vy0 = u.vel.y - 4, t = (vy0 + Math.sqrt(vy0 * vy0 + 2 * g * h)) / g;
+      ix = u.pos.x + nose.x * u.r + u.vel.x * t; iz = u.pos.z + nose.z * u.r + u.vel.z * t;
+      gh = Math.max(w.terrain.height(ix, iz), w.terrain.waterLevel);
+    }
+    o = o || {}; o.x = ix; o.z = iz; o.y = gh; return o;
+  }
+  // drop a bomb if the solution says it lands on the target now. Returns true if released.
+  function bombRelease(w, u, tx, ty, tz, tvx, tvz, tol) {
+    if (!(u.ord > 0) || u.altT > 0 || u.def.alt !== 'bomb') return false;
+    const s = bombSolution(w, u, tx, ty, tz, tvx || 0, tvz || 0); if (!s) return false;
+    const vh = Math.hypot(u.vel.x, u.vel.z), step = vh * (1 / 30);
+    if (s.along < -step * 0.5 || s.along > step * 1.5 || Math.abs(s.lat) > (tol || 14)) return false;
+    return airAlt(w, u, S.noseDir(u, tmpN), 0);
+  }
+
+  // ── pilot weapons (human) ────────────────────────────────────
+  function airPilotWeapons(w, u, inp, dt) {
+    const d = u.def, nose = S.noseDir(u, tmpN), guided = GUIDED[d.alt];
+    if (guided) updateLock(w, u, dt, !!inp.cycle && !u.prevCycle);
+    u.prevCycle = !!inp.cycle;
+    S.dirOf(inp.yaw, inp.pitch, tmpD);
+    let aim = tmpD; const arc = d.arc || 0.12;
+    if (nose.x * aim.x + nose.y * aim.y + nose.z * aim.z < Math.cos(arc)) aim = nose;
+    if (inp.fire) airFirePrimary(w, u, aim, true);
+    if (inp.abil) {
+      if (guided) {
+        if (u.locked) airAlt(w, u, nose, u.lockId);
+        else if (u.altT <= 0 && (u.noLockT || 0) < w.t) { u.noLockT = w.t + 0.8; w.events.push({ type: 'noLock', uid: u.id, to: u.pid }); }
+      } else if (d.alt === 'pod') {
+        let a2 = aim; if (nose.x * a2.x + nose.y * a2.y + nose.z * a2.z < Math.cos(0.3)) a2 = nose;
+        airAlt(w, u, a2, 0);
+      } else airAlt(w, u, nose, 0);
+    }
+  }
+
+  // ── the world system: warnings and steered torpedoes ─────────
+  function airSystem(w, dt) {
+    const P = w.projectiles;
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i];
+      if (p.seek && p.tid) {
+        const t = w.umap.get(p.tid);
+        if (t && t.alive && t.kind === 'fighter') {
+          const dd = V.distance(p.pos, t.pos);
+          if (t.mslTick !== w.tickN) { t.mslTick = w.tickN; t.mslD = dd; } else if (dd < t.mslD) t.mslD = dd;
+          t.mslT = w.t + 0.25;
+        }
+      } else if (p.sysCap) {   // a torpedo flying at a particular subsystem
+        const cap = w.umap.get(p.sysCap);
+        if (!cap || !cap.alive || !S.sysPos || !S.sysPos(cap, p.sysName, tmpA)) { p.sysCap = 0; continue; }
+        const sp = Math.hypot(p.vel.x, p.vel.y, p.vel.z) || 1;
+        let wx = tmpA.x - p.pos.x, wy = tmpA.y - p.pos.y, wz = tmpA.z - p.pos.z; const l = Math.hypot(wx, wy, wz) || 1, k = Math.min(1, p.seek * dt);
+        let nx = p.vel.x / sp + (wx / l - p.vel.x / sp) * k, ny = p.vel.y / sp + (wy / l - p.vel.y / sp) * k, nz = p.vel.z / sp + (wz / l - p.vel.z / sp) * k;
+        const nl = Math.hypot(nx, ny, nz) || 1; p.vel.x = nx / nl * sp; p.vel.y = ny / nl * sp; p.vel.z = nz / nl * sp;
+      }
+    }
+    const U = w.units;
+    for (let i = 0; i < U.length; i++) {
+      const u = U[i];
+      if (u.kind !== 'fighter' || !u.alive || u.warn === undefined) continue;
+      const lvl = u.mslT > w.t ? 3 : u.lockedT > w.t ? 2 : u.warnT > w.t ? 1 : 0;
+      if (lvl > u.warn) w.events.push({ type: 'warn', uid: u.id, to: u.pid, level: lvl, by: lvl === 3 ? (u.mslBy || u.warnBy || 0) : (u.warnBy || 0) });
+      u.warn = lvl;
+    }
+  }
+  S.systems = S.systems || []; S.systems.push(airSystem);
+
+  Object.assign(S, { lockOn, dropLock, updateLock, airCM, airFirePrimary, airAlt, airPilotWeapons, bombSolution, bombImpact, bombRelease, pickSys });
 })(window.E = window.E || {});
 
 // ---- js/sim/combat.js ----
@@ -2263,15 +3503,12 @@
     if (wk === 'rocket' && m.seek !== 1) p.seek *= m.seek;
     return true;
   }
-  // seeker launch helper: use the AIR engineer's lock-on if it exists, else pass the target id
+  // Seeker launch helper. Ground targets lock at once; aircraft need the AIR
+  // lock-on (S.lockOn), which builds over time — so call this every tick the
+  // target is tracked. Returns the target id once locked, else 0.
   function lockId(w, u, tg) {
-    if (typeof S.lockOn === 'function') {
-      let r = null; try { r = S.lockOn(w, u, tg); } catch (e) { r = null; }
-      if (r && typeof r === 'object' && r.id) return r.id;
-      if (typeof r === 'number' && r > 0) return r;
-      if (r === false || r === 0) return 0;
-    }
-    return tg.id;
+    if (tg.kind !== 'fighter' || !S.lockOn) return tg.id;
+    return S.lockOn(w, u, tg, 1 / 30) ? tg.id : 0;
   }
 
   // ── infantry movement ────────────────────────────────────────
@@ -2512,7 +3749,7 @@
     if (inp.fire && !u.aimLimited) landFire(w, u, tmpA, 0);
     if (inp.abil) {
       let lk = 0;
-      if (u.def.alt === 'aamissile') { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; }
+      if (u.def.alt === 'aamissile') { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; if (!lk) return; }   // hold to build the lock; it fires when it has one
       landAlt(w, u, tmpA, lk);
     }
   }
@@ -2524,7 +3761,7 @@
     if (inp.fire) landFire(w, u, tmpA, 0);
     if (inp.abil && u.def.alt) {
       let lk = 0;
-      if (u.def.aa) { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; }
+      if (u.def.aa) { const t = S.aimTarget(w, u, S.eyeOf(u, tmpB), tmpA, 0.14, 1200, (e) => e.kind === 'fighter'); lk = t ? lockId(w, u, t) : 0; if (!lk) return; }
       landAlt(w, u, tmpA, lk);
     }
   }
@@ -3117,7 +4354,7 @@
       S.dirOf(u.aimYaw, u.aimPitch, tmpA);
       if (tg.kind === 'fighter') {
         if (al < 0.1 && d < W.range) S.landFire(w, u, tmpA, 0);
-        if (u.def.alt && u.altT <= 0 && al < 0.4) S.landAlt(w, u, tmpA, S.lockId(w, u, tg));
+        if (u.def.alt && al < 0.4) { const id = S.lockId(w, u, tg); if (id && u.altT <= 0) S.landAlt(w, u, tmpA, id); }
       } else {
         if (al < 0.06 && d < W.range && !u.aimLimited) S.landFire(w, u, tmpA, 0);
         if (u.def.alt === 'coax' && tg.kind === 'infantry' && d < E.WEAPONS.coax.range && al < 0.12) S.landAlt(w, u, tmpA, 0);
@@ -3729,7 +4966,9 @@
     for (const c of w.units) if (c.alive && c.kind === 'capital' && c.team !== u.team) { const d = V.distance2(c.pos, u.pos); if (d < bd) { bd = d; best = c; } }
     if (!best) return false;
     u.cd = L.ionCd;
-    const sh = Math.min(best.shield, L.ionShield); best.shield -= sh; best.hitT = 0;
+    const sh = Math.min(best.shield, L.ionShield); best.hitT = 0;
+    if (best.arcs && best.shield > 0) { const k = 1 - sh / best.shield; for (const a of best.arcs) { a.v *= k; a.hitT = 0; } }   // capital shields are four arcs: drain them all
+    best.shield -= sh;
     const from = { x: u.pos.x, y: u.pos.y + u.def.h, z: u.pos.z };
     w.events.push({ type: 'ion', uid: u.id, team: u.team, from, to: V.clone(best.pos), tid: best.id, shieldStripped: Math.round(sh) });
     S.applyDamage(w, best, L.ionHull, { wk: 'ioncannon', team: u.team, uid: u.id, owner: u.pid || null }, best.pos);
@@ -3798,7 +5037,7 @@
       const d = V.distance(u.pos, tg.pos), W = E.WEAPONS[D.weapon];
       S.dirOf(u.aimYaw, u.aimPitch, tmpA);
       if (err < 0.08 && d < W.range) S.landFire(w, u, tmpA, 0);
-      if (D.alt && u.altT <= 0 && err < 0.35 && d < E.WEAPONS[D.alt].range && tg.kind === 'fighter') S.landAlt(w, u, tmpA, S.lockId(w, u, tg));
+      if (D.alt && err < 0.35 && d < E.WEAPONS[D.alt].range && tg.kind === 'fighter') { const id = S.lockId(w, u, tg); if (id && u.altT <= 0) S.landAlt(w, u, tmpA, id); }
     }
     u.yaw = u.aimYaw;
   }
@@ -4565,7 +5804,7 @@
     const P = w.projectiles, L = lists(w);
     for (let i = P.length - 1; i >= 0; i--) {
       const p = P[i];
-      if (p.wk !== 'torpedo' && p.wk !== 'missile') continue;
+      if (p.wk !== 'torpedo' && p.wk !== 'missile' && p.wk !== 'ptorp') continue;
       const caps = L.caps[p.team === 'aegis' ? 'verdant' : 'aegis'];
       for (let k = 0; k < caps.length; k++) {
         const c = caps[k], d2 = V.distance2(c.pos, p.pos), env = 450 + c.def.r;
@@ -4599,8 +5838,8 @@
     for (const u of L.all) {
       const en = u.team === 'aegis' ? 'verdant' : 'aegis';
       let threat = 0, cover = 0;
-      for (const f of L.fighters[en]) if (f.type === 'bomber' && V.distance2(f.pos, u.pos) < 1400 * 1400) threat++;
-      for (const p of w.projectiles) if (p.wk === 'torpedo' && p.team === en && V.distance2(p.pos, u.pos) < 1000 * 1000) threat++;
+      for (const f of L.fighters[en]) if ((f.type === 'bomber' || f.type === 'strike') && V.distance2(f.pos, u.pos) < 1400 * 1400) threat++;
+      for (const p of w.projectiles) if ((p.wk === 'torpedo' || p.wk === 'ptorp') && p.team === en && V.distance2(p.pos, u.pos) < 1000 * 1000) threat++;
       for (const f of L.fighters[u.team]) if (f.type === 'interceptor' && V.distance2(f.pos, u.pos) < 1000 * 1000) cover++;
       const need = threat > 0 && cover < 2;
       u.threat = threat; u.escortT -= 0.5;

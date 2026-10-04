@@ -471,7 +471,7 @@
       S.dirOf(u.aimYaw, u.aimPitch, tmpA);
       if (tg.kind === 'fighter') {
         if (al < 0.1 && d < W.range) S.landFire(w, u, tmpA, 0);
-        if (u.def.alt && u.altT <= 0 && al < 0.4) S.landAlt(w, u, tmpA, S.lockId(w, u, tg));
+        if (u.def.alt && al < 0.4) { const id = S.lockId(w, u, tg); if (id && u.altT <= 0) S.landAlt(w, u, tmpA, id); }
       } else {
         if (al < 0.06 && d < W.range && !u.aimLimited) S.landFire(w, u, tmpA, 0);
         if (u.def.alt === 'coax' && tg.kind === 'infantry' && d < E.WEAPONS.coax.range && al < 0.12) S.landAlt(w, u, tmpA, 0);

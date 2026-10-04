@@ -124,7 +124,7 @@
       const d = V.distance(u.pos, tg.pos), W = E.WEAPONS[D.weapon];
       S.dirOf(u.aimYaw, u.aimPitch, tmpA);
       if (err < 0.08 && d < W.range) S.landFire(w, u, tmpA, 0);
-      if (D.alt && u.altT <= 0 && err < 0.35 && d < E.WEAPONS[D.alt].range && tg.kind === 'fighter') S.landAlt(w, u, tmpA, S.lockId(w, u, tg));
+      if (D.alt && err < 0.35 && d < E.WEAPONS[D.alt].range && tg.kind === 'fighter') { const id = S.lockId(w, u, tg); if (id && u.altT <= 0) S.landAlt(w, u, tmpA, id); }
     }
     u.yaw = u.aimYaw;
   }
