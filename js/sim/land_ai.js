@@ -167,7 +167,10 @@
   function think(w, u) {
     const ai = u.ai, W = E.WEAPONS[u.def.weapon], R = w.rng;
     const sq = squadOf(w, u), role = ROLE[u.type] || 'assault', hpf = u.hp / u.maxHp;
-    const t = pickTarget(w, u, sq); ai.tid = t ? t.id : 0; ai.los = !!t;
+    let t = pickTarget(w, u, sq); ai.los = !!t;
+    if (t) ai.seenT = w.t;
+    else if (ai.cov && ai.cov.alive && ai.tid && w.t - (ai.seenT || -9) < 4) { const m0 = w.umap.get(ai.tid); if (m0 && m0.alive) t = m0; }   // keep the head down, remember who is out there
+    ai.tid = t ? t.id : 0;
     const k = w.cfg.aiErr * (1 + (u.supp || 0) * 2.2);
     ai.errY = R.gauss() * k; ai.errP = R.gauss() * k * 0.6;
     if (w.t > ai.offT) {

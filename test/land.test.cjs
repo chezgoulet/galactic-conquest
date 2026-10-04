@@ -566,8 +566,8 @@ test('bots fight from cover and relocate when it is destroyed', () => {
   const w = sandbox('desert', 5), m = mid(w);
   const bot = spawn(w, 'infantry', 'trooper', 'aegis', m.x, m.z);
   const foe = noThink(spawn(w, 'infantry', 'trooper', 'verdant', m.x + 90, m.z)); foe.hp = foe.maxHp = 1e6;
-  const c1 = S.addCover(w, 'barrier', m.x + 8, m.z, Math.PI / 2, { w: 5 });
-  const c2 = S.addCover(w, 'barrier', m.x - 12, m.z + 10, Math.PI / 2, { w: 5 });
+  const c1 = S.addCover(w, 'barrier', m.x + 8, m.z + 7, Math.PI / 2, { w: 5 });
+  const c2 = S.addCover(w, 'barrier', m.x + 14, m.z - 8, Math.PI / 2, { w: 5 });
   step(w, 6);
   assert.ok(bot.ai.cov === c1 || bot.ai.cov === c2, 'took cover');
   const first = bot.ai.cov, at = { x: bot.pos.x, z: bot.pos.z };
