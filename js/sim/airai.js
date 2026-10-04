@@ -142,8 +142,8 @@
     for (let i = 0; i < w.units.length; i++) {
       const c = w.units[i];
       if (c.kind !== 'capital' || !c.alive) continue;
-      if (a.mode === 'rtb' && a.cap === c.id && u.pos.y > c.pos.y + c.h * 1.8) continue;
-      const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw), hl = c.def.len * 0.5 - c.h, rc = c.h * 1.25 + u.r + 60 + spd * 1.3;
+      const own = a.mode === 'rtb' && a.cap === c.id;
+      const fx = Math.sin(c.yaw), fz = Math.cos(c.yaw), hl = c.def.len * 0.5 - c.h, rc = c.h * 1.25 + u.r + (own ? 28 : 60 + spd * 1.3);
       const rx = u.pos.x - c.pos.x, ry = u.pos.y - c.pos.y, rz = u.pos.z - c.pos.z;
       if (Math.abs(ry) > rc * 1.6) continue;
       const q = clamp(rx * fx + rz * fz, -hl, hl), qx = rx - fx * q, qz = rz - fz * q;
@@ -494,9 +494,11 @@
     if (u.hp > u.maxHp * 0.85) { setMode(a, '', 0); return; }
     if (cap) {
       a.cap = cap.id;
-      look(u, cap.pos.x, cap.pos.y + cap.h * 2.6 + 70, cap.pos.z);
+      const ab = cap.h * 1.25 + 110, sg = a.side;   // hold abeam of the hull, inside the repair zone
+      look(u, cap.pos.x - Math.cos(cap.yaw) * ab * sg, cap.pos.y, cap.pos.z + Math.sin(cap.yaw) * ab * sg);
       C.thr = 0.9; C.boost = u.pos.y < S.ALT.space && cap.pos.y > S.ALT.space && u.boostE > 0.4;
-      if (u.def.vtol) { const d = Math.hypot(cap.pos.x - u.pos.x, cap.pos.z - u.pos.z); if (d < 300) { C.thr = 0; C.brake = true; C.mvx = (cap.pos.x - u.pos.x) * 0.2; C.mvz = (cap.pos.z - u.pos.z) * 0.2; C.vy = clamp((cap.pos.y + cap.h * 2.6 + 70 - u.pos.y) * 0.4, -8, 8); } }
+      if (Math.hypot(cap.pos.x - u.pos.x, cap.pos.z - u.pos.z) < cap.def.len * 0.5 + 200) C.thr = 0.55;
+      if (u.def.vtol) { const d = Math.hypot(cap.pos.x - u.pos.x, cap.pos.z - u.pos.z); if (d < 300) { C.thr = 0; C.brake = true; C.mvx = (cap.pos.x - u.pos.x) * 0.2; C.mvz = (cap.pos.z - u.pos.z) * 0.2; C.vy = clamp((cap.pos.y - u.pos.y) * 0.4, -8, 8); } }
     } else {
       const h = home(w, u);
       if (u.def.vtol) hoverTo(w, u, a, h.pos.x, h.pos.z, 25, 14);
