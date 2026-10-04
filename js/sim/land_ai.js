@@ -277,6 +277,7 @@
         let bc = null, bd = 1e9;
         for (const c of mine) { const d = Math.hypot(c.pos.x - u.pos.x, c.pos.z - u.pos.z); if (d < bd) { bd = d; bc = c; } }
         let ec = null, ed = 1e9; for (const c of en) { const d = Math.hypot(c.pos.x - bc.pos.x, c.pos.z - bc.pos.z); if (d < ed) { ed = d; ec = c; } }
+        for (const e of w.units) if (e.alive && e.team !== u.team && e.kind === 'vehicle') { const d = Math.hypot(e.pos.x - bc.pos.x, e.pos.z - bc.pos.z); if (d < ed && d < 500) { ed = d; ec = { pos: e.pos }; } }
         const dx = ec.pos.x - bc.pos.x, dz = ec.pos.z - bc.pos.z, dl = Math.hypot(dx, dz) || 1, off = bc.r + 10 + R.next() * 24, lat = (R.next() - 0.5) * 30;
         ai.mode = 'mine'; ai.dx = bc.pos.x + dx / dl * off - dz / dl * lat; ai.dz = bc.pos.z + dz / dl * off + dx / dl * lat; ai.dr = 2.5; ai.job = -1;
         if (bd < 160) return true;

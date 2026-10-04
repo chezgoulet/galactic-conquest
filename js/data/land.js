@@ -24,7 +24,7 @@
     wreck:    { name: 'Wreck Blast',      kind: 'mine', dmg: 0, vs: { heavy: 0.5, cap: 0.05 } },
     // ── vehicles ──
     skiffgun: { name: 'Twin Repeaters',   kind: 'bolt', dmg: 17, rate: 9,   speed: 340, range: 320, spread: 0.02, heat: 0.04, scale: 1.2, vs: { heavy: 0.3, cap: 0.02 }, sfx: 'pulse' },
-    cannon:   { name: 'Siege Cannon',     kind: 'shell', dmg: 300, rate: 0.6, speed: 210, range: 520, spread: 0.006, splash: 11, heat: 0, grav: 6, cv: 1.6, vs: { inf: 0.8, cap: 0.4 }, sfx: 'cannon' },
+    cannon:   { name: 'Siege Cannon',     kind: 'shell', dmg: 250, rate: 0.5, speed: 210, range: 520, spread: 0.006, splash: 8.5, heat: 0, grav: 6, cv: 1.6, vs: { inf: 0.8, cap: 0.4 }, sfx: 'cannon' },
     coax:     { name: 'Coaxial Repeater', kind: 'bolt', dmg: 12, rate: 9,   speed: 320, range: 260, spread: 0.025, heat: 0.03, supp: 1.4, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
     aaflak:   { name: 'Flak Cannon',      kind: 'bolt', dmg: 16, rate: 7.5, speed: 520, range: 720, spread: 0.02, heat: 0.03, scale: 1.4, supp: 1.2, vs: { inf: 0.35, heavy: 0.15, cap: 0.02 }, sfx: 'pd' },
     aamissile:{ name: 'Skyhook Missile',  kind: 'missile', dmg: 210, rate: 0.2, speed: 250, range: 1200, spread: 0.004, seek: 3.1, splash: 8, cd: 5.5, vs: { inf: 0.3, heavy: 0.3, light: 1.15, cap: 0.3 }, sfx: 'missile' },
@@ -52,7 +52,7 @@
   };
 
   E.VEHICLES = {
-    skiff: { name: 'Skiff',     hp: 420,  shield: 160, speed: 34, accel: 26, brake: 38, grip: 1.7, turn: 2.4, r: 3.2, h: 2.4, hover: 1.1, weapon: 'skiffgun', alt: null,   armor: 'light', cost: 2,
+    skiff: { name: 'Skiff',     hp: 540,  shield: 160, speed: 34, accel: 26, brake: 38, grip: 1.7, turn: 2.4, r: 3.2, h: 2.4, hover: 1.1, weapon: 'skiffgun', alt: null,   armor: 'light', cost: 2,
              mass: 1, armorF: { front: 0.85, side: 1.0, rear: 1.25, top: 1.2 }, turret: { arc: 0.75, rate: 3.0, pitchMin: -0.25, pitchMax: 0.6 },
              desc: 'Fast hover scout. Twin repeaters in a fixed forward arc, thin armor, drifts through turns.' },
     tank:  { name: 'Bulwark',   hp: 1500, shield: 400, speed: 17, accel: 10, brake: 18, grip: 3.6, turn: 1.3, r: 4.6, h: 3.4, hover: 0.8, weapon: 'cannon',   alt: 'coax', armor: 'heavy', cost: 3,
