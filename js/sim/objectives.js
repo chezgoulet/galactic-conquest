@@ -77,7 +77,7 @@
       }
       if (air < T.airCap) {
         T.airT -= dt;
-        if (T.airT <= 0) { T.airT = cap ? 11 : 24; const u = S.launchFighter(w, f, cap, w.rng.i(6)); w.events.push({ type: 'launch', pos: V.clone(u.pos), team: f }); }
+        if (T.airT <= 0) { const bay = S.carrierFor(w, f); T.airT = bay ? 11 : 24; const u = S.launchFighter(w, f, bay, w.rng.i(6)); w.events.push({ type: 'launch', pos: V.clone(u.pos), team: f }); }
       }
       // AI fleet calls an orbital strike on a massed enemy
       if (T.strikeT <= 0 && cap && !cap.pid) {

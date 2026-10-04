@@ -19,15 +19,20 @@
       T.vehCap = vs;
       for (const [type, n] of Object.entries(vs)) for (let i = 0; i < n; i++) S.spawnUnit(w, 'vehicle', type, f, { x: home.pos.x - sgn * 20, z: home.pos.z + (i * 2 - 1) * 16 + (type === 'tank' ? 34 : -34) });
       for (const s of [-1, 1]) S.spawnUnit(w, 'turret', 'battery', f, { x: home.pos.x + sgn * 22, z: home.pos.z + s * 26 });
-      T.fleet.forEach((type, i) => {
-        const a = (f === 'aegis' ? Math.PI : 0) + i * 0.42, R = S.ORBIT_R + i * 190;
-        S.spawnUnit(w, 'capital', type, f, { x: Math.cos(a) * R, y: S.CAP_ALT + i * 90, z: Math.sin(a) * R }, { yaw: Math.atan2(-Math.sin(a), Math.cos(a)), orbitR: R, alt: S.CAP_ALT + i * 90, flag: i === 0 });
-        const hp = T.fleetHp && T.fleetHp[i];   // campaign damage carried into the battle
-        if (hp < 1) { const cu = w.units[w.units.length - 1]; cu.hp = Math.max(1, Math.round(cu.maxHp * hp)); cu.shield = Math.round(cu.maxShield * hp); }
-      });
+      // an explicitly empty fleet (a campaign world with no garrison left) fields no ships at all
+      if (T.fleet.length) S.deployFleet(w, f);
+      if (T.fleetHp) {   // campaign damage carried into the battle, ship by ship in fleet order
+        const caps = w.units.filter(u => u.kind === 'capital' && u.team === f);
+        T.fleetHp.forEach((hp, i) => {
+          const cu = caps[i]; if (!cu || !(hp < 1)) return;
+          cu.hp = Math.max(1, Math.round(cu.maxHp * hp));
+          if (cu.arcs) for (const arc of cu.arcs) arc.v *= hp;
+          cu.shield = Math.round(cu.shield * hp);
+        });
+      }
       T.airCap = (T.bonus.wing !== undefined ? T.bonus.wing : E.DOCTRINE[f].fighters) + (T.bonus.airwing ? 2 : 0);
       const cap = w.units.find(u => u.kind === 'capital' && u.team === f);
-      for (let i = 0; i < T.airCap; i++) S.launchFighter(w, f, cap, i);
+      for (let i = 0; i < T.airCap; i++) S.launchFighter(w, f, S.carrierFor(w, f, i) || cap, i);
     }
     for (const u of w.units) u.bornT = -10;
     w.events.length = 0;

@@ -1404,27 +1404,60 @@
 })(window.E = window.E || {});
 
 // ---- js/data/space.js ----
-// SPACE roster: capital ships and their batteries. See units.js for armor
-// classes and the shared lookup helpers.
+// SPACE roster: capital ships, their batteries and the tuning tables for
+// subsystems, shields, power and the staged fleet battle. See units.js for
+// armor classes and the shared lookup helpers.
 (function (E) {
   'use strict';
 
   Object.assign(E.WEAPONS = E.WEAPONS || {}, {
-    // ── capital ──
-    turbo:    { name: 'Main Battery',     kind: 'turbo', dmg: 250, rate: 0.5, speed: 460, range: 1900, spread: 0.008, splash: 12, scale: 4, vs: { cap: 0.1 }, sfx: 'capital' },
-    broadside:{ name: 'Broadside',        kind: 'turbo', dmg: 62, rate: 2.2, speed: 460, range: 1500, spread: 0.014, splash: 5, scale: 2.4, vs: { cap: 0.05 }, sfx: 'pulse' },
-    flak:     { name: 'Point Defense',    kind: 'bolt', dmg: 11, rate: 10,  speed: 520, range: 420, spread: 0.035, scale: 1.2, vs: { cap: 0.05 }, sfx: 'pd' },
-    torpedo:  { name: 'Capital Torpedo',  kind: 'missile', dmg: 380, speed: 150, range: 2200, seek: 1.2, splash: 16, cd: 7, scale: 2.4, vs: { cap: 0.35 }, sfx: 'missile' },
+    // ── capital ──  (ranges are sized for fleets 1-2 km apart in orbit)
+    turbo:    { name: 'Main Battery',     kind: 'turbo', dmg: 300, rate: 0.5, speed: 620, range: 2500, spread: 0.006, splash: 12, scale: 5, vs: { cap: 0.3 }, sfx: 'capital' },
+    broadside:{ name: 'Broadside',        kind: 'turbo', dmg: 140, rate: 1.1, speed: 600, range: 1700, spread: 0.01, splash: 5, scale: 2.8, vs: { cap: 0.1 }, sfx: 'pulse' },
+    flak:     { name: 'Point Defense',    kind: 'bolt', dmg: 26, rate: 7,  speed: 760, range: 700, spread: 0.012, scale: 1.4, vs: { cap: 0.02 }, sfx: 'pd' },
+    torpedo:  { name: 'Capital Torpedo',  kind: 'missile', dmg: 420, speed: 170, range: 2600, seek: 1.4, splash: 16, cd: 8, scale: 2.8, vs: { cap: 0.5 }, sfx: 'missile' },
     orbital:  { name: 'Orbital Strike',   kind: 'orbital', dmg: 520, splash: 26, cd: 40, shots: 7, vs: { cap: 0 }, sfx: 'capital' },
   });
 
+  // role: screen (frigates), line (cruisers), carrier, flagship (dreadnought).
+  // len/r/h drive the renderer's hull generator: length, half-width, thickness.
   E.CAPITALS = {
-    cruiser:     { name: 'Cruiser',     hp: 16000, shield: 5000,  speed: 16, turn: 0.07, r: 110, h: 34, len: 300, bays: 4,  main: 2, side: 3, pd: 3, armor: 'cap',
-                   desc: 'Fast escort. Hits hard and gets out before the return fire.' },
-    carrier:     { name: 'Carrier',     hp: 22000, shield: 7000,  speed: 13, turn: 0.06, r: 135, h: 40, len: 370, bays: 8,  main: 2, side: 3, pd: 4, armor: 'cap',
-                   desc: 'Fleet wing. Carries the largest fighter group in the sector.' },
-    dreadnought: { name: 'Dreadnought', hp: 32000, shield: 10000, speed: 11, turn: 0.05, r: 160, h: 48, len: 440, bays: 6,  main: 4, side: 5, pd: 5, armor: 'cap',
+    frigate:     { name: 'Frigate',     role: 'screen',   hp: 6000,  shield: 4500, speed: 34, turn: 0.16,  r: 36,  h: 28, len: 190, bays: 1, wing: 0, crew: 4,  main: 1, side: 2, pd: 3, armor: 'cap',
+                   desc: 'Picket and escort. Fast, fragile, and the first thing an attacker must strip away.' },
+    cruiser:     { name: 'Cruiser',     role: 'line',     hp: 18000, shield: 15000, speed: 24, turn: 0.085, r: 70,  h: 56, len: 420, bays: 2, wing: 1, crew: 8,  main: 2, side: 3, pd: 4, armor: 'cap',
+                   desc: 'Line of battle. Hits hard and manoeuvres for the broadside.' },
+    carrier:     { name: 'Carrier',     role: 'carrier',  hp: 24000, shield: 19000, speed: 17, turn: 0.07,  r: 90,  h: 72, len: 620, bays: 8, wing: 1, crew: 10, main: 2, side: 3, pd: 6, armor: 'cap',
+                   desc: 'Fleet wing. Carries the largest fighter group in the sector and stays behind the line.' },
+    dreadnought: { name: 'Dreadnought', role: 'flagship', hp: 36000, shield: 28000, speed: 15, turn: 0.06,  r: 100, h: 80, len: 780, bays: 6, wing: 1, crew: 14, main: 4, side: 5, pd: 6, armor: 'cap',
                    desc: 'The centerpiece of a fleet. Endless broadside.' },
+  };
+
+  // Subsystems, in hull-local fractions: lz of hull length (+ forward), ly of
+  // hull thickness h (+ up), r of hull half-width. hp is a share of hull hp.
+  // order = the cycle order when a commander picks a subsystem to focus.
+  E.SPACE = {
+    sys: {
+      shield:    { label: 'Shield Generator', hp: 0.10, lz: -0.05, ly: 0.9,  r: 0.55 },
+      batteries: { label: 'Main Batteries',   hp: 0.12, lz: 0.16,  ly: 0.8,  r: 0.55 },
+      engines:   { label: 'Engines',          hp: 0.12, lz: -0.40, ly: 0,    r: 0.6 },
+      hangar:    { label: 'Hangar Bay',       hp: 0.11, lz: 0.27,  ly: -0.3, r: 0.55 },
+      bridge:    { label: 'Bridge',           hp: 0.08, lz: -0.30, ly: 0.85, r: 0.45 },
+      reactor:   { label: 'Reactor',          hp: 0.10, lz: -0.18, ly: 0,    r: 0.4 },
+    },
+    order: ['shield', 'batteries', 'engines', 'hangar', 'bridge', 'reactor'],
+    arcs: ['fore', 'aft', 'port', 'stbd'],
+    arcShare: [0.2, 0.2, 0.3, 0.3],
+    sysHpMul: 2.2, sysShare: 0.8, hullShare: 0.45,          // a hit that reaches a subsystem: share it takes / share the hull also takes
+    regenDelay: 5, regenRate: 0.06,           // per-arc, seconds without a hit / fraction of arc per second
+    power: { balanced: [0.34, 0.33, 0.33], shields: [0.55, 0.25, 0.20], weapons: [0.20, 0.55, 0.25], engines: [0.20, 0.25, 0.55] },
+    powerNames: ['balanced', 'shields', 'weapons', 'engines'],
+    stageHull: [0.6, 0.8, 1.25],              // hull damage multiplier by the attacker's stage (screens always 1)
+    stageSys: [0.5, 1, 1],                    // subsystem damage multiplier by stage
+    stageNames: ['Win local space', 'Break the shields', 'Finish the ship'],
+    retreatHull: 0.35, retreatHullFlag: 0.22,
+    braceTime: 6, braceCd: 30, braceMul: 0.45,
+    coreTime: 25,
+    boardCrew: 6, boardTime: 80,
   };
 })(window.E = window.E || {});
 
@@ -2256,7 +2289,7 @@
       }
       if (air < T.airCap) {
         T.airT -= dt;
-        if (T.airT <= 0) { T.airT = cap ? 11 : 24; const u = S.launchFighter(w, f, cap, w.rng.i(6)); w.events.push({ type: 'launch', pos: V.clone(u.pos), team: f }); }
+        if (T.airT <= 0) { const bay = S.carrierFor(w, f); T.airT = bay ? 11 : 24; const u = S.launchFighter(w, f, bay, w.rng.i(6)); w.events.push({ type: 'launch', pos: V.clone(u.pos), team: f }); }
       }
       // AI fleet calls an orbital strike on a massed enemy
       if (T.strikeT <= 0 && cap && !cap.pid) {
@@ -2315,15 +2348,20 @@
       T.vehCap = vs;
       for (const [type, n] of Object.entries(vs)) for (let i = 0; i < n; i++) S.spawnUnit(w, 'vehicle', type, f, { x: home.pos.x - sgn * 20, z: home.pos.z + (i * 2 - 1) * 16 + (type === 'tank' ? 34 : -34) });
       for (const s of [-1, 1]) S.spawnUnit(w, 'turret', 'battery', f, { x: home.pos.x + sgn * 22, z: home.pos.z + s * 26 });
-      T.fleet.forEach((type, i) => {
-        const a = (f === 'aegis' ? Math.PI : 0) + i * 0.42, R = S.ORBIT_R + i * 190;
-        S.spawnUnit(w, 'capital', type, f, { x: Math.cos(a) * R, y: S.CAP_ALT + i * 90, z: Math.sin(a) * R }, { yaw: Math.atan2(-Math.sin(a), Math.cos(a)), orbitR: R, alt: S.CAP_ALT + i * 90, flag: i === 0 });
-        const hp = T.fleetHp && T.fleetHp[i];   // campaign damage carried into the battle
-        if (hp < 1) { const cu = w.units[w.units.length - 1]; cu.hp = Math.max(1, Math.round(cu.maxHp * hp)); cu.shield = Math.round(cu.maxShield * hp); }
-      });
+      // an explicitly empty fleet (a campaign world with no garrison left) fields no ships at all
+      if (T.fleet.length) S.deployFleet(w, f);
+      if (T.fleetHp) {   // campaign damage carried into the battle, ship by ship in fleet order
+        const caps = w.units.filter(u => u.kind === 'capital' && u.team === f);
+        T.fleetHp.forEach((hp, i) => {
+          const cu = caps[i]; if (!cu || !(hp < 1)) return;
+          cu.hp = Math.max(1, Math.round(cu.maxHp * hp));
+          if (cu.arcs) for (const arc of cu.arcs) arc.v *= hp;
+          cu.shield = Math.round(cu.shield * hp);
+        });
+      }
       T.airCap = (T.bonus.wing !== undefined ? T.bonus.wing : E.DOCTRINE[f].fighters) + (T.bonus.airwing ? 2 : 0);
       const cap = w.units.find(u => u.kind === 'capital' && u.team === f);
-      for (let i = 0; i < T.airCap; i++) S.launchFighter(w, f, cap, i);
+      for (let i = 0; i < T.airCap; i++) S.launchFighter(w, f, S.carrierFor(w, f, i) || cap, i);
     }
     for (const u of w.units) u.bornT = -10;
     w.events.length = 0;
@@ -2416,14 +2454,36 @@
 })(window.E = window.E || {});
 
 // ---- js/sim/space.js ----
-// SPACE: capital ships — hull movement, gun batteries, fleet AI, player command
-// of a capital, and the orbital strikes a fleet drops on the surface.
+// SPACE (core): capital ships as enormous, damageable machines — hull and
+// subsystem model, directional shield arcs, power distribution, helm with
+// inertia, gun batteries, point defence, orbital strikes and fleet deployment.
+// The fleet AI, battle stages and player command live in space_fleet.js and
+// the zero-G boarding actions in space_board.js.
 (function (E) {
   'use strict';
   const S = E.SIM = E.SIM || {}, V = E.V3;
-  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make(), tmpD = V.make();
-  const CAP_ALT = 640, ORBIT_R = 700;
+  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make(), tmpD = V.make(), tmpE = V.make();
+  const SP = E.SPACE, ORDER = SP.order, ARCS = SP.arcs;
+  // capital ships hold station in the orbit band (kept for compatibility)
+  const CAP_ALT = S.ALT ? S.ALT.orbit : 3200, ORBIT_R = 1150;
 
+  // ── per-tick fleet lists (rebuilt once per tick, shared by every ship) ──
+  function lists(w) {
+    let L = w._sp;
+    if (!L) L = w._sp = { tick: -1, n: -1, caps: { aegis: [], verdant: [] }, fighters: { aegis: [], verdant: [] }, all: [] };
+    if (L.tick === w.tickN && L.n === w.units.length) return L;
+    L.tick = w.tickN; L.n = w.units.length;
+    L.caps.aegis.length = L.caps.verdant.length = L.fighters.aegis.length = L.fighters.verdant.length = L.all.length = 0;
+    for (let i = 0; i < w.units.length; i++) {
+      const u = w.units[i]; if (!u.alive) continue;
+      if (u.kind === 'capital') { L.caps[u.team].push(u); L.all.push(u); }
+      else if (u.kind === 'fighter') L.fighters[u.team].push(u);
+    }
+    return L;
+  }
+  const capsOf = (w, team) => lists(w).caps[team];
+
+  // ── construction ─────────────────────────────────────────────
   function buildGuns(u) {
     const d = u.def, L = d.len, g = [];
     for (let i = 0; i < d.main; i++) g.push({ wk: 'turbo', t: 1 + i * 0.7, lx: 0, ly: d.h * 0.55, lz: E.lerp(-0.12, 0.34, d.main > 1 ? i / (d.main - 1) : 0.5) * L, slot: 'main' });
@@ -2432,112 +2492,1030 @@
     for (let i = 0; i < d.pd; i++) g.push({ wk: 'flak', t: i * 0.1, lx: (i % 2 ? 1 : -1) * d.r * 0.3, ly: (i % 3 - 1) * d.h * 0.4, lz: E.lerp(-0.4, 0.4, i / Math.max(1, d.pd - 1)) * L, slot: 'pd' });
     g.push({ wk: 'torpedo', t: 5, lx: 0, ly: -d.h * 0.3, lz: L * 0.4, slot: 'torp' });
     u.guns = g;
+    initCapital(u);
+  }
+  // subsystems, shield arcs, power and command state
+  function initCapital(u) {
+    const d = u.def, sys = {};
+    for (const n of ORDER) {
+      const s = SP.sys[n], hp = Math.max(1, Math.round(u.maxHp * s.hp * SP.sysHpMul));
+      sys[n] = { hp, maxHp: hp, alive: true, lx: 0, ly: d.h * s.ly, lz: d.len * s.lz, r: Math.max(14, d.r * s.r), hitT: 99, mark: 0 };
+    }
+    u.sys = sys;
+    if (u.ai) { u.ai.face = 1; u.ai.aggr = 1; u.ai.pref = 0; u.ai.faceT = 0; }
+    u.arcs = ARCS.map((n, i) => { const m = u.maxShield * SP.arcShare[i]; return { v: m, max: m, hitT: 99, flareT: 0 }; });
+    u.power = SP.power.balanced.slice(); u.powerGoal = SP.power.balanced.slice(); u.powerMode = 0;
+    Object.assign(u, { role: d.role, throttle: 0.6, yawRate: 0, braceT: 0, braceCd: 0, coreT: 0, retreat: false, stranded: false, needsEscort: false, threat: 0,
+      tgtId: 0, tgtSys: '', launchCd: 0, hullMark: 0, pdKills: 0, pdT: 0, boarding: null, captured: false, boost: false, escortT: 0, pdTgt: null, pdScanT: 0 });
   }
 
+  // world position of a subsystem (the AIR engineer's bombers aim at this)
+  function sysPos(u, name, out) {
+    const s = u.sys && u.sys[name]; out = out || {};
+    if (!s) { out.x = u.pos.x; out.y = u.pos.y; out.z = u.pos.z; return out; }
+    const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
+    out.x = u.pos.x + fx * s.lz - fz * s.lx; out.y = u.pos.y + s.ly; out.z = u.pos.z + fz * s.lz + fx * s.lx;
+    return out;
+  }
+  const sysAlive = (u, n) => !!(u.sys && u.sys[n] && u.sys[n].alive);
+  const hullFrac = (u) => u.hp / u.maxHp;
+  function shieldFrac(u) { let v = 0, m = 0; for (const a of u.arcs) { v += a.v; m += a.max; } return m > 0 ? v / m : 0; }
+  // how far a ship's engines let it manoeuvre, power included
+  function engineMul(u) {
+    const e = u.sys.engines, base = e.alive ? 0.7 + 0.3 * e.hp / e.maxHp : 0.3;
+    return base * (0.65 + u.power[2] * 1.05);
+  }
+  function weaponMul(u) { return E.clamp(u.power[1] / 0.333, 0.55, 1.7); }
+  function liveBatteries(u) { return u.alive && u.sys.batteries.alive && !u.captured; }
+
+  // ── shields, subsystem and hull damage (combat.js hooks) ─────
+  function arcAt(u, at, src) {
+    let px, pz;
+    if (at) { px = at.x - u.pos.x; pz = at.z - u.pos.z; }
+    else if (src && src.pos) { px = src.pos.x - u.pos.x; pz = src.pos.z - u.pos.z; } else return 2;
+    const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
+    const lz = (px * fx + pz * fz) / (u.def.len * 0.5), lx = (-px * fz + pz * fx) / u.def.r; // lx > 0 = starboard
+    if (Math.abs(lz) > Math.abs(lx)) return lz > 0 ? 0 : 1;
+    return lx > 0 ? 3 : 2;
+  }
+  function capDamage(w, e, d, src, at) {
+    if (e.braceT > 0) d *= SP.braceMul;
+    e.hitT = 0;
+    const i = arcAt(e, at, src), A = e.arcs[i];
+    A.hitT = 0;
+    if (A.v > 0) {
+      const sh = Math.min(A.v, d); A.v -= sh; d -= sh;
+      if (A.flareT <= 0 && sh > 0) {
+        A.flareT = 0.12;
+        w.events.push({ type: 'shieldHit', uid: e.id, team: e.team, arc: i, amt: Math.round(sh), frac: A.v / A.max, pos: at ? V.clone(at) : V.clone(e.pos), by: src.uid || 0 });
+      }
+      if (A.v <= 0.5) { A.v = 0; w.events.push({ type: 'shieldDown', uid: e.id, team: e.team, arc: i, pos: at ? V.clone(at) : V.clone(e.pos) }); }
+    }
+    if (d > 0) e.shield = 0; // combat.js drains e.shield next: arcs are the only shield here
+    return d;
+  }
+  // first live subsystem along the shot's path inside the hull
+  function sysAlong(u, src, at) {
+    let dx, dy, dz;
+    if (src && src.vel && (src.vel.x || src.vel.y || src.vel.z)) { dx = src.vel.x; dy = src.vel.y; dz = src.vel.z; }
+    else { dx = u.pos.x - at.x; dy = u.pos.y - at.y; dz = u.pos.z - at.z; }
+    const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
+    const pen = u.h * 2.6, pr = src && src.r ? src.r : 0.5;
+    let best = null, bt = 1e9;
+    for (let k = 0; k < ORDER.length; k++) {
+      const s = u.sys[ORDER[k]]; if (!s.alive) continue;
+      sysPos(u, ORDER[k], tmpE);
+      const rx = tmpE.x - at.x, ry = tmpE.y - at.y, rz = tmpE.z - at.z;
+      const t = E.clamp(rx * dx + ry * dy + rz * dz, 0, pen);
+      const qx = rx - dx * t, qy = ry - dy * t, qz = rz - dz * t;
+      if (qx * qx + qy * qy + qz * qz < (s.r + pr) * (s.r + pr) && t < bt) { bt = t; best = ORDER[k]; }
+    }
+    return best;
+  }
+  function stageOf(w, team) { return (team && w.space && w.space[team]) ? w.space[team].stage : 0; }
+  function capHull(w, e, d, src, at) {
+    const st = stageOf(w, src.team), screen = e.def.role === 'screen';
+    const hm = st && !screen ? SP.stageHull[st - 1] : 1, sm = st && !screen ? SP.stageSys[st - 1] : 1;
+    const name = at ? sysAlong(e, src, at) : null;
+    if (name) {
+      damageSys(w, e, name, d * SP.sysShare * sm, src, at);
+      return d * SP.hullShare * hm;
+    }
+    return d * hm;
+  }
+  function damageSys(w, u, name, amt, src, at) {
+    const s = u.sys[name]; if (!s.alive) return;
+    s.hp -= amt; s.hitT = 0;
+    const f = Math.max(0, s.hp) / s.maxHp, mk = f <= 0 ? 3 : f < 0.25 ? 2 : f < 0.5 ? 1 : 0;
+    if (s.hp <= 0) { destroySys(w, u, name, src); return; }
+    if (mk > s.mark) {
+      s.mark = mk;
+      w.events.push({ type: 'sysDamaged', uid: u.id, team: u.team, sys: name, frac: f, pos: sysPos(u, name, {}), by: src && src.uid || 0, wk: src && src.wk || '' });
+    }
+  }
+  function destroySys(w, u, name, src, cause) {
+    const s = u.sys[name]; if (!s.alive) return;
+    s.hp = 0; s.alive = false; s.mark = 3;
+    if (!w.spaceLog) w.spaceLog = [];
+    if (w.spaceLog.length < 400) w.spaceLog.push({ t: w.t, uid: u.id, team: u.team, type: u.type, sys: name });
+    w.events.push({ type: 'sysDestroyed', uid: u.id, team: u.team, sys: name, label: SP.sys[name].label, pos: sysPos(u, name, {}), by: src && src.uid || 0, byPid: src && src.owner || null, wk: (src && src.wk) || cause || '' });
+    if (name === 'reactor' && u.coreT <= 0) { u.coreT = SP.coreTime; w.events.push({ type: 'coreBreach', uid: u.id, team: u.team, t: SP.coreTime, pos: V.clone(u.pos) }); }
+    if (name === 'bridge') w.events.push({ type: 'announce', key: 'bridgeLost', team: u.team });
+    if (u.boarding && name === 'bridge') u.boarding.bridgeDown = true;
+  }
+  function wrapCtl() {
+    const C = S.ctl = S.ctl || {};
+    C.capital = Object.assign(C.capital || {}, { damage: capDamage, hull: capHull, death: capDeath });
+  }
+  function capDeath(w, e, src) {
+    if (w._sp) w._sp.tick = -1;
+    if (S.boardingEvacuate) S.boardingEvacuate(w, e, 'shipLost');
+    w.events.push({ type: 'shipDestroyed', uid: e.id, team: e.team, utype: e.type, pos: V.clone(e.pos), by: src.uid || 0, wk: src.wk || '' });
+    if (S.reportShip) S.reportShip(w, e, 'destroyed');
+  }
+
+  // ── per-tick ship state: shields, power, brace, core, command effects ──
+  function capTick(w, u, dt) {
+    for (let k = 0; k < ORDER.length; k++) u.sys[ORDER[k]].hitT += dt;
+    if (u.braceT > 0) u.braceT -= dt; if (u.braceCd > 0) u.braceCd -= dt; if (u.launchCd > 0) u.launchCd -= dt;
+    // power eases toward its goal and always sums to 1
+    let sum = 0;
+    for (let i = 0; i < 3; i++) { u.power[i] += E.clamp(u.powerGoal[i] - u.power[i], -0.3 * dt, 0.3 * dt); sum += u.power[i]; }
+    for (let i = 0; i < 3; i++) u.power[i] /= sum;
+    // shields: arcs regenerate on their own clocks; no generator, no shield
+    const gen = u.sys.shield.alive, pw = u.power[0] / 0.333, bridge = u.sys.bridge.alive ? 1 : 0.6;
+    let v = 0, m = 0;
+    for (let i = 0; i < 4; i++) {
+      const A = u.arcs[i]; A.hitT += dt; if (A.flareT > 0) A.flareT -= dt;
+      if (!gen) A.v = Math.max(0, A.v - A.max * 0.3 * dt);
+      else if (A.hitT > SP.regenDelay && A.v < A.max) { A.v = Math.min(A.max, A.v + A.max * SP.regenRate * pw * bridge * dt); if (A.v >= A.max) A.v = A.max; }
+      v += A.v; m += A.max;
+    }
+    u.shield = v; u.maxShield = m;
+    if (!gen && !u.shieldCollapsed) { u.shieldCollapsed = true; w.events.push({ type: 'shieldCollapse', uid: u.id, team: u.team, pos: V.clone(u.pos) }); }
+    // hull thresholds
+    const hf = hullFrac(u);
+    while (u.hullMark < 3 && hf < [0.75, 0.5, 0.25][u.hullMark]) {
+      w.events.push({ type: 'hullBreach', uid: u.id, team: u.team, frac: hf, level: ++u.hullMark, pos: V.clone(u.pos) });
+    }
+    // reactor core breach: the ship is lost unless the clock is beaten by nothing at all
+    if (u.coreT > 0) {
+      u.coreT -= dt;
+      if (u.coreT <= 0) { u.coreT = 0; S.kill(w, u, { team: null, uid: 0, owner: null, wk: 'reactor' }); }
+    }
+    if (u.captured && u.mutinyT > 0) u.mutinyT -= dt;
+  }
+
+  // ── helm: thrust along the heading, rotation by torque, velocity that drifts ──
   function stepCapital(w, u, dt, turn, throttle) {
-    const d = u.def;
-    u.spd += (throttle * u.speed - u.spd) * Math.min(1, dt * 0.4);
-    u.yaw += turn * d.turn * dt;
-    u.roll += (turn * 0.12 - u.roll) * Math.min(1, dt * 0.5);
-    u.vel.x = Math.sin(u.yaw) * u.spd; u.vel.z = Math.cos(u.yaw) * u.spd;
+    const d = u.def, eng = engineMul(u) * (u.boost ? 1.3 : 1);
+    const maxSpd = u.speed * eng, acc = u.speed * 0.07 * eng;
+    u.spd += E.clamp(throttle * maxSpd - u.spd, -acc * dt, acc * dt);
+    const om = d.turn * eng, al = om * 0.45;
+    u.yawRate += E.clamp(turn * om - u.yawRate, -al * dt, al * dt);
+    u.yaw += u.yawRate * dt;
+    u.roll += (E.clamp(u.yawRate / Math.max(0.01, om), -1, 1) * 0.1 - u.roll) * Math.min(1, dt * 0.5);
+    const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw), k = Math.min(1, dt * 0.35);
+    u.vel.x += (fx * u.spd - u.vel.x) * k; u.vel.z += (fz * u.spd - u.vel.z) * k;
     u.pos.x += u.vel.x * dt; u.pos.z += u.vel.z * dt;
-    const ty = (u.alt || CAP_ALT) + Math.sin(w.t * 0.13 + u.id) * 8;
-    u.pos.y += (ty - u.pos.y) * Math.min(1, dt * 0.3);
-    const B = w.layout.bound * 0.8, hd = Math.hypot(u.pos.x, u.pos.z);
+    const ty = (u.alt || CAP_ALT) + Math.sin(w.t * 0.13 + u.id) * 8, ny = u.pos.y + (ty - u.pos.y) * Math.min(1, dt * 0.3);
+    u.vel.y = (ny - u.pos.y) / dt; u.pos.y = ny;
+    const B = w.layout.bound * (u.retreat ? 1.7 : 0.9), hd = Math.hypot(u.pos.x, u.pos.z);
     if (hd > B) { u.pos.x *= B / hd; u.pos.z *= B / hd; }
+    u.aimYaw = u.yaw;
   }
 
-  // ── capital ships ────────────────────────────────────────────
+  // ── gun batteries ────────────────────────────────────────────
   function gunPos(u, g, o) {
     const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
     o.x = u.pos.x + fx * g.lz - fz * g.lx; o.y = u.pos.y + g.ly; o.z = u.pos.z + fz * g.lz + fx * g.lx;
     return o;
   }
-  function capitalGuns(w, u, dt, focus, boost) {
-    const dm = E.DOCTRINE[u.team].capDmg;
-    let ecap = null, ed = 1e12, efi = null, fd = 1e12;
-    for (const e of w.units) {
-      if (!e.alive || e.team === u.team) continue;
-      const d2 = V.distance2(e.pos, u.pos);
-      if (e.kind === 'capital' && d2 < ed) { ed = d2; ecap = e; }
-      if (e.kind === 'fighter' && d2 < fd) { fd = d2; efi = e; }
+  const flank = (u, p) => ((p.x - u.pos.x) * -Math.cos(u.yaw) + (p.z - u.pos.z) * Math.sin(u.yaw)) >= 0 ? 1 : -1;
+  // focus = enemy ship to hit with the main battery and torpedoes; fsys = subsystem to aim at
+  function capitalGuns(w, u, dt, focus, fsys, boost) {
+    const L = lists(w), en = u.team === 'aegis' ? 'verdant' : 'aegis', caps = L.caps[en], fi = L.fighters[en];
+    const dm = E.DOCTRINE[u.team].capDmg, wm = weaponMul(u) * (u.captured ? 0.7 : 1);
+    const bridge = u.sys.bridge.alive, braced = u.braceT > 0;
+    if (focus && (!focus.alive || focus.team === u.team)) focus = null;
+    let near = null, nd = 1e12, sp = null, spd2 = 1e12, sm = null, smd2 = 1e12;
+    for (let i = 0; i < caps.length; i++) {
+      const e = caps[i], d2 = V.distance2(e.pos, u.pos);
+      if (d2 < nd) { nd = d2; near = e; }
+      if (flank(u, e.pos) > 0) { if (d2 < spd2) { spd2 = d2; sp = e; } } else if (d2 < smd2) { smd2 = d2; sm = e; }
     }
-    for (const g of u.guns) {
-      g.t -= dt * (boost && g.slot === 'main' ? 1.6 : 1);
+    // point-defence target: refreshed a few times a second
+    u.pdScanT -= dt;
+    if (u.pdScanT <= 0) {
+      u.pdScanT = 0.15; u.pdTgt = null; let bd = 700 * 700;
+      for (let i = 0; i < fi.length; i++) { const d2 = V.distance2(fi[i].pos, u.pos); if (d2 < bd) { bd = d2; u.pdTgt = fi[i]; } }
+    }
+    const err = bridge ? 0.004 : 0.03, pdOK = !u.pdTgt || u.pdTgt.alive;
+    for (let gi = 0; gi < u.guns.length; gi++) {
+      const g = u.guns[gi];
+      g.t -= dt * wm * (boost && g.slot === 'main' ? 1.5 : 1);
       if (g.t > 0) continue;
       const W = E.WEAPONS[g.wk];
       let tg = null;
-      if (g.slot === 'pd') tg = efi && fd < W.range * W.range ? efi : null;
-      else tg = focus || ecap;
+      if (g.slot === 'pd') { tg = pdOK ? u.pdTgt : null; if (!bridge && w.rng.next() < 0.4) tg = null; }
+      else {
+        if (braced || (g.slot === 'main' && !u.sys.batteries.alive)) { g.t = 0.5; continue; }
+        if (g.slot === 'side') tg = g.s > 0 ? sp : sm;
+        else tg = focus || near;
+        if (g.slot === 'torp' && !u.sys.hangar.alive && u.role !== 'line' && u.role !== 'flagship') { g.t = 1; continue; }
+      }
       if (!tg) { g.t = 0.25; continue; }
       gunPos(u, g, tmpA);
-      if (V.distance(tmpA, tg.pos) > W.range) { g.t = 0.4; continue; }
-      if (g.slot === 'side') { // only the flank facing the target bears
-        const side = (tg.pos.x - u.pos.x) * -Math.cos(u.yaw) + (tg.pos.z - u.pos.z) * Math.sin(u.yaw);
-        if (side * g.s < 0) { g.t = 0.3; continue; }
+      if (V.distance(tmpA, tg.pos) > W.range + (tg.kind === 'capital' ? tg.def.r : 0)) {
+        if (g.slot === 'main' && tg !== near && near && V.distance(tmpA, near.pos) <= W.range) tg = near; else { g.t = 0.4; continue; }
       }
       g.t = (W.cd || 1 / W.rate) * (0.85 + w.rng.next() * 0.3);
-      S.leadPoint(u, tg, W, tmpB);
-      if (tg.kind === 'capital') { // rake the hull, not just the center
-        const k = (w.rng.next() - 0.5) * tg.def.len * 0.6; tmpB.x += Math.sin(tg.yaw) * k; tmpB.z += Math.cos(tg.yaw) * k; tmpB.y += (w.rng.next() - 0.5) * tg.h * 0.6;
-      }
+      if (tg.kind === 'capital') {
+        const ab = (g.slot === 'main' || g.slot === 'torp') && tg === focus && fsys && tg.sys[fsys].alive;
+        if (ab) sysPos(tg, fsys, tmpB);
+        else { // rake the hull, not just the center
+          S.centerOf(tg, tmpB);
+          const k = (w.rng.next() - 0.5) * tg.def.len * 0.9; tmpB.x += Math.sin(tg.yaw) * k; tmpB.z += Math.cos(tg.yaw) * k; tmpB.y += (w.rng.next() - 0.5) * tg.h * 0.6;
+        }
+        const t = V.distance(tmpA, tmpB) / W.speed; tmpB.x += tg.vel.x * t; tmpB.z += tg.vel.z * t;
+      } else S.leadPoint(u, tg, W, tmpB);
       const dir = V.normalize(V.sub(tmpB, tmpA, tmpC));
+      if (err > 0.01) { dir.x += w.rng.gauss() * err; dir.y += w.rng.gauss() * err; dir.z += w.rng.gauss() * err; V.normalize(dir, dir); }
       S.shoot(w, u, g.wk, tmpA, dir, g.slot === 'torp' ? tg.id : 0, dm);
     }
   }
-  function aiCapital(w, u, dt) {
-    // hold a slow orbit over the battlefield, broadside to the enemy line
-    const a = Math.atan2(u.pos.z, u.pos.x) + 0.45, R = u.orbitR || ORBIT_R;
-    const des = Math.atan2(Math.cos(a) * R - u.pos.x, Math.sin(a) * R - u.pos.z);
-    stepCapital(w, u, dt, E.clamp(S.angDiff(des, u.yaw) * 3, -1, 1), 1);
-    capitalGuns(w, u, dt, null, false);
+
+  // ── point defence against torpedoes and missiles; escort requests; pd kills ──
+  function pdSystem(w, dt) {
+    const P = w.projectiles, L = lists(w);
+    for (let i = P.length - 1; i >= 0; i--) {
+      const p = P[i];
+      if (p.wk !== 'torpedo' && p.wk !== 'missile') continue;
+      const caps = L.caps[p.team === 'aegis' ? 'verdant' : 'aegis'];
+      for (let k = 0; k < caps.length; k++) {
+        const c = caps[k], d2 = V.distance2(c.pos, p.pos), env = 450 + c.def.r;
+        if (d2 > env * env) continue;
+        const npd = c.def.pd * (c.sys.bridge.alive ? 1 : 0.5) * weaponMul(c);
+        if (w.rng.next() < 1 - Math.exp(-0.12 * npd * dt)) {
+          c.pdKills++;
+          w.events.push({ type: 'pdIntercept', uid: c.id, team: c.team, wk: p.wk, pos: V.clone(p.pos), by: p.uid });
+          w.events.push({ type: 'impact', pid: p.id, wk: p.wk, pos: V.clone(p.pos), surf: 'air', splash: 0, team: p.team, big: false });
+          P[i] = P[P.length - 1]; P.pop();
+          break;
+        }
+      }
+    }
+    // flak kills and fighters crossing the envelope
+    const ev = w.events;
+    if ((w._evScan || 0) > ev.length) w._evScan = 0;
+    for (let i = w._evScan || 0; i < ev.length; i++) {
+      const e = ev[i];
+      if (e.type === 'death' && e.kind === 'fighter' && e.wk === 'flak' && e.by) {
+        const s = w.umap.get(e.by); if (s && s.kind === 'capital') { s.pdKills++; ev.push({ type: 'pdKill', uid: s.id, team: s.team, victim: e.uid, utype: e.utype, pos: e.pos }); }
+      }
+    }
+    w._evScan = ev.length;
+  }
+
+  // escort requests: bombers or torpedoes on a ship with no interceptors near
+  function escortSystem(w, dt) {
+    if (w.tickN % 15 !== 0) return;
+    const L = lists(w);
+    for (const u of L.all) {
+      const en = u.team === 'aegis' ? 'verdant' : 'aegis';
+      let threat = 0, cover = 0;
+      for (const f of L.fighters[en]) if (f.type === 'bomber' && V.distance2(f.pos, u.pos) < 1400 * 1400) threat++;
+      for (const p of w.projectiles) if (p.wk === 'torpedo' && p.team === en && V.distance2(p.pos, u.pos) < 1000 * 1000) threat++;
+      for (const f of L.fighters[u.team]) if (f.type === 'interceptor' && V.distance2(f.pos, u.pos) < 1000 * 1000) cover++;
+      const need = threat > 0 && cover < 2;
+      u.threat = threat; u.escortT -= 0.5;
+      if (need && (!u.needsEscort || u.escortT <= 0)) { u.escortT = 10; w.events.push({ type: 'escortRequest', uid: u.id, team: u.team, pos: V.clone(u.pos), threat }); }
+      u.needsEscort = need;
+    }
+  }
+  // ships that want fighter cover / systems a bomber could attack (for the AIR AI)
+  function needsEscort(w, team) { return capsOf(w, team).filter(u => u.needsEscort); }
+  function bombTargets(w, team) { // enemy ships' live subsystems whose shield arc is open or generator dead
+    const out = [];
+    for (const c of capsOf(w, team === 'aegis' ? 'verdant' : 'aegis')) for (const n of ORDER) if (c.sys[n].alive) out.push({ ship: c, sys: n, pos: sysPos(c, n, {}), exposed: !c.sys.shield.alive || shieldFrac(c) < 0.3 });
+    return out;
   }
 
   // ── orbital strikes ──────────────────────────────────────────
+  function strikeShips(w, team) {
+    const o = []; for (const u of capsOf(w, team)) if (liveBatteries(u) && u.sys.bridge.alive) o.push(u); return o;
+  }
+  // returns true if a strike was launched
   function strike(w, team, pos, pid) {
-    w.strikes.push({ team, pos: { x: pos.x, y: w.terrain.height(pos.x, pos.z), z: pos.z }, t: 3.2, shots: E.WEAPONS.orbital.shots, iv: 0, pid: pid || null });
-    w.events.push({ type: 'strikeWarn', pos: V.clone(pos), team, r: E.WEAPONS.orbital.splash });
+    const ships = strikeShips(w, team), en = team === 'aegis' ? 'verdant' : 'aegis';
+    if (!ships.length) { w.events.push({ type: 'strikeDenied', team, reason: 'noBattery', pos: V.clone(pos), to: pid || null }); return false; }
+    if (S.shielded && S.shielded(w, en, pos)) { w.events.push({ type: 'strikeBlocked', team, pos: V.clone(pos), by: 'groundShield', to: pid || null }); return false; }
+    let src = ships[0], bd = 1e12;
+    for (const s of ships) { const d = E.distXZ2(s.pos, pos); if (d < bd) { bd = d; src = s; } }
+    w.strikes.push({ team, pos: { x: pos.x, y: w.terrain.height(pos.x, pos.z), z: pos.z }, t: 3.2, shots: Math.round(E.WEAPONS.orbital.shots * (0.6 + 0.4 * ships.length)), iv: 0, pid: pid || null, src: src.id, checked: false });
+    w.events.push({ type: 'strikeWarn', pos: V.clone(pos), team, r: E.WEAPONS.orbital.splash, src: src.id });
+    return true;
   }
   function updateStrikes(w, dt) {
     for (let i = w.strikes.length - 1; i >= 0; i--) {
       const s = w.strikes[i];
       s.t -= dt; if (s.t > 0) continue;
+      if (!s.checked) {
+        s.checked = true;
+        if (S.shielded && S.shielded(w, s.team === 'aegis' ? 'verdant' : 'aegis', s.pos)) { w.events.push({ type: 'strikeBlocked', team: s.team, pos: V.clone(s.pos), by: 'groundShield', to: s.pid }); w.strikes.splice(i, 1); continue; }
+      }
       s.iv -= dt;
       if (s.iv <= 0 && s.shots > 0) {
         s.iv = 0.32; s.shots--;
-        const cap = w.units.find(u => u.alive && u.kind === 'capital' && u.team === s.team);
-        const o = cap ? { x: cap.pos.x, y: cap.pos.y - cap.h, z: cap.pos.z } : { x: s.pos.x + (s.team === 'aegis' ? -500 : 500), y: s.pos.y + 1100, z: s.pos.z };
+        let cap = w.umap.get(s.src); if (!cap || !cap.alive || !liveBatteries(cap)) cap = strikeShips(w, s.team)[0] || null;
+        if (!cap) { w.strikes.splice(i, 1); w.events.push({ type: 'strikeDenied', team: s.team, reason: 'noBattery', pos: V.clone(s.pos), to: s.pid }); continue; }
+        const o = { x: cap.pos.x, y: cap.pos.y - cap.h, z: cap.pos.z };
         const a = w.rng.angle(), r = w.rng.f(0, 15);
         const tx = s.pos.x + Math.cos(a) * r - o.x, ty = s.pos.y - o.y, tz = s.pos.z + Math.sin(a) * r - o.z, l = Math.hypot(tx, ty, tz);
-        const W = E.WEAPONS.orbital, speed = 520;
+        const W = E.WEAPONS.orbital, speed = 1500;
         const p = { id: w.nextProj++, wk: 'orbital', kind: 'turbo', pos: V.clone(o), vel: { x: tx / l * speed, y: ty / l * speed, z: tz / l * speed },
-          team: s.team, uid: cap ? cap.id : 0, owner: s.pid, dmg: W.dmg, life: l / speed + 1, splash: W.splash, grav: 0, seek: 0, tid: 0, r: 1, scale: 5 };
+          team: s.team, uid: cap.id, owner: s.pid, dmg: W.dmg, life: l / speed + 1, splash: W.splash, grav: 0, seek: 0, tid: 0, r: 1, scale: 5 };
         w.projectiles.push(p);
         w.events.push({ type: 'fire', pid: p.id, wk: 'orbital', pos: V.clone(p.pos), vel: V.clone(p.vel), team: s.team, uid: p.uid, life: p.life });
       }
       if (s.shots <= 0) w.strikes.splice(i, 1);
     }
   }
-
-  // ── player control ───────────────────────────────────────────
-  function playerCapital(w, u, p, dt) {
-    const inp = p.input, mx = E.clamp(inp.mx || 0, -1, 1), mz = E.clamp(inp.mz || 0, -1, 1);
-    stepCapital(w, u, dt, -mx, 0.35 + Math.max(0, mz) * 0.65 - Math.max(0, -mz) * 0.35);
-    S.dirOf(inp.yaw, inp.pitch, tmpD);
-    let focus = null;
-    if (inp.fire) focus = S.aimTarget(w, u, u.pos, tmpD, 0.22, 2400, null);
-    capitalGuns(w, u, dt, focus, !!focus);
-    const T = w.teams[u.team];
-    if (inp.abil && T.strikeT <= 0) {
-      const o = { x: u.pos.x, y: u.pos.y - u.h, z: u.pos.z }, t = w.terrain.raycast(o, tmpD, 4000);
-      if (t > 0) { strike(w, u.team, { x: o.x + tmpD.x * t, y: 0, z: o.z + tmpD.z * t }, p.id); T.strikeT = E.WEAPONS.orbital.cd * (T.bonus.orbital ? 0.6 : 1); }
+  // strength of a side's grip on the sky, 0..1 (1 = the enemy has no fleet)
+  function orbitalSuperiority(w, team) {
+    const pw = (t) => { let p = 0; for (const u of capsOf(w, t)) p += (u.hp + shieldFrac(u) * u.def.shield) * (u.sys.batteries.alive ? 1 : 0.4); return p; };
+    const a = pw(team), b = pw(team === 'aegis' ? 'verdant' : 'aegis');
+    return a + b > 0 ? a / (a + b) : 0.5;
+  }
+  // strike cooldown follows the sky: no battery, no strikes; command of orbit speeds them
+  function strikeSystem(w, dt) {
+    for (const f of E.TEAMS) {
+      const T = w.teams[f];
+      if (!strikeShips(w, f).length) { if (T.strikeT < 5) T.strikeT = 5; continue; }
+      if (T.strikeT > 0) T.strikeT -= dt * E.clamp((orbitalSuperiority(w, f) - 0.5) * 0.8, -0.3, 0.4);
     }
   }
 
-  const C = S.ctl = S.ctl || {};
-  C.capital = { ai: aiCapital, player: playerCapital };
+  // ── fleet deployment (called from sim.js setup) ──────────────
+  function carrierFor(w, team, i) {
+    const c = capsOf(w, team).filter(u => u.sys.hangar.alive && u.def.wing && !u.captured);
+    if (!c.length) return null;
+    let n = 0; for (const u of c) n += u.role === 'carrier' ? 3 : 1;
+    let k = (i !== undefined ? i : (w.tickN / 6) | 0) % n;
+    for (const u of c) { k -= u.role === 'carrier' ? 3 : 1; if (k < 0) return u; }
+    return c[0];
+  }
+  function deployFleet(w, f) {
+    const T = w.teams[f], sgn = f === 'aegis' ? -1 : 1;
+    let list = T.fleet.filter(t => E.CAPITALS[t]);
+    if (!list.some(t => E.CAPITALS[t].role === 'screen')) list = list.concat(T.scale > 1.3 ? ['frigate', 'frigate', 'frigate'] : ['frigate', 'frigate']);
+    T.fleet = list;
+    let nl = 0, nc = 0, ns = 0, first = true;
+    list.forEach((type) => {
+      const d = E.CAPITALS[type]; let x, z, ao;
+      if (d.role === 'screen') { x = sgn * 800; z = (ns % 2 ? 1 : -1) * (300 + Math.floor(ns / 2) * 280); ns++; ao = 20; }
+      else if (d.role === 'carrier') { x = sgn * 1550; z = (nc % 2 ? 1 : -1) * (300 + Math.floor(nc / 2) * 500); nc++; ao = -50; }
+      else { x = sgn * 1150; z = (nl % 2 ? 1 : -1) * Math.ceil(nl / 2) * 780; nl++; ao = d.role === 'flagship' ? 0 : 40; }
+      const alt = (S.ALT ? S.ALT.orbit : CAP_ALT) + ao + (w.rng.next() - 0.5) * 20;
+      const flag = first && d.role !== 'screen'; if (flag) first = false;
+      S.spawnUnit(w, 'capital', type, f, { x, y: alt, z }, { yaw: f === 'aegis' ? 0 : Math.PI, orbitR: Math.hypot(x, z), alt, flag });
+    });
+    const fl = capsOf(w, f); lists(w).tick = -1; void fl;
+    for (const u of w.units) if (u.kind === 'capital' && u.team === f) { u.ai.face = w.rng.sign(); u.ai.aggr = 0.85 + w.rng.next() * 0.35; u.ai.pref = w.rng.i(3); u.ai.faceT = 0; }
+  }
 
-  Object.assign(S, { buildGuns, stepCapital, gunPos, capitalGuns, aiCapital, strike, updateStrikes, playerCapital, CAP_ALT, ORBIT_R });
+  Object.assign(S, { buildGuns, initCapital, stepCapital, gunPos, capitalGuns, strike, updateStrikes, CAP_ALT, ORBIT_R, lists, capsOf, sysPos, sysAlive, hullFrac, shieldFrac,
+    engineMul, weaponMul, liveBatteries, capTick, damageSys, destroySys, needsEscort, bombTargets, orbitalSuperiority, strikeShips, carrierFor, deployFleet, arcAt, capDamage, capHull });
+  // combat.js sustain() runs before the systems: keep the aggregate equal to the arcs
+  function shieldSync(w) { for (const u of lists(w).all) if (u.alive && u.arcs) { let v = 0; for (const a of u.arcs) v += a.v; u.shield = v; } }
+  S.systems.push(pdSystem, escortSystem, strikeSystem, shieldSync);
+  wrapCtl();
+})(window.E = window.E || {});
+
+// ---- js/sim/space_board.js ----
+// SPACE (boarding): marines launched from a hangar cross to an enemy capital,
+// breach it where the shields are down and fight the crew in a compact deck
+// complex inside the hull (low-gravity, magnetic boots). Their units run in
+// mode 'boarding': deck-local coordinates are stored on u.board and u.pos is
+// derived from the moving ship every tick. Holding a node sabotages the matching
+// subsystem; holding the bridge captures the ship.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3, SP = E.SPACE;
+
+  // ── the deck complex (zone-local meters: x = right, z = forward, y = up) ──
+  const DECKS = [
+    { id: 'dock',   cx: 0,   cz: -45, hx: 16, hz: 14, y: 0 },
+    { id: 'corr',   cx: 0,   cz: -10, hx: 7,  hz: 40, y: 2 },
+    { id: 'shield', cx: 24,  cz: -5,  hx: 20, hz: 14, y: 4 },
+    { id: 'engine', cx: -26, cz: 10,  hx: 21, hz: 16, y: -1.5 },
+    { id: 'bridge', cx: 0,   cz: 46,  hx: 18, hz: 18, y: 5.5 },
+  ];
+  const LINK = [{ x: 0, z: -42 }, null, { x: 5.5, z: -5 }, { x: -6, z: 10 }, { x: 0, z: 29 }];
+  const ADJ = [[1], [0, 2, 3, 4], [1], [1], [1]];
+  const NODES = { shield: { deck: 2, x: 30, z: -5 }, reactor: { deck: 3, x: -34, z: 10 }, bridge: { deck: 4, x: 0, z: 52 } };
+  const NODE_R = 7, STEP = 4.6, LOWG = 2.5, CEIL = 14;
+  const ZONE_LZ = -0.2; // zone origin along the hull (fraction of length)
+  const inDeck = (d, x, z) => Math.abs(x - d.cx) <= d.hx && Math.abs(z - d.cz) <= d.hz;
+  const ATT_NODE = ['bridge', 'bridge', 'shield', 'reactor', 'bridge', 'shield'];
+
+  // ── placement: deck-local -> world, riding the ship ──────────
+  function place(w, u) {
+    const b = u.board, ship = w.umap.get(b.ship); if (!ship) return false;
+    const fx = Math.sin(ship.yaw), fz = Math.cos(ship.yaw), lz = ship.def.len * ZONE_LZ + b.z, lx = b.x;
+    u.pos.x = ship.pos.x + fx * lz - fz * lx; u.pos.z = ship.pos.z + fz * lz + fx * lx;
+    u.pos.y = ship.pos.y + ship.h * 0.25 + b.y;
+    const wx = fx * b.vz - fz * b.vx, wz = fz * b.vz + fx * b.vx;
+    u.vel.x = ship.vel.x + wx; u.vel.z = ship.vel.z + wz; u.vel.y = ship.vel.y + b.vy;
+    u.onGround = !b.air;
+    return true;
+  }
+  // world move direction -> deck-local (rotate by the ship's yaw)
+  function toLocal(ship, wx, wz, o) { const fx = Math.sin(ship.yaw), fz = Math.cos(ship.yaw); o.x = -wx * fz + wz * fx; o.z = wx * fx + wz * fz; return o; }
+  const tl = { x: 0, z: 0 };
+
+  // one movement step: magnetic walking on a deck, thrust jumps in the air
+  function move(w, u, dt, wx, wz, speed, jump, hold) {
+    const b = u.board, ship = w.umap.get(b.ship); if (!ship) return;
+    toLocal(ship, wx, wz, tl);
+    const k = Math.min(1, dt * (b.air ? 1.2 : 12));
+    b.vx += (tl.x * speed - b.vx) * k; b.vz += (tl.z * speed - b.vz) * k;
+    if (jump && !b.air) { b.air = true; b.vy = 5.2; }
+    if (b.air) { b.vy += (hold ? 4.5 : -LOWG) * dt; b.vy = E.clamp(b.vy, -6, 6.5); }
+    let nx = b.x + b.vx * dt, nz = b.z + b.vz * dt;
+    const cur = DECKS[b.deck];
+    if (b.air) { // airborne: any deck footprint is open space, walls elsewhere
+      let ok = false; for (const d of DECKS) if (inDeck(d, nx, nz)) { ok = true; break; }
+      if (!ok) { nx = E.clamp(nx, cur.cx - cur.hx, cur.cx + cur.hx); nz = E.clamp(nz, cur.cz - cur.hz, cur.cz + cur.hz); b.vx *= -0.3; b.vz *= -0.3; }
+      b.x = nx; b.z = nz; b.y += b.vy * dt;
+      if (b.y > CEIL) { b.y = CEIL; b.vy = Math.min(0, b.vy); }
+      if (b.vy <= 0) { // land on the highest floor under us
+        let bd = -1, by = -99;
+        for (let i = 0; i < DECKS.length; i++) if (inDeck(DECKS[i], b.x, b.z) && DECKS[i].y <= b.y + 0.4 && DECKS[i].y > by) { by = DECKS[i].y; bd = i; }
+        if (bd >= 0 && b.y <= by + 0.05) { b.deck = bd; b.y = by; b.vy = 0; b.air = false; }
+        else if (bd < 0 || b.y < -6) { b.deck = b.deck; b.y = Math.max(b.y, cur.y); }
+      }
+    } else {
+      const trySet = (x, z) => {
+        if (inDeck(cur, x, z)) { b.x = x; b.z = z; return true; }
+        for (const j of ADJ[b.deck]) if (inDeck(DECKS[j], x, z) && Math.abs(DECKS[j].y - b.y) <= STEP) { b.deck = j; b.x = x; b.z = z; return true; }
+        return false;
+      };
+      if (!trySet(nx, nz) && !trySet(nx, b.z) && !trySet(b.x, nz)) { b.vx = b.vz = 0; }
+      b.y += (DECKS[b.deck].y - b.y) * Math.min(1, dt * 8);
+      if (Math.abs(b.y - DECKS[b.deck].y) < 0.02) b.y = DECKS[b.deck].y;
+      b.vy = 0;
+    }
+    place(w, u);
+  }
+
+  // ── fighting ─────────────────────────────────────────────────
+  const BOARD_DMG = 0.4;
+  function hitscan(w, u, tg, player) {
+    const W = E.WEAPONS[u.def.weapon]; if (!W || !W.rate || u.fireT > 0) return false;
+    u.fireT += 1 / W.rate;
+    const d = V.distance(u.pos, tg.pos), p = E.clamp((player ? 0.85 : 0.6) - d / 160, 0.15, 0.9), hit = w.rng.next() < p;
+    w.events.push({ type: 'boardFire', uid: u.id, tid: tg.id, team: u.team, hit, from: V.clone(u.pos), to: V.clone(tg.pos), wk: u.def.weapon });
+    if (hit) S.applyDamage(w, tg, W.dmg * BOARD_DMG * (W.vs && W.vs.inf !== undefined ? W.vs.inf : 1), { wk: u.def.weapon, uid: u.id, team: u.team, owner: u.pid, pos: u.pos }, tg.pos, false);
+    u.lastFire = w.t;
+    return true;
+  }
+  function foes(w, u, range) {
+    const op = u.board.opx, out = [];
+    for (const o of op.units) {
+      if (o === u || !o.alive || o.team === u.team) continue;
+      if (V.distance2(o.pos, u.pos) < range * range) out.push(o);
+    }
+    return out;
+  }
+  function nearestFoe(w, u, range) {
+    let best = null, bd = range * range;
+    for (const o of u.board.opx.units) { if (o === u || !o.alive || o.team === u.team) continue; const d = V.distance2(o.pos, u.pos); if (d < bd) { bd = d; best = o; } }
+    return best;
+  }
+
+  // ── AI ───────────────────────────────────────────────────────
+  function waypoint(b, node, out) {
+    const T = node.deck, cur = b.deck;
+    if (cur === T) { out.x = node.x; out.z = node.z; return out; }
+    const near = (p) => Math.hypot(b.x - p.x, b.z - p.z) <= 3;
+    if (cur !== 1) {
+      if (!near(LINK[cur])) { out.x = LINK[cur].x; out.z = LINK[cur].z; return out; }
+      if (T === 1) { out.x = node.x; out.z = node.z; return out; }
+      out.x = LINK[T].x; out.z = LINK[T].z; return out;
+    }
+    if (!near(LINK[T])) { out.x = LINK[T].x; out.z = LINK[T].z; return out; }
+    out.x = node.x; out.z = node.z; return out;
+  }
+  const wp = { x: 0, z: 0 };
+  function aiBoarding(w, u, dt) {
+    const b = u.board, ship = w.umap.get(b.ship); const ai = u.ai;
+    if (!ship || !ship.alive || !b.opx || b.opx.status !== 'active') { u.alive = false; return; }
+    ai.thinkT -= dt;
+    if (ai.thinkT <= 0) { ai.thinkT = 0.25 + w.rng.next() * 0.2; const t = nearestFoe(w, u, 55); ai.tid = t ? t.id : 0; ai.strafe = w.rng.sign(); }
+    const tg = ai.tid ? w.umap.get(ai.tid) : null, att = b.side === 'att', node = NODES[b.node];
+    let tx, tz, goal = null;
+    if (tg && tg.alive && tg.board) { // a fight: close to a good range, keep shooting
+      const d = V.distance(tg.pos, u.pos);
+      u.yaw = u.aimYaw = Math.atan2(tg.pos.x - u.pos.x, tg.pos.z - u.pos.z);
+      if (d < 55) hitscan(w, u, tg, false);
+      const wm = d > 22 ? 1 : d < 10 ? -0.6 : 0;
+      move(w, u, dt, Math.sin(u.yaw) * wm + Math.cos(u.yaw) * ai.strafe * 0.5, Math.cos(u.yaw) * wm - Math.sin(u.yaw) * ai.strafe * 0.5, u.speed * 0.6, false, false);
+      return;
+    }
+    // no enemy near: attackers push the objective, defenders hold their post
+    if (att) goal = waypoint(b, node, wp);
+    else { goal = (b.deck === node.deck && Math.hypot(b.x - node.x, b.z - node.z) < 4) ? null : waypoint(b, node, wp); }
+    if (goal) {
+      const gx = goal.x - b.x, gz = goal.z - b.z, l = Math.hypot(gx, gz);
+      if (l > 1) { // deck-local direction -> world
+        const fx = Math.sin(ship.yaw), fz = Math.cos(ship.yaw), dx = gx / l, dz = gz / l;
+        const wx = fx * dz - fz * dx, wz = fz * dz + fx * dx;
+        u.yaw = u.aimYaw = Math.atan2(wx, wz);
+        move(w, u, dt, wx, wz, u.speed, false, false);
+        return;
+      }
+    }
+    move(w, u, dt, 0, 0, 0, false, false);
+  }
+  function playerBoarding(w, u, p, dt) {
+    const b = u.board, ship = w.umap.get(b.ship); const inp = p.input;
+    if (!ship || !ship.alive || !b.opx || b.opx.status !== 'active') { u.alive = false; if (u.pid) { const pl = w.players[u.pid]; if (pl) { pl.unitId = 0; pl.deadT = w.t; } u.pid = null; } return; }
+    const mx = E.clamp(inp.mx || 0, -1, 1), mz = E.clamp(inp.mz || 0, -1, 1), my = inp.moveYaw || 0;
+    const fx = Math.sin(my), fz = Math.cos(my), rx = -Math.cos(my), rz = Math.sin(my);
+    let wx = fx * mz + rx * mx, wz = fz * mz + rz * mx; const l = Math.hypot(wx, wz); if (l > 1) { wx /= l; wz /= l; }
+    u.yaw = u.aimYaw = inp.yaw; u.aimPitch = inp.pitch;
+    move(w, u, dt, wx, wz, inp.sprint ? u.def.sprint * 0.7 : u.speed, !!inp.jump, !!inp.jump);
+    if (inp.fire && u.fireT <= 0) { // aim ray against the other side's fighters
+      const dx = Math.sin(inp.yaw) * Math.cos(inp.pitch), dy = Math.sin(inp.pitch), dz = Math.cos(inp.yaw) * Math.cos(inp.pitch);
+      let best = null, bs = 0.09;
+      for (const o of foes(w, u, 80)) {
+        const ox = o.pos.x - u.pos.x, oy = o.pos.y + o.h * 0.5 - (u.pos.y + u.h * 0.8), oz = o.pos.z - u.pos.z, d = Math.hypot(ox, oy, oz) || 1;
+        const a = Math.acos(E.clamp((ox * dx + oy * dy + oz * dz) / d, -1, 1)) - Math.atan2(o.r, d);
+        if (a < bs) { bs = a; best = o; }
+      }
+      if (best) hitscan(w, u, best, true); else u.fireT += 0.1;
+    }
+  }
+  S.modes.boarding = { ai: aiBoarding, player: playerBoarding };
+
+  // ── operations ───────────────────────────────────────────────
+  function ops(w) { return w.boardings || (w.boardings = []); }
+  function breachArc(w, from, target) {
+    const arc = S.arcAt(target, from.pos, null);
+    return !target.sys.shield.alive || target.arcs[arc].v < 0.2 * target.arcs[arc].max;
+  }
+  function boardingReady(w, from, target) {
+    if (!from || !target || !from.alive || !target.alive || from.team === target.team || target.kind !== 'capital') return false;
+    if (!from.sys.hangar.alive) return false;
+    if (w.boardCd && w.boardCd[from.team] > w.t) return false;
+    for (const o of ops(w)) if (o.status === 'pods' || o.status === 'active') { if (o.team === from.team || o.shipId === target.id) return false; }
+    if (V.distance(from.pos, target.pos) > 2200) return false;
+    return breachArc(w, from, target);
+  }
+  function board(w, team, from, target) {
+    if (!boardingReady(w, from, target)) { if (from && from.pid) w.events.push({ type: 'boardDenied', uid: from.id, team, tid: target ? target.id : 0, reason: from.sys.hangar.alive ? 'shieldsUp' : 'noHangar' }); return false; }
+    const n = SP.boardCrew + (w.teams[team].bonus && w.teams[team].bonus.elite ? 2 : 0);
+    // pods run the point-defence gauntlet
+    let surv = 0; for (let i = 0; i < n; i++) if (w.rng.next() > 0.1 * target.def.pd * (target.sys.bridge.alive ? 1 : 0.5) / 4 * 0.5) surv++;
+    const eta = Math.max(4, V.distance(from.pos, target.pos) / 240);
+    const op = { id: w.nextBoard = (w.nextBoard || 0) + 1, team, shipId: target.id, fromId: from.id, status: 'pods', t: 0, eta, launched: n, surv, units: [], nodes: { shield: { p: 0, done: false }, reactor: { p: 0, done: false }, bridge: { p: 0, done: false } }, started: w.t, result: '' };
+    ops(w).push(op); target.boarding = op;
+    w.events.push({ type: 'boardingLaunched', team, from: from.id, tid: target.id, n, surv, eta, pos: V.clone(from.pos) });
+    return true;
+  }
+  const MIX = ['trooper', 'trooper', 'heavy', 'trooper', 'medic', 'trooper', 'sniper', 'trooper'];
+  function spawnAboard(w, op, ship, team, type, node, side, k) {
+    const b = { ship: ship.id, deck: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, air: false, side, node, op: op.id, opx: op };
+    const d = NODES[node];
+    if (side === 'att') { b.deck = 0; b.x = DECKS[0].cx + (k % 3 - 1) * 5; b.z = DECKS[0].cz + ((k / 3) | 0) * 4 - 4; b.y = DECKS[0].y; }
+    else { b.deck = d.deck; b.x = d.x + (k % 3 - 1) * 3; b.z = d.z + ((k / 3) | 0) * 3 - 3; b.y = DECKS[d.deck].y; }
+    const u = S.spawnUnit(w, 'infantry', type, team, { x: ship.pos.x, y: ship.pos.y, z: ship.pos.z }, { mode: 'boarding', board: b });
+    u.yaw = u.aimYaw = ship.yaw; place(w, u); op.units.push(u);
+    return u;
+  }
+  function startBoarding(w, op, ship) {
+    op.status = 'active'; op.started = w.t;
+    for (let i = 0; i < op.surv; i++) spawnAboard(w, op, ship, op.team, MIX[i % MIX.length], ATT_NODE[i % ATT_NODE.length], 'att', i);
+    const crew = ship.def.crew, names = ['bridge', 'shield', 'reactor'];
+    for (let i = 0; i < crew; i++) spawnAboard(w, op, ship, ship.team, i % 4 === 3 ? 'heavy' : 'trooper', names[i % 3], 'def', (i / 3) | 0);
+    w.events.push({ type: 'boardingStart', team: op.team, tid: ship.id, n: op.surv, defenders: crew, pos: V.clone(ship.pos) });
+    w.events.push({ type: 'boardingAlarm', uid: ship.id, team: ship.team, by: op.team });
+    w.events.push({ type: 'announce', key: 'boardingAlarm', team: ship.team });
+  }
+  function clearAboard(w, op, silent) {
+    for (const u of op.units) if (u.alive) {
+      u.alive = false;
+      if (u.pid && w.players[u.pid]) { const p = w.players[u.pid]; p.unitId = 0; p.deadT = w.t; u.pid = null; }
+    }
+  }
+  function finish(w, op, result) {
+    op.status = result === 'captured' ? 'won' : 'lost'; op.result = result;
+    clearAboard(w, op);
+    const ship = w.umap.get(op.shipId); if (ship && ship.boarding === op) ship.boarding = null;
+    (w.boardCd = w.boardCd || {})[op.team] = w.t + 45;
+    w.events.push({ type: 'boardingResult', team: op.team, tid: op.shipId, result, t: w.t - op.started });
+    op.endT = w.t;
+  }
+  function captureShip(w, op, ship) {
+    const from = ship.team, to = op.team;
+    if (w._sp) w._sp.tick = -1;
+    ship.team = to; ship.captured = true; ship.retreat = false; ship.stranded = false; ship.flag = false;
+    if (ship.pid && w.players[ship.pid]) { const p = w.players[ship.pid]; p.unitId = 0; p.deadT = w.t; ship.pid = null; }
+    const br = ship.sys.bridge; br.alive = true; br.hp = br.maxHp * 0.4; br.mark = 1;
+    for (const a of ship.arcs) a.v = Math.max(a.v, a.max * 0.25);
+    ship.ai.thinkT = 0; ship.ai.face = w.rng.sign(); ship.ai.aggr = 0.9; ship.tgtId = 0; ship.tgtSys = ''; ship.powerGoal = SP.power.balanced.slice(); ship.powerMode = 0;
+    for (const g of ship.guns) g.t = 3;
+    if (w.fleetReport) { S.reportShip(w, ship, 'captured'); const f = w.fleetReport[from], i = f.findIndex(x => x.id === ship.id); if (i >= 0) { f[i].status = 'captured'; } }
+    w.events.push({ type: 'shipCaptured', uid: ship.id, team: to, from, utype: ship.type, pos: V.clone(ship.pos) });
+    w.events.push({ type: 'announce', key: 'shipCaptured', team: to });
+    finish(w, op, 'captured');
+  }
+
+  function boardingSystem(w, dt) {
+    const list = w.boardings; if (!list || !list.length) return;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const op = list[i], ship = w.umap.get(op.shipId);
+      if (op.status === 'won' || op.status === 'lost') { if (w.t - op.endT > 20) list.splice(i, 1); continue; }
+      if (!ship || !ship.alive) { clearAboard(w, op); op.status = 'lost'; op.result = 'shipLost'; op.endT = w.t; w.events.push({ type: 'boardingResult', team: op.team, tid: op.shipId, result: 'shipLost', t: w.t - op.started }); continue; }
+      op.t += dt;
+      if (op.status === 'pods') {
+        if (op.t >= op.eta) {
+          if (op.surv <= 0) { op.status = 'lost'; op.result = 'podsLost'; op.endT = w.t; ship.boarding = null; w.events.push({ type: 'boardingResult', team: op.team, tid: ship.id, result: 'podsLost', t: op.t }); }
+          else startBoarding(w, op, ship);
+        }
+        continue;
+      }
+      // node control
+      let att = 0, def = 0;
+      for (const u of op.units) if (u.alive) { if (u.board.side === 'att') att++; else def++; }
+      for (const name in NODES) {
+        const nd = op.nodes[name], N = NODES[name]; if (nd.done) continue;
+        let na = 0, nf = 0;
+        for (const u of op.units) { if (!u.alive) continue; const b = u.board; if (b.deck === N.deck && Math.hypot(b.x - N.x, b.z - N.z) < NODE_R) { if (b.side === 'att') na++; else nf++; } }
+        if (na > 0 && nf === 0) nd.p = Math.min(1, nd.p + 0.05 * Math.min(na, 3) * dt);
+        else if (nf > 0) nd.p = Math.max(0, nd.p - 0.06 * nf * dt);
+        else nd.p = Math.max(0, nd.p - 0.015 * dt);
+        if (nd.p >= 1) {
+          nd.done = true;
+          w.events.push({ type: 'boardNode', uid: ship.id, team: op.team, node: name, state: 'sabotaged' });
+          if (name === 'shield') S.destroySys(w, ship, 'shield', null, 'sabotage');
+          else if (name === 'reactor') S.destroySys(w, ship, 'reactor', null, 'sabotage');
+          else { captureShip(w, op, ship); break; }
+        }
+      }
+      if (op.status !== 'active') continue;
+      if (att === 0) finish(w, op, 'repelled');
+      else if (w.t - op.started > SP.boardTime) finish(w, op, 'repelled');
+    }
+  }
+  function boardingEvacuate(w, ship, why) {
+    for (const op of ops(w)) if (op.shipId === ship.id && (op.status === 'active' || op.status === 'pods')) {
+      clearAboard(w, op); op.status = 'lost'; op.result = why; op.endT = w.t;
+      w.events.push({ type: 'boardingResult', team: op.team, tid: ship.id, result: why, t: w.t - op.started });
+    }
+    ship.boarding = null;
+  }
+  function boardingState(w, team) {
+    const o = ops(w).filter(x => (x.team === team || (w.umap.get(x.shipId) || {}).team === team) && (x.status === 'pods' || x.status === 'active'))[0];
+    if (!o) return null;
+    let att = 0, def = 0; for (const u of o.units) if (u.alive) { if (u.board.side === 'att') att++; else def++; }
+    return { id: o.id, status: o.status, attackers: o.team, shipId: o.shipId, marines: att, defenders: def, eta: Math.max(0, o.eta - o.t), tLeft: Math.max(0, SP.boardTime - (w.t - o.started)),
+      nodes: { shield: o.nodes.shield.p, reactor: o.nodes.reactor.p, bridge: o.nodes.bridge.p } };
+  }
+  S.net.world.boarding = {
+    pack(w) { return ops(w).filter(o => o.status === 'pods' || o.status === 'active').map(o => [o.id, o.team, o.shipId, o.status === 'active' ? 1 : 0, Math.round(o.nodes.shield.p * 100), Math.round(o.nodes.reactor.p * 100), Math.round(o.nodes.bridge.p * 100), o.units.filter(u => u.alive).map(u => [u.id, u.board.side === 'att' ? 1 : 0])]); },
+    apply(w, d) {
+      for (const r of d) for (const [id, side] of r[7]) { const u = w.umap.get(id); if (u) { u.mode = 'boarding'; u.board = u.board || {}; u.board.ship = r[2]; u.board.side = side ? 'att' : 'def'; } }
+      w.boardings = d.map(r => ({ id: r[0], team: r[1], shipId: r[2], status: r[3] ? 'active' : 'pods', nodes: { shield: { p: r[4] / 100 }, reactor: { p: r[5] / 100 }, bridge: { p: r[6] / 100 } }, units: [], t: 0, eta: 0, started: w.t }));
+    },
+  };
+  S.systems.push(boardingSystem);
+  Object.assign(S, { board, boardingReady, boardingEvacuate, boardingState, boardingPlace: place, BOARD_DECKS: DECKS, BOARD_NODES: NODES });
+})(window.E = window.E || {});
+
+// ---- js/sim/space_fleet.js ----
+// SPACE (fleet): the staged battle objectives, fleet AI (broadsides, shield
+// facing, screening, targeting by stage, retreat), the fleet report, player
+// command of a capital ship, command verbs and multiplayer registration.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {}, V = E.V3, SP = E.SPACE, ORDER = SP.order;
+  const tmpA = V.make(), tmpB = V.make(), tmpD = V.make();
+  const H = { x: 0, z: 0, thr: 0 };
+  const SYS_PREF = [['shield', 'batteries', 'engines', 'hangar', 'bridge'], ['shield', 'engines', 'batteries', 'bridge', 'hangar'], ['batteries', 'shield', 'hangar', 'engines', 'bridge']];
+  const enemyTeam = (t) => (t === 'aegis' ? 'verdant' : 'aegis');
+
+  // ── battle stages (per side, on the world) ───────────────────
+  // Stage I   win local space: strip the enemy screen            (hull and systems of the line are hardened)
+  // Stage II  break the shields and knock out named subsystems   (systems fully vulnerable)
+  // Stage III finish the hull or take the ship by boarding       (hull plating gives way)
+  function ensureSpace(w) {
+    if (!w.space) w.space = { aegis: { stage: 1, target: 0, t0: 0, log: [{ stage: 1, t: 0 }], won: false, lost: false, shipsLost: 0 }, verdant: { stage: 1, target: 0, t0: 0, log: [{ stage: 1, t: 0 }], won: false, lost: false, shipsLost: 0 } };
+    if (!w.fleetReport) w.fleetReport = { aegis: [], verdant: [] };
+    return w.space;
+  }
+  function pickObjective(w, team) {
+    const en = S.capsOf(w, enemyTeam(team));
+    let best = null, bs = -1;
+    for (const e of en) { const s = (e.retreat ? -1e7 : 0) + (e.flag ? 1e6 : 0) + (e.def.role === 'screen' ? 0 : e.hp); if (s > bs) { bs = s; best = e; } }
+    return best;
+  }
+  function advance(w, team, st, to, why) {
+    if (to === st.stage) return;
+    const from = st.stage; st.stage = to; st.t0 = w.t; st.log.push({ stage: to, t: w.t, why });
+    w.events.push({ type: 'stageChange', team, from, stage: to, name: SP.stageNames[to - 1], target: st.target, why });
+    w.events.push({ type: 'announce', key: 'spaceStage' + to, team, stage: to, name: SP.stageNames[to - 1] });
+  }
+  function spaceSystem(w, dt) {
+    ensureSpace(w);
+    if (w.tickN % 6 === 0) {
+      for (const team of E.TEAMS) {
+        const st = w.space[team], en = S.capsOf(w, enemyTeam(team)), own = S.capsOf(w, team);
+        st.lost = own.length === 0;
+        if (!en.length) {
+          if (!st.won && !st.lost) { st.won = true; w.events.push({ type: 'fleetVictory', team }); w.events.push({ type: 'announce', key: 'fleetVictory', team }); }
+          st.target = 0; continue;
+        }
+        st.won = false;
+        let tg = st.target ? w.umap.get(st.target) : null;
+        if (!tg || !tg.alive || tg.team === team) { // objective ship gone: next one
+          const had = !!st.target; tg = pickObjective(w, team); st.target = tg ? tg.id : 0;
+          if (had) advance(w, team, st, en.some(e => e.def.role === 'screen' && !e.retreat) ? 1 : 2, 'targetGone');
+        }
+        const screens = en.filter(e => e.def.role === 'screen' && !e.retreat).length;
+        if (st.stage === 1 && (screens === 0 || w.t - st.t0 > 240)) advance(w, team, st, 2, screens ? 'timeout' : 'screenCleared');
+        else if (st.stage === 2 && tg) {
+          let dead = 0; for (const n of ORDER) if (n !== 'reactor' && !tg.sys[n].alive) dead++;
+          if ((dead >= 2 && (!tg.sys.shield.alive || S.shieldFrac(tg) < 0.25)) || S.hullFrac(tg) < 0.55 || w.t - st.t0 > 300) advance(w, team, st, 3, 'systemsDown');
+        }
+      }
+    }
+    if (w.tickN % 30 === 0) refreshReport(w);
+  }
+
+  // ── summary for the HUD / objectives ─────────────────────────
+  function fleetStats(w, team) {
+    const caps = S.capsOf(w, team); let hp = 0, mh = 0, sh = 0, ms = 0, retreating = 0;
+    for (const u of caps) { hp += u.hp; mh += u.maxHp; sh += u.shield; ms += u.maxShield; if (u.retreat) retreating++; }
+    return { ships: caps.length, hull: mh ? hp / mh : 0, shield: ms ? sh / ms : 0, retreating };
+  }
+  function spaceState(w, team) {
+    ensureSpace(w);
+    const st = w.space[team], tg = st.target ? w.umap.get(st.target) : null, en = enemyTeam(team);
+    const flag = S.capsOf(w, team).find(u => u.pid) || null;
+    return { stage: st.stage, stageName: SP.stageNames[st.stage - 1], stageT: w.t - st.t0, targetId: st.target, targetType: tg ? tg.type : '', targetSys: flag ? flag.tgtSys : '',
+      won: st.won, lost: st.lost, own: fleetStats(w, team), enemy: fleetStats(w, en), superiority: S.orbitalSuperiority(w, team),
+      escort: S.needsEscort(w, team).map(u => u.id), strikeReady: w.teams[team].strikeT <= 0 && S.strikeShips(w, team).length > 0,
+      boarding: S.boardingState ? S.boardingState(w, team) : null, log: st.log };
+  }
+
+  // ── fleet report (carried into the campaign) ─────────────────
+  function reportEntry(w, u, status) {
+    const sys = {}; for (const n of ORDER) sys[n] = Math.round(u.sys[n].hp / u.sys[n].maxHp * 100) / 100;
+    return { id: u.id, type: u.type, name: E.unitName('capital', u.type), status, t: w.t, hp: Math.round(Math.max(0, u.hp)), maxHp: u.maxHp, hullFrac: Math.max(0, u.hp / u.maxHp), shieldFrac: S.shieldFrac(u), sys, flag: !!u.flag, pdKills: u.pdKills };
+  }
+  function reportShip(w, u, status) {
+    ensureSpace(w);
+    const list = w.fleetReport[u.team], e = reportEntry(w, u, status), i = list.findIndex(x => x.id === u.id);
+    if (i >= 0) list[i] = e; else list.push(e);
+  }
+  function refreshReport(w) {
+    for (const t of E.TEAMS) for (const u of S.capsOf(w, t)) if (u.alive) reportShip(w, u, u.retreat ? 'retreating' : u.captured ? 'captured' : 'active');
+  }
+
+  // ── leaving the battle ───────────────────────────────────────
+  function leaveBattle(w, u) {
+    if (!u.alive) return;
+    if (w._sp) w._sp.tick = -1;
+    const hf = u.hp / u.maxHp;
+    if (S.boardingEvacuate) S.boardingEvacuate(w, u, 'shipLeft');
+    u.alive = false; u.retreated = true;
+    if (u.pid && w.players[u.pid]) { const p = w.players[u.pid]; p.unitId = 0; p.deadT = w.t; u.pid = null; }
+    reportShip(w, u, 'retreated');
+    w.events.push({ type: 'shipRetreated', uid: u.id, team: u.team, utype: u.type, pos: V.clone(u.pos), hullFrac: hf });
+    w.events.push({ type: 'announce', key: 'shipRetreated', team: u.team });
+  }
+  function beginRetreat(w, u, why) {
+    if (u.retreat) return;
+    u.retreat = true; u.powerGoal = SP.power.engines.slice(); u.powerMode = 3; u.tgtId = 0; u.tgtSys = '';
+    w.events.push({ type: 'shipRetreating', uid: u.id, team: u.team, utype: u.type, hullFrac: u.hp / u.maxHp, why: why || '', pos: V.clone(u.pos) });
+  }
+  function crippled(u) {
+    const hf = u.hp / u.maxHp;
+    return hf < (u.flag ? SP.retreatHullFlag : SP.retreatHull) || (!u.sys.batteries.alive && !u.sys.hangar.alive) || (!u.sys.shield.alive && hf < 0.4);
+  }
+
+  // ── steering ─────────────────────────────────────────────────
+  function enemyCentroid(w, team, o) {
+    let n = 0; o.x = o.z = 0;
+    for (const e of S.capsOf(w, enemyTeam(team))) { o.x += e.pos.x; o.z += e.pos.z; n++; }
+    if (n) { o.x /= n; o.z /= n; } else { o.x = team === 'aegis' ? 800 : -800; o.z = 0; }
+    return o;
+  }
+  const DSTAR = { screen: 950, line: 1000, flagship: 1100, carrier: 1750 };
+  // fills H with a desired heading vector (x, z) and throttle
+  function steer(w, u, tg) {
+    const ai = u.ai, team = u.team, sgn = team === 'aegis' ? -1 : 1;
+    let hx = 0, hz = 0, thr = 0.9;
+    if (u.retreat) {
+      enemyCentroid(w, team, tmpA);
+      let ax = u.pos.x - tmpA.x, az = u.pos.z - tmpA.z, l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
+      const ol = Math.hypot(u.pos.x, u.pos.z) || 1;
+      hx = ax * 0.5 + u.pos.x / ol; hz = az * 0.5 + u.pos.z / ol; thr = 1;
+    } else {
+      let dist = 0, tx = 0, tz = 0;
+      if (tg) { tx = tg.pos.x - u.pos.x; tz = tg.pos.z - u.pos.z; dist = Math.hypot(tx, tz) || 1; tx /= dist; tz /= dist; }
+      else { tx = -sgn; tz = 0; dist = 0; }
+      const ds = (DSTAR[u.role] || 1000) * ai.aggr * (u.sys.batteries.alive ? 1 : 1.35) * (w.space && w.space[team].stage === 3 && u.role !== 'carrier' ? 0.85 : 1);
+      const k = tg ? E.clamp((dist - ds) / 500, -1.2, 1.2) : 0;
+      // heading that presents the chosen flank (and its shield arc) to the target
+      const fx = ai.face > 0 ? tz : -tz, fz = ai.face > 0 ? -tx : tx;
+      hx = fx + tx * k; hz = fz + tz * k;
+      if (!tg) { hx = (sgn * -1150 - u.pos.x) * 0.002 + 0.0; hz = (0 - u.pos.z) * 0.002; if (Math.abs(hx) + Math.abs(hz) < 0.15) { hx = fx; hz = fz; } }
+      if (u.role === 'screen') { // picket ahead of the asset it screens
+        let asset = null; for (const c of S.capsOf(w, team)) if (c.role === 'carrier' || (!asset && c.flag)) asset = c;
+        if (asset) {
+          enemyCentroid(w, team, tmpB);
+          let ex = tmpB.x - asset.pos.x, ez = tmpB.z - asset.pos.z; const el = Math.hypot(ex, ez) || 1; ex /= el; ez /= el;
+          const px = asset.pos.x + ex * 520 + (u.id % 2 ? -ez : ez) * 300 - u.pos.x, pz = asset.pos.z + ez * 520 + (u.id % 2 ? ex : -ex) * 300 - u.pos.z, pl = Math.hypot(px, pz) || 1;
+          const wgt = E.clamp(pl / 500, 0, 1) * (tg && dist < 1300 ? 0.6 : 1.2);
+          hx += px / pl * wgt; hz += pz / pl * wgt;
+        }
+      }
+      if (tg && dist < ds * 0.85) thr = 0.5;
+    }
+    // stay inside the arena, keep clear of other hulls
+    const B = w.layout.bound * 0.9, pr = Math.hypot(u.pos.x, u.pos.z);
+    if (!u.retreat && pr > B * 0.75) { const f = (pr - B * 0.75) / (B * 0.25) * 2.5; hx -= u.pos.x / pr * f; hz -= u.pos.z / pr * f; }
+    for (const c of S.lists(w).all) {
+      if (c === u) continue;
+      const dx = u.pos.x - c.pos.x, dz = u.pos.z - c.pos.z, d = Math.hypot(dx, dz) || 1, R = (u.def.len + c.def.len) * 0.36 + 120;
+      if (d < R) { const f = (R - d) / R * 3; hx += dx / d * f; hz += dz / d * f; if (d < R * 0.6) thr = Math.min(thr, 0.35); }
+    }
+    H.x = hx; H.z = hz; H.thr = thr;
+    return H;
+  }
+  function helmTo(w, u, dt) {
+    const des = Math.atan2(H.x, H.z), err = S.angDiff(des, u.yaw), eng = S.engineMul(u), om = u.def.turn * eng, al = om * 0.45;
+    const want = Math.sign(err) * Math.min(om, Math.sqrt(2 * al * Math.abs(err)) * 0.7);
+    const thr = Math.abs(err) > 1 ? Math.min(H.thr, 0.5) : H.thr;
+    S.stepCapital(w, u, dt, E.clamp(want / om, -1, 1), thr);
+  }
+
+  // ── fleet AI ─────────────────────────────────────────────────
+  function firstAlive(tg, list) { for (const n of list) if (tg.sys[n].alive) return n; return ''; }
+  function think(w, u) {
+    const ai = u.ai, team = u.team, st = w.space ? w.space[team] : null, stage = st ? st.stage : 1;
+    const en = S.capsOf(w, enemyTeam(team)), bridge = u.sys.bridge.alive;
+    if (!u.retreat && !u.stranded && en.length && crippled(u)) {
+      if (u.sys.engines.alive) beginRetreat(w, u, 'crippled'); else { u.stranded = true; w.events.push({ type: 'shipStranded', uid: u.id, team, pos: V.clone(u.pos) }); }
+    }
+    // pick the focus ship by stage
+    let tg = null, bd = 1e12;
+    if (!u.retreat) {
+      const spare = en.some(e => !e.retreat);
+      if (stage === 1) { for (const e of en) if (e.def.role === 'screen' && !(spare && e.retreat)) { const d = V.distance2(e.pos, u.pos); if (d < bd) { bd = d; tg = e; } } }
+      if (!tg && st && st.target) { const o = w.umap.get(st.target); if (o && o.alive) tg = o; }
+      if (!tg) { bd = 1e12; for (const e of en) { if (spare && e.retreat) continue; const d = V.distance2(e.pos, u.pos); if (d < bd) { bd = d; tg = e; } } }
+      // nothing in reach of the objective: shoot what is
+      if (tg && V.distance(tg.pos, u.pos) > 2800) { let nb = null; bd = 2800 * 2800; for (const e of en) { const d = V.distance2(e.pos, u.pos); if (d < bd) { bd = d; nb = e; } } if (nb) tg = nb; }
+    }
+    u.tgtId = tg ? tg.id : 0;
+    u.tgtSys = tg ? (stage === 2 && tg.def.role !== 'screen' ? firstAlive(tg, SYS_PREF[ai.pref]) : stage === 1 && tg.def.role !== 'screen' ? firstAlive(tg, ['shield']) : '') : '';
+    if (tg && stage === 3 && tg.def.role !== 'screen' && tg.sys.bridge.alive && S.boardingReady && S.boardingReady(w, u, tg)) u.tgtSys = '';
+    // shields: present the stronger flank, switch rarely
+    ai.faceT -= 0.5;
+    const ps = u.arcs[2].v / u.arcs[2].max, ss = u.arcs[3].v / u.arcs[3].max;
+    if (ai.faceT <= 0 && (ai.face > 0 ? ss : ps) < 0.6 * (ai.face > 0 ? ps : ss)) { ai.face = -ai.face; ai.faceT = 10; }
+    // power
+    if (bridge) {
+      const fa = ai.face > 0 ? ss : ps;
+      const goal = u.retreat ? 3 : !u.sys.shield.alive ? 2 : fa < 0.3 ? 1 : (stage >= 2 && fa > 0.6) ? 2 : 0;
+      if (goal !== u.powerMode) { u.powerMode = goal; u.powerGoal = SP.power[SP.powerNames[goal]].slice(); }
+    }
+    // brace under heavy fire
+    if (u.braceCd <= 0 && u.hitT < 1 && u.shield / Math.max(1, u.maxShield) < 0.12 && u.hp / u.maxHp < 0.5 && w.rng.next() < 0.5) brace(w, u);
+    // fighters: launch cover when threatened or on a clock
+    if (u.def.wing && u.launchCd <= 0 && u.sys.hangar.alive && (u.threat > 0 || w.tickN % 600 < 15)) launchWing(w, u);
+    // boarding: stage III, shields open on the approach
+    if (tg && stage === 3 && tg.def.role !== 'screen' && S.board && !u.retreat && w.rng.next() < 0.25) S.board(w, team, u, tg);
+  }
+  function aiCapital(w, u, dt) {
+    S.capTick(w, u, dt);
+    if (!u.alive) return;
+    const ai = u.ai; ai.thinkT -= dt; u.boost = u.retreat;
+    if (ai.thinkT <= 0) { ai.thinkT = (u.sys.bridge.alive ? 0.5 : 1.6) + w.rng.next() * 0.3; think(w, u); }
+    const tg = u.tgtId ? w.umap.get(u.tgtId) : null;
+    steer(w, u, tg && tg.alive ? tg : null); helmTo(w, u, dt);
+    if (u.retreat && Math.hypot(u.pos.x, u.pos.z) > w.layout.bound * 1.3) { leaveBattle(w, u); return; }
+    S.capitalGuns(w, u, dt, tg, u.tgtSys, false);
+  }
+
+  // ── commands shared by AI, player and verbs ──────────────────
+  function brace(w, u) {
+    if (u.braceCd > 0 || u.braceT > 0) return false;
+    u.braceT = SP.braceTime; u.braceCd = SP.braceCd;
+    w.events.push({ type: 'brace', uid: u.id, team: u.team, t: SP.braceTime, pos: V.clone(u.pos) });
+    return true;
+  }
+  function setPower(w, u, mode) {
+    if (!u.sys.bridge.alive) return false;
+    mode = ((mode % 4) + 4) % 4; u.powerMode = mode; u.powerGoal = SP.power[SP.powerNames[mode]].slice();
+    w.events.push({ type: 'powerShift', uid: u.id, team: u.team, mode: SP.powerNames[mode], to: u.pid });
+    return true;
+  }
+  function launchWing(w, u) {
+    if (!u.alive || !u.def.wing || !u.sys.hangar.alive || u.launchCd > 0 || u.captured) return 0;
+    const T = w.teams[u.team]; let cnt = 0;
+    for (const f of S.lists(w).fighters[u.team]) cnt++;
+    const n = Math.min(Math.min(4, u.def.bays), T.airCap + 6 - cnt);
+    if (n <= 0) return 0;
+    for (let k = 0; k < n; k++) { const f = S.launchFighter(w, u.team, u, w.rng.i(6)); w.events.push({ type: 'launch', pos: V.clone(f.pos), team: u.team, uid: u.id }); }
+    u.launchCd = 45; w.events.push({ type: 'launchOrder', uid: u.id, team: u.team, n });
+    return n;
+  }
+  function retreatOrder(w, u) { if (u.retreat) { u.retreat = false; return false; } beginRetreat(w, u, 'ordered'); return true; }
+
+  // ── player command ───────────────────────────────────────────
+  function cycleTarget(w, u, pid) {
+    const en = S.capsOf(w, enemyTeam(u.team)).slice().sort((a, b) => V.distance2(a.pos, u.pos) - V.distance2(b.pos, u.pos) || a.id - b.id);
+    if (!en.length) { u.tgtId = 0; u.tgtSys = ''; return; }
+    const cur = u.tgtId ? en.findIndex(e => e.id === u.tgtId) : -1;
+    if (cur < 0) { u.tgtId = en[0].id; u.tgtSys = ''; }
+    else {
+      const e = en[cur], names = ORDER.filter(n => e.sys[n].alive), ix = u.tgtSys ? names.indexOf(u.tgtSys) : -1;
+      if (ix + 1 < names.length) u.tgtSys = names[ix + 1];
+      else if (cur + 1 < en.length) { u.tgtId = en[cur + 1].id; u.tgtSys = ''; }
+      else { u.tgtId = 0; u.tgtSys = ''; }
+    }
+    w.events.push({ type: 'targetSelected', uid: u.id, to: pid, tid: u.tgtId, sys: u.tgtSys });
+  }
+  function playerCapital(w, u, p, dt) {
+    S.capTick(w, u, dt);
+    if (!u.alive) return;
+    const inp = p.input, ed = u.edge || (u.edge = { cycle: false, abil2: false, jump: false, crouch: false });
+    const mx = E.clamp(inp.mx || 0, -1, 1), mz = E.clamp(inp.mz || 0, -1, 1);
+    if (inp.cycle && !ed.cycle && u.sys.bridge.alive) cycleTarget(w, u, p.id);
+    if (inp.abil2 && !ed.abil2) setPower(w, u, u.powerMode + 1);
+    if (inp.jump && !ed.jump) launchWing(w, u);
+    if (inp.crouch && !ed.crouch) brace(w, u);
+    ed.cycle = !!inp.cycle; ed.abil2 = !!inp.abil2; ed.jump = !!inp.jump; ed.crouch = !!inp.crouch;
+    if (u.sys.bridge.alive && Math.abs(inp.roll || 0) > 0.4) { // roll shifts power between shields and weapons
+      const a = inp.roll * 0.3 * dt, g = u.powerGoal;
+      g[0] = E.clamp(g[0] + a, 0.12, 0.6); g[1] = E.clamp(g[1] - a, 0.12, 0.6); const s = g[0] + g[1] + g[2]; g[0] /= s; g[1] /= s; g[2] /= s; u.powerMode = -1;
+    }
+    u.boost = !!inp.sprint && !u.retreat;
+    // helm: the throttle is a telegraph, the wheel turns the ship by torque
+    if (u.retreat) { const tg = null; steer(w, u, tg); helmTo(w, u, dt); }
+    else { u.throttle = E.clamp(u.throttle + mz * 0.3 * dt, -0.3, 1); S.stepCapital(w, u, dt, -mx, u.throttle); }
+    if (u.retreat && Math.hypot(u.pos.x, u.pos.z) > w.layout.bound * 1.3) { leaveBattle(w, u); return; }
+    S.dirOf(inp.yaw, inp.pitch, tmpD);
+    let focus = u.tgtId ? w.umap.get(u.tgtId) : null;
+    if (focus && !focus.alive) { focus = null; u.tgtId = 0; u.tgtSys = ''; }
+    if (!focus && inp.fire) focus = S.aimTarget(w, u, u.pos, tmpD, 0.3, 2800, e => e.kind === 'capital');
+    S.capitalGuns(w, u, dt, focus, focus && focus.id === u.tgtId ? u.tgtSys : '', !!inp.fire);
+    const T = w.teams[u.team];
+    if (u.strikeTry > 0) u.strikeTry -= dt;
+    if (inp.abil && T.strikeT <= 0 && !(u.strikeTry > 0) && u.sys.bridge.alive) {
+      const o = { x: u.pos.x, y: u.pos.y - u.h, z: u.pos.z }, t = w.terrain.raycast(o, tmpD, 12000);
+      u.strikeTry = 1.5;
+      if (t > 0 && S.strike(w, u.team, { x: o.x + tmpD.x * t, y: 0, z: o.z + tmpD.z * t }, p.id)) T.strikeT = E.WEAPONS.orbital.cd * (T.bonus.orbital ? 0.6 : 1);
+    }
+  }
+
+  // ── verbs (commanders without a helm, UI buttons) ────────────
+  function shipOf(w, pid) {
+    const p = w.players[pid]; if (!p) return null;
+    const u = p.unitId ? w.umap.get(p.unitId) : null;
+    if (u && u.kind === 'capital') return u;
+    return S.capsOf(w, p.team).find(c => c.flag) || S.capsOf(w, p.team)[0] || null;
+  }
+  Object.assign(S.verbs, {
+    launch: (w, pid) => { const u = shipOf(w, pid); return u ? launchWing(w, u) : 0; },
+    brace: (w, pid) => { const u = shipOf(w, pid); return u ? brace(w, u) : false; },
+    power: (w, pid, mode) => { const u = shipOf(w, pid); return u ? setPower(w, u, typeof mode === 'string' ? SP.powerNames.indexOf(mode) : mode | 0) : false; },
+    retreat: (w, pid) => { const u = shipOf(w, pid); return u ? retreatOrder(w, u) : false; },
+    target: (w, pid, id, sys) => { const u = shipOf(w, pid), t = w.umap.get(id); if (!u || !t || t.kind !== 'capital' || t.team === u.team) return false; u.tgtId = id; u.tgtSys = sys && t.sys[sys] && t.sys[sys].alive ? sys : ''; return true; },
+    strike: (w, pid, x, z) => {
+      const u = shipOf(w, pid), p = w.players[pid]; if (!u || !p) return false;
+      const T = w.teams[u.team]; if (T.strikeT > 0) return false;
+      if (S.strike(w, u.team, { x, y: 0, z }, pid)) { T.strikeT = E.WEAPONS.orbital.cd * (T.bonus.orbital ? 0.6 : 1); return true; }
+      return false;
+    },
+    board: (w, pid, tid) => { const u = shipOf(w, pid), t = tid ? w.umap.get(tid) : (u && u.tgtId ? w.umap.get(u.tgtId) : null); return u && t && S.board ? S.board(w, u.team, u, t) : false; },
+  });
+
+  // ── multiplayer: what guests need to draw the HUD ────────────
+  const q = (x) => Math.round(E.clamp(x, 0, 1) * 100);
+  S.net.unit.capital = {
+    // [arc fore/aft/port/stbd %, sys hp% x6 in E.SPACE.order, power sh/wp/en %, tgtId, tgtSys index (-1 none), flags, throttle%, braceT*10, coreT*10]
+    pack(u) {
+      if (!u.sys) return 0;
+      return [u.arcs[0].v / u.arcs[0].max, u.arcs[1].v / u.arcs[1].max, u.arcs[2].v / u.arcs[2].max, u.arcs[3].v / u.arcs[3].max].map(q)
+        .concat(ORDER.map(n => q(u.sys[n].hp / u.sys[n].maxHp)), u.power.map(q),
+          [u.tgtId, ORDER.indexOf(u.tgtSys), (u.retreat ? 1 : 0) | (u.braceT > 0 ? 2 : 0) | (u.needsEscort ? 4 : 0) | (u.boarding ? 8 : 0) | (u.captured ? 16 : 0) | (u.stranded ? 32 : 0), Math.round(u.throttle * 100), Math.round(Math.max(0, u.braceT) * 10), Math.round(u.coreT * 10)]);
+    },
+    apply(u, a) {
+      if (!Array.isArray(a)) return;
+      if (!u.sys) { S.initCapital(u); }
+      for (let i = 0; i < 4; i++) { u.arcs[i].max = u.arcs[i].max || (u.maxShield * SP.arcShare[i]); u.arcs[i].v = a[i] / 100 * u.arcs[i].max; }
+      ORDER.forEach((n, i) => { const s = u.sys[n]; s.hp = a[4 + i] / 100 * s.maxHp; s.alive = a[4 + i] > 0; });
+      u.power = [a[10] / 100, a[11] / 100, a[12] / 100];
+      u.tgtId = a[13]; u.tgtSys = a[14] >= 0 ? ORDER[a[14]] : '';
+      const f = a[15]; u.retreat = !!(f & 1); u.braceT = a[17] / 10; u.needsEscort = !!(f & 4); u.boarding = (f & 8) ? (u.boarding || {}) : null; u.captured = !!(f & 16); u.stranded = !!(f & 32);
+      u.throttle = a[16] / 100; u.coreT = a[18] / 10;
+    },
+  };
+  S.net.world.space = {
+    pack(w) { ensureSpace(w); return E.TEAMS.map(t => { const s = w.space[t]; return [s.stage, s.target, (s.won ? 1 : 0) | (s.lost ? 2 : 0), Math.round(s.t0 * 10)]; }); },
+    apply(w, d) { ensureSpace(w); E.TEAMS.forEach((t, i) => { const s = w.space[t], r = d[i]; if (!r) return; s.stage = r[0]; s.target = r[1]; s.won = !!(r[2] & 1); s.lost = !!(r[2] & 2); s.t0 = r[3] / 10; }); },
+  };
+
+  const C = S.ctl = S.ctl || {};
+  C.capital = Object.assign(C.capital || {}, { ai: aiCapital, player: playerCapital });
+  S.systems.push(spaceSystem);
+  Object.assign(S, { aiCapital, playerCapital, spaceState, fleetStats, reportShip, leaveBattle, beginRetreat, crippled, brace, setPower, launchWing, cycleTarget, ensureSpace, shipOf });
 })(window.E = window.E || {});
 
 // ---- js/sim/terrain.js ----

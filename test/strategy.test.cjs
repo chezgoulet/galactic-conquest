@@ -176,7 +176,7 @@ test('a campaign assault becomes a playable battle with the fleets that were sen
   const res = C.moveFleet(c, fl.id, C.attackable(c)[0]);
   const w = new E.World(res.options);
   const caps = (f) => w.units.filter(u => u.kind === 'capital' && u.team === f);
-  assert.deepStrictEqual([...caps('aegis')].map(u => u.type), ['cruiser', 'carrier']);
+  assert.deepStrictEqual([...caps('aegis')].map(u => u.type).slice(0, 2), ['cruiser', 'carrier'], 'the fleet\'s own ships come first; the sim may add a frigate screen');
   assert.ok(caps('aegis')[1].hp < caps('aegis')[1].maxHp * 0.6, 'the damaged carrier arrives damaged');
   for (let i = 0; i < 30 * 15; i++) w.tick(1 / 30);
   assert.ok(w.units.every(u => Number.isFinite(u.pos.x + u.pos.y + u.pos.z)));
