@@ -62,6 +62,23 @@ button.gc-btn:disabled { opacity: .5; cursor: default; }
 
 /* loading */
 #gc-loading { position: fixed; inset: 0; display: grid; place-items: center; z-index: 50; background: var(--bg); font-size: 15px; color: var(--dim); letter-spacing: 2px; }
+
+/* bridge / vehicle HUD (bottom-left, shown while piloting) */
+.gc-bridge { position: fixed; left: 14px; bottom: 44px; width: 300px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; z-index: 15; backdrop-filter: blur(8px); box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.gc-bridge .bridge-fac { font-size: 15px; font-weight: 700; letter-spacing: 1px; margin-bottom: 8px; }
+.gc-bridge .bridge-fac.aegis { color: var(--aegis); }
+.gc-bridge .bridge-fac.verdant { color: var(--verdant); }
+.gc-bridge .bar { position: relative; height: 16px; background: #0c1320; border: 1px solid var(--line); border-radius: 4px; margin-bottom: 5px; overflow: hidden; }
+.gc-bridge .bar i { position: absolute; inset: 0; display: block; }
+.gc-bridge .bar.hp i { background: linear-gradient(90deg, #ff4a3a, #ff8a4a); }
+.gc-bridge .bar.sh i { background: linear-gradient(90deg, #2b6cff, #57ffd0); }
+.gc-bridge .bar span { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 7px; font-size: 11px; color: #fff; text-shadow: 0 1px 2px #000; letter-spacing: .5px; }
+.gc-bridge .bridge-target { margin-top: 8px; display: flex; align-items: baseline; gap: 8px; }
+.gc-bridge .bridge-target .lbl { color: var(--danger); font-size: 11px; letter-spacing: 2px; }
+.gc-bridge .bridge-target .tv { font-size: 14px; }
+.gc-bridge .bridge-sub { display: flex; gap: 16px; margin-top: 6px; }
+.gc-bridge .bridge-sub .lbl { color: var(--dim); font-size: 10px; letter-spacing: 1.5px; display: block; }
+.gc-bridge .bridge-sub .tv { font-size: 13px; }
 #gc-loading .bar { width: 220px; height: 3px; background: #16223a; border-radius: 3px; margin-top: 14px; overflow: hidden; }
 #gc-loading .bar i { display: block; height: 100%; width: 40%; background: var(--accent); animation: load 1s infinite; }
 @keyframes load { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }

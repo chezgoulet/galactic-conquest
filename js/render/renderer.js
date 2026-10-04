@@ -8,6 +8,7 @@
     constructor(canvas) {
       this.scene = new E.Scene(canvas);
       this.camera = new E.Camera(this.scene);
+      this.fx = new E.FX(this.scene);
       this.terrain = null;
       this.planetGroup = null;
       this.sky = null;
@@ -125,6 +126,32 @@
       for (const id of [...this.obj.keys()]) if (!seen.has(id)) { const m = this.obj.get(id); this.objGroup.remove(m.g); this.obj.delete(id); }
     }
 
+    // Target ring on the unit the focused capital/ship is engaging.
+    syncTarget(world) {
+      const T = E.THREE;
+      if (!this.targetRing) {
+        this.targetRing = new T.Mesh(new T.TorusGeometry(1, 0.6, 8, 28), new T.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.8, side: T.DoubleSide, depthTest: false }));
+        this.targetRing.rotation.x = Math.PI / 2; this.targetRing.renderOrder = 20;
+        this.scene.hud3d.add(this.targetRing);
+      }
+      const f = world.focusedUnit();
+      if (!f || (f.kind !== 'capital' && f.kind !== 'fighter')) { this.targetRing.visible = false; return; }
+      // nearest enemy unit
+      let best = null, bd = Infinity;
+      for (const e of world.unitList()) {
+        if (!e.alive || e.team === f.team) continue;
+        const d = E.distXZ2(f.pos, e.pos);
+        if (d < bd) { bd = d; best = e; }
+      }
+      if (!best) { this.targetRing.visible = false; this.currentTarget = null; return; }
+      this.currentTarget = best; this.currentTargetDist = Math.sqrt(bd);
+      this.targetRing.visible = true;
+      this.targetRing.position.set(best.pos.x, best.pos.y + best.viewH * 0.5, best.pos.z);
+      const s = Math.max(10, best.r * 1.6);
+      this.targetRing.scale.set(s, s, s);
+      this.targetRing.rotation.z += 0.02;
+    }
+
     // Per-frame animation + camera + render.
     update(dt, t, world) {
       this.time = t;
@@ -135,6 +162,7 @@
       if (world) {
         this.syncUnits(world.unitList(), dt);
         this.syncObjectives(world.objectives, dt);
+        this.syncTarget(world);
         // focus: possessed unit, else the centroid of my force
         let focus = world.focusedUnit();
         if (!focus && world.playerUnit && world.playerUnit.alive) {
@@ -144,6 +172,7 @@
         }
         this.camera.setMode(world.mode(), focus);
       }
+      this.fx.update(dt, t);
       this.camera.update(dt, t);
       // never let the camera sink below the surface
       if (this.terrain) {

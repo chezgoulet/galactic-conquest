@@ -23,7 +23,7 @@
   window.GC.start = start;
   window.GC.E = E;
   // Defer to the next frame so the canvas is laid out and a menu can unlock audio.
-  const auto = () => start(window.GC_AUTOSTART || { biome: 'tundra', seed: 7 });
+  const auto = () => start(window.GC_AUTOSTART || { biome: 'desert', seed: 7 });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(auto));
   else requestAnimationFrame(auto);
 })(window.E = window.E || {});

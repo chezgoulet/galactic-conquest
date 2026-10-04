@@ -27,8 +27,8 @@
       this.playerLookYaw = 0;
       this.selected = [];
       this.buildObjectives();
-      this.spawnForce('aegis', { x: -2000, z: 0 });
-      this.spawnForce('verdant', { x: 2000, z: 0 });
+      this.spawnForce("aegis", { x: -1500, z: 0 });;
+      this.spawnForce("verdant", { x: 1500, z: 0 });;
       this.playerUnit = this.units.find(u => u.team === this.human) || this.units[0];
     }
 
@@ -63,7 +63,7 @@
         for (let i = 0; i < n; i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
       // A bot "capital" in the air for each side (the player's can be boarded).
       const cap = this.unit('capital', faction, F.capital, 'cruiser', { x: base.x, z: base.z });
-      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 520;
+      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 340;
       cap.genome = { r: this.rng.f(0.9, 1.15) };
       cap.yaw = cap.aim = faction === 'aegis' ? Math.PI : 0;
       // medic healers are assigned to the nearest own units
@@ -96,7 +96,7 @@
       // space objectives (stations/gateway) appear in M2; reserve the air here
       if (this.planet.biome !== 'gas') {
         const st = mk('station', R.f(-400, 400), R.f(-900, 900), 0);
-        st.pos.y = this.groundY(st.pos.x, st.pos.z) + 700; // an orbital station
+        st.pos.y = this.groundY(st.pos.x, st.pos.z) + 500; // an orbital station
       }
     }
 

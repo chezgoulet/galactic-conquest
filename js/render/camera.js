@@ -27,12 +27,14 @@
     }
 
     setMode(mode, unit) {
+      const id = unit ? unit.id : null;
+      if (id !== this._focusId) { this._snap = true; this._focusId = id; }
       this.mode = mode;
       this.unit = unit;
       if (unit) {
         this.lookYaw = unit.yaw || 0;
         this.lookPitch = mode === 'fps' ? 0 : 0;
-        this.dist = mode === 'fps' ? 0 : mode === 'vehicle' ? 16 : mode === 'ship' ? 220 : 120;
+        this.dist = mode === 'fps' ? 0 : mode === 'vehicle' ? 16 : mode === 'ship' ? 55 : 120;
       }
     }
 
@@ -71,8 +73,9 @@
         const back = E.V3.scale(fwd, -d, E.V3.make());
         const eye = E.V3.add(pos, back, E.V3.make());
         eye.y += 5 + Math.abs(this.lookPitch) * 6;
-        // smooth
-        const k = 1 - Math.exp(-dt * 8);
+        // smooth (snap on re-focus)
+        let k = 1 - Math.exp(-dt * 8);
+        if (this._snap) { this._sm.p = E.V3.clone(eye); this._snap = false; k = 1; }
         this._sm.p = E.V3.lerp(this._sm.p, eye, k, this._sm.p);
         cam.position.set(this._sm.p.x, this._sm.p.y, this._sm.p.z);
         cam.up.set(0, 1, 0);
@@ -84,19 +87,20 @@
       }
 
       if (this.mode === 'ship') {
-        // bridge: high and behind, looking out at the bow and the space ahead
-        const d = this.dist;
+        // close third-person from the flight deck: the massive hull fills the
+        // lower frame, looking out toward the horizon / enemy ahead
+        const d = Math.min(this.dist, 70);
         const back = E.V3.scale(fwd, -d, E.V3.make());
         const eye = E.V3.add(pos, back, E.V3.make());
-        eye.y += u.viewH * 0.7 + 20;
-        const k = 1 - Math.exp(-dt * 4);
+        eye.y += 22;
+        let k = 1 - Math.exp(-dt * 5);
+        if (this._snap) { this._sm.p = E.V3.clone(eye); this._snap = false; k = 1; }
         this._sm.p = E.V3.lerp(this._sm.p, eye, k, this._sm.p);
         cam.position.set(this._sm.p.x, this._sm.p.y, this._sm.p.z);
         cam.up.set(0, 1, 0);
-        const target = E.V3.add(pos, E.V3.make(0, u.viewH * 0.2, 0), E.V3.make());
-        target.x += fwd.x * 200; target.z += fwd.z * 200;
+        const target = E.V3.make(pos.x + fwd.x * 300, pos.y - 14, pos.z + fwd.z * 300);
         cam.lookAt(target);
-        cam.fov = 60; cam.updateProjectionMatrix();
+        cam.fov = 66; cam.updateProjectionMatrix();
         return;
       }
 

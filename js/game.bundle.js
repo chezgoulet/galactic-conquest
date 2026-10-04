@@ -40,6 +40,324 @@
   E.Accumulator = Accumulator;
 })(window.E = window.E || {});
 
+// ---- js/core/music.js ----
+// The score. Orchestral, adaptive and synthesized in real time — no samples.
+// A lookahead scheduler plays 16th-note steps on the AudioContext clock. Harmony
+// is a Markov chain over the faction's mode (cinematic moves), melody is the
+// faction's seeded leitmotif re-harmonised per bar, and voices are strings,
+// brass, timpani and a bass ostinato. An intensity signal from the match moves
+// the score between sections (drift -> pulse -> battle) and drives a victory
+// fanfare. Every note is built from oscillators, filters and gains.
+(function (E) {
+  'use strict';
+
+  const MODES = {
+    dorian: [0, 2, 3, 5, 7, 9, 10], phrygian: [0, 1, 3, 5, 7, 8, 10],
+    aeolian: [0, 2, 3, 5, 7, 8, 10], lydian: [0, 2, 4, 6, 7, 9, 11],
+    harmminor: [0, 2, 3, 5, 7, 8, 11], mixolydian: [0, 2, 4, 5, 7, 9, 10],
+  };
+  // degree transitions (0 = i .. 6 = VII), weighted to filmic motion.
+  const CHAIN = {
+    0: [[5, 5], [3, 3], [6, 3], [2, 1]], 1: [[4, 3], [6, 2], [0, 1]],
+    2: [[5, 3], [3, 2], [6, 2]], 3: [[0, 3], [5, 2], [6, 2]],
+    4: [[0, 3], [5, 3]], 5: [[6, 4], [3, 3], [0, 3]], 6: [[0, 4], [5, 2], [2, 2]],
+  };
+  const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  function rng(seed) { let s = (seed >>> 0) || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s >>>= 0; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+  function pick(r, arr) { let tot = 0; for (const [, w] of arr) tot += w; let x = r() * tot; for (const [v, w] of arr) { x -= w; if (x <= 0) return v; } return arr[0][0]; }
+  function theme(factionId) { const f = E.faction(factionId); return f.music; }
+
+  const M = { on: false, faction: 'aegis', I: 0.2, victory: false };
+  let c, out, master, strings, brass, timb, bass, bell, rev, dly, noiseBuf;
+
+  function hall(sec) {
+    const len = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, len, c.sampleRate);
+    for (let ch = 0; ch < 2; ch++) { const x = b.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < len; i++) { const t = i / len; lp += ((Math.random() * 2 - 1) - lp) * (1 - (0.08 + 0.9 * t) * 0.95);
+        x[i] = lp * Math.pow(1 - t, 2.4) * (i < c.sampleRate * 0.01 ? i / (c.sampleRate * 0.01) : 1); } }
+    return b;
+  }
+
+  M.start = function (factionId) {
+    if (M.on) return;
+    if (typeof AudioContext === 'undefined') return;
+    c = new (window.AudioContext || window.webkitAudioContext)();
+    M.on = true;
+    out = c.createGain(); out.gain.value = 0.0; out.connect(c.destination);
+    const comp = c.createDynamicsCompressor(); comp.threshold.value = -18; comp.knee.value = 14; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.3;
+    comp.connect(out);
+    master = c.createGain(); master.gain.value = 0.9; master.connect(comp);
+    // vast dark hall
+    rev = c.createConvolver(); rev.buffer = hall(4.5);
+    const revG = c.createGain(); revG.gain.value = 0.5; rev.connect(revG); revG.connect(master);
+    const revIn = c.createGain(); revIn.connect(rev);
+    M.revIn = revIn;
+    // ping-pong delay (tempo-synced)
+    dly = c.createDelay(2); dly.delayTime.value = 0.42;
+    const fb = c.createGain(); fb.gain.value = 0.32; const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400;
+    dly.connect(lp); lp.connect(fb); fb.connect(dly);
+    const dOut = c.createGain(); dOut.gain.value = 0.28; dly.connect(dOut); dOut.connect(master);
+    M.dly = dly;
+    // buses
+    const bus = (l, r) => { const g = c.createGain(); g.gain.value = l; g.connect(master); const rg = c.createGain(); rg.gain.value = r; rg.connect(M.revIn); return { g, rg }; };
+    const s = bus(0.5, 0.5), br = bus(0.42, 0.4), ti = bus(0.5, 0.2), ba = bus(0.4, 0.2), be = bus(0.3, 0.6);
+    strings = s.g; brass = br.g; timb = ti.g; bass = ba.g; bell = be.g;
+    // noise buffer
+    noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate); const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    M.setTheme(factionId || 'aegis', true);
+    out.gain.setTargetAtTime(1, c.currentTime, 2);
+    M._step = 0; M._nextT = c.currentTime + 0.12;
+    M._timer = setInterval(tick, 25);
+  };
+  M.stop = function () { if (!M.on) return; clearInterval(M._timer); out.gain.setTargetAtTime(0, c.currentTime, 0.4); const cc = c; setTimeout(() => cc.close().catch(() => {}), 600); M.on = false; };
+  M.resume = function () { if (M.on && c && c.state === 'suspended') c.resume(); };
+
+  M.setTheme = function (factionId, hard) {
+    M.faction = factionId;
+    const th = theme(factionId);
+    M.mode = MODES[th.mode] || MODES.aeolian;
+    M.root = th.root; M.bpm = th.bpm; M.motifSeed = th.motif; M.bell = th.bell; M.saw = th.saw;
+    M.r = rng(th.motif * 7919);
+    M.motif = makeMotif(rng(th.motif * 7919 + 3), 4);
+    M.deg = 0; M.chord = chordOf(0); M.chordBars = 0;
+    M.section = 'drift'; M.sectBars = 0; M.victory = false;
+    M.impactT = 0;
+  };
+
+  function chordOf(deg) { const m = M.mode; return [m[deg % 7], m[(deg + 2) % 7], m[(deg + 4) % 7]]; }
+
+  function makeMotif(r, bars) {
+    const CELLS = [
+      [[0, 6], [6, 2], [8, 8]],
+      [[0, 3], [3, 3], [6, 4], [12, 4]],
+      [[0, 8], [10, 2], [12, 4]],
+      [[2, 2], [4, 4], [8, 2], [10, 6]],
+    ];
+    const notes = [];
+    let d = [0, 2, 4][Math.floor(r() * 3)];
+    for (let b = 0; b < bars; b++) {
+      const cell = CELLS[Math.floor(r() * CELLS.length)];
+      for (const [st, len] of cell) {
+        const step = (b * 4 + Math.floor(st / 4)) % 16;
+        const note = d + (Math.floor(r() * 5) - 2) * 2;
+        if (r() < 0.82) notes.push({ step, len, deg: note });
+        d = note;
+      }
+    }
+    return notes;
+  }
+
+  // ── voices ───────────────────────────────────────────────────
+  function env(g, t, a, d, s, r, peak) {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + a);
+    g.gain.linearRampToValueAtTime(peak * s, t + a + d);
+    g.gain.setValueAtTime(peak * s, t + a + d + Math.max(0.01, 0));
+    g.gain.linearRampToValueAtTime(0.0001, t + a + d + r);
+  }
+  // sustained string swell (a detuned sawtooth stack)
+  function str(t, freq, dur, vol) {
+    const n = 3; const g = c.createGain(); g.gain.value = vol; g.connect(strings); g.connect(M.dly);
+    const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1400 + 900 * (M.I || 0.3); f.Q.value = 0.6; f.connect(g);
+    for (let i = 0; i < n; i++) {
+      const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq; o.detune.value = (i - 1) * 7;
+      o.connect(f); o.start(t); o.stop(t + dur + 0.1);
+    }
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + Math.min(0.5, dur * 0.4));
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+  }
+  // brass hit (sawtooth -> bandpass), staccato on the strong beats
+  function bra(t, freq, dur, vol) {
+    const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq;
+    const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq * 2; f.Q.value = 1.2;
+    const g = c.createGain(); o.connect(f); f.connect(g); g.connect(brass);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.02);
+    g.gain.linearRampToValueAtTime(vol * 0.6, t + 0.18);
+    g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+  // timpani hit (sine pitch drop + noise)
+  function tim(t, freq, vol) {
+    const o = c.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(freq, t); o.frequency.exponentialRampToValueAtTime(freq * 0.5, t + 0.4);
+    const g = c.createGain(); o.connect(g); g.connect(timb);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+    o.start(t); o.stop(t + 0.55);
+    const ns = c.createBufferSource(); ns.buffer = noiseBuf;
+    const nf = c.createBiquadFilter(); nf.type = 'lowpass'; nf.frequency.value = 400;
+    const ng = c.createGain(); ns.connect(nf); nf.connect(ng); ng.connect(timb);
+    ng.gain.setValueAtTime(vol * 0.4, t); ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    ns.start(t); ns.stop(t + 0.15);
+  }
+  // bass ostinato
+  function bas(t, freq, dur, vol) {
+    const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = freq;
+    const g = c.createGain(); o.connect(g); g.connect(bass);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.03); g.gain.linearRampToValueAtTime(0.0001, t + dur);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+  // bell (FM) — the verdant signature
+  function bel(t, freq, dur, vol) {
+    const o = c.createOscillator(); o.frequency.value = freq;
+    const m = c.createOscillator(); m.frequency.value = freq * 3;
+    const mg = c.createGain(); mg.gain.value = freq * 2; m.connect(mg); mg.connect(o.frequency);
+    const g = c.createGain(); o.connect(g); g.connect(bell); g.connect(M.dly);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.start(t); m.start(t); o.stop(t + dur + 0.05); m.stop(t + dur + 0.05);
+  }
+
+  // ── scheduler ────────────────────────────────────────────────
+  function tick() {
+    if (!M.on) return;
+    const spb = 60 / M.bpm; const step = spb / 4; // 16th
+    while (M._nextT < c.currentTime + 0.16) {
+      scheduleStep(M._step, M._nextT, step);
+      M._step = (M._step + 1) % 64; M._nextT += step;
+    }
+  }
+  function scheduleStep(step, t, stepDur) {
+    const I = M.I;
+    // section logic (per 4 bars)
+    if (step % 64 === 0) {
+      M.sectBars = 0;
+      if (M.victory) M.section = 'fanfare';
+      else if (I > 0.66) M.section = 'battle';
+      else if (I > 0.34) M.section = 'pulse';
+      else M.section = 'drift';
+      // new chord every 2 bars on section start
+    }
+    if (step % 32 === 0) { // every 2 bars: maybe change chord
+      M.deg = pick(M.r, CHAIN[M.deg] || CHAIN[0]);
+      M.chord = chordOf(M.deg);
+    }
+    const bar = Math.floor(step / 16);
+    const beat = step % 16;
+    const rootMidi = M.root + M.chord[0];
+    const chordMidi = M.chord.map(d => M.root + d + 12);
+
+    // timpani pattern (Euclidean-ish), denser in battle
+    const isDown = (beat === 0) || (beat === 8) || (M.section === 'battle' && (beat === 4 || beat === 12));
+    if (M.section !== 'drift' && isDown && step % 2 === 0) tim(t, mtof(rootMidi - 12), 0.7 * (0.6 + I * 0.6));
+    // offbeat rim in battle
+    if (M.section === 'battle' && beat % 4 === 2) tim(t, mtof(rootMidi - 5), 0.22);
+
+    // bass ostinato on beats 0 and 8
+    if (beat === 0 || beat === 8) bas(t, mtof(rootMidi - 12), stepDur * 3, 0.5);
+
+    // strings: swell the chord, hold across the bar
+    if (beat === 0 || (M.section !== 'drift' && beat === 8)) {
+      for (const md of chordMidi) str(t, mtof(md - 12), stepDur * (M.section === 'battle' ? 6 : 10), 0.16 + I * 0.1);
+    }
+    // brass: staccato hits on the beat in pulse/battle/fanfare
+    if ((M.section === 'pulse' || M.section === 'battle' || M.section === 'fanfare') && beat % 4 === 0) {
+      const md = chordMidi[beat % 8 < 4 ? 0 : 1];
+      bra(t, mtof(md - 12 + (M.section === 'fanfare' ? 12 : 0)), stepDur * 3, 0.28 + I * 0.15);
+    }
+    // bells: verdant flavour / sparkle on the top note
+    if (M.bell && beat % 4 === 2 && I > 0.3) bel(t, mtof(chordMidi[2]), stepDur * 5, 0.18 * M.bell);
+
+    // melody (leitmotif) — a note on most 8th notes, re-harmonised to the chord
+    if (M.section !== 'drift' && step % 2 === 0 && M.motif.length) {
+      const n = M.motif[Math.floor(step / 2) % M.motif.length];
+      if (n && M.r() < 0.85) {
+        const md = chordMidi[0] + ((n.deg % 7) + 7) % 7 + 12;
+        if (M.bell > 0.8) bel(t, mtof(md), stepDur * Math.max(2, n.len), 0.22);
+        else bra(t, mtof(md), stepDur * Math.max(2, n.len), 0.16);
+      }
+    }
+  }
+
+  // ── intensity + victory ──────────────────────────────────────
+  M.setIntensity = function (v) { M.I = E.clamp01(v); };
+  M.victory = function (factionId) { M.victory = true; M.setTheme(factionId || M.faction, true); M.section = 'fanfare'; M.I = 1; };
+
+  // ── SFX (synthesized) ────────────────────────────────────────
+  const SFX = {
+    play(kind, t, vol) {
+      if (!M.on) return; t = t || c.currentTime; vol = vol == null ? 1 : vol;
+      const out2 = c.createGain(); out2.gain.value = vol; out2.connect(master);
+      switch (kind) {
+        case 'rifle': {
+          const o = c.createOscillator(); o.type = 'square'; o.frequency.setValueAtTime(700, t); o.frequency.exponentialRampToValueAtTime(180, t + 0.12);
+          const g = c.createGain(); o.connect(g); g.connect(out2);
+          g.gain.setValueAtTime(0.35, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1200;
+          const ng = c.createGain(); ns.connect(f); f.connect(ng); ng.connect(out2); ng.gain.setValueAtTime(0.3, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+          o.start(t); o.stop(t + 0.15); ns.start(t); ns.stop(t + 0.09); break;
+        }
+        case 'cannon': case 'capital': case 'pulse': {
+          const big = kind === 'capital';
+          const o = c.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(big ? 90 : 160, t); o.frequency.exponentialRampToValueAtTime(40, t + (big ? 0.5 : 0.25));
+          const g = c.createGain(); o.connect(g); g.connect(out2);
+          g.gain.setValueAtTime(big ? 0.9 : 0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + (big ? 0.6 : 0.3));
+          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = big ? 300 : 700; f.Q.value = 0.7;
+          const ng = c.createGain(); ns.connect(f); f.connect(ng); ng.connect(out2);
+          ng.gain.setValueAtTime(big ? 0.5 : 0.3, t); ng.gain.exponentialRampToValueAtTime(0.001, t + (big ? 0.4 : 0.18));
+          o.start(t); o.stop(t + 0.7); ns.start(t); ns.stop(t + 0.45); break;
+        }
+        case 'lance': case 'spore': {
+          const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(300, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.1);
+          const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1500; f.Q.value = 2;
+          const g = c.createGain(); o.connect(f); f.connect(g); g.connect(out2);
+          g.gain.setValueAtTime(0.3, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+          o.start(t); o.stop(t + 0.13); break;
+        }
+        case 'missile': {
+          const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(600, t + 0.4);
+          const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.18, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+          o.start(t); o.stop(t + 0.42); break;
+        }
+        case 'pd': {
+          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 2500;
+          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+          ns.start(t); ns.stop(t + 0.05); break;
+        }
+        case 'shield': {
+          const o = c.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(520, t); o.frequency.linearRampToValueAtTime(300, t + 0.2);
+          const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.2, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+          o.start(t); o.stop(t + 0.22); break;
+        }
+        case 'explosion': {
+          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(900, t); f.frequency.exponentialRampToValueAtTime(80, t + 0.5);
+          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2);
+          g.gain.setValueAtTime(0.8, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+          const o = c.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(70, t); o.frequency.exponentialRampToValueAtTime(30, t + 0.5);
+          const og = c.createGain(); o.connect(og); og.connect(out2); og.gain.setValueAtTime(0.6, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+          ns.start(t); ns.stop(t + 0.6); o.start(t); o.stop(t + 0.6); break;
+        }
+        case 'ui': {
+          const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = 660; const g = c.createGain(); o.connect(g); g.connect(out2);
+          g.gain.setValueAtTime(0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.08); o.start(t); o.stop(t + 0.09); break;
+        }
+        case 'launch': {
+          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(300, t); f.frequency.linearRampToValueAtTime(1200, t + 0.4);
+          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.3, t); g.gain.linearRampToValueAtTime(0.5, t + 0.3); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+          ns.start(t); ns.stop(t + 0.55); break;
+        }
+        default: break;
+      }
+    },
+  };
+
+  // route sim events to SFX (called with drained events + volume by distance)
+  M.onEvents = function (events) {
+    for (const e of events) {
+      if (e.type === 'muzzle') SFX.play(e.kind === 'capital' ? 'capital' : (e.kind === 'missile' ? 'missile' : (e.kind === 'pd' ? 'pd' : 'pulse')));
+      else if (e.type === 'impact') SFX.play('explosion', null, 0.5);
+      else if (e.type === 'death') SFX.play('explosion', null, e.kind === 'capital' ? 1 : e.kind === 'vehicle' ? 0.8 : 0.5);
+      else if (e.type === 'shieldhit') SFX.play('shield', null, 0.5);
+      else if (e.type === 'launch') SFX.play('launch');
+      else if (e.type === 'objectiveCaptured') SFX.play('explosion', null, 0.9);
+    }
+  };
+
+  E.Music = M;
+  E.SFX = SFX;
+})(window.E = window.E || {});
+
 // ---- js/core/noise.js ----
 // Deterministic value / fBm noise on a 2D grid, seedable per world. Terrain and
 // star placement draw from this so a given (biome, seed) always yields the same
@@ -291,8 +609,8 @@
     desert: {
       name: 'Sarruun', class: 'dune', theme: 'Desert',
       desc: 'Endless dunes and cracked salt flats. Heat haze shimmers the horizon and long sightlines favour snipers.',
-      palette: { low: rgb('#d8b078'), mid: rgb('#c78f4e'), high: rgb('#e8c890'), fog: rgb('#e6c79a'), sky: rgb('#e8c98f'), skyHi: rgb('#f6e6c4') },
-      sun: { color: rgb('#fff1d0'), dir: [0.3, 0.6, -0.35], strength: 1.1 },
+      palette: { low: rgb('#c9a066'), mid: rgb('#b9884a'), high: rgb('#dcb878'), fog: rgb('#c99a63'), sky: rgb('#6f86a0'), skyHi: rgb('#a9c0d4') },
+      sun: { color: rgb('#ffe6b0'), dir: [0.3, 0.6, -0.35], strength: 1.0 },
       amp: { low: 0.5, mid: 0.8, high: 0.3, rough: 0.3, ridged: 0.35 },
       water: { level: 0.0, color: rgb('#c9a06a'), cover: 0.0 },
       cover: { rocks: 0.08, ice: 0.0, trees: 0.01, buildings: 0.0, cactus: 0.05 },
@@ -535,21 +853,21 @@
   // Capital ships: space. The centerpiece. Stats scale with the hull genome.
   E.CAPITALS = {
     dreadnought: { name: 'Dreadnought', role: 'flagship', layer: 'space',
-                   hp: 60000, speed: 6, r: 90, viewH: 60, bays: 24,
+                   hp: 60000, speed: 200, r: 90, viewH: 60, bays: 24,
                    main: { dmg: 900, rate: 0.25, range: 900, spread: 0.004, sfx: 'capital' },
                    side: { dmg: 180, rate: 1.2, range: 500, spread: 0.01, sfx: 'pulse' },
                    pd: { dmg: 6, rate: 14, range: 240, spread: 0.05, sfx: 'pd' },
                    missile: { dmg: 500, rate: 0.5, range: 700, seek: 1.0, sfx: 'missile' },
                    desc: 'The centerpiece of a fleet. Endless broadside, two fighter bays.' },
     carrier: { name: 'Carrier', role: 'carrier', layer: 'space',
-               hp: 36000, speed: 7, r: 80, viewH: 50, bays: 48,
+               hp: 36000, speed: 150, r: 80, viewH: 50, bays: 48,
                main: { dmg: 400, rate: 0.2, range: 700, spread: 0.006, sfx: 'capital' },
                side: { dmg: 120, rate: 1.0, range: 460, spread: 0.012, sfx: 'pulse' },
                pd: { dmg: 5, rate: 16, range: 260, spread: 0.05, sfx: 'pd' },
                missile: { dmg: 300, rate: 0.6, range: 600, seek: 1.0, sfx: 'missile' },
                desc: 'Fleet wing. Carries the largest fighter group in the sector.' },
     cruiser: { name: 'Cruiser', role: 'cruiser', layer: 'space',
-               hp: 14000, speed: 10, r: 55, viewH: 35, bays: 12,
+               hp: 14000, speed: 180, r: 55, viewH: 35, bays: 12,
                main: { dmg: 220, rate: 0.35, range: 600, spread: 0.008, sfx: 'capital' },
                side: { dmg: 90, rate: 1.4, range: 420, spread: 0.014, sfx: 'pulse' },
                pd: { dmg: 4, rate: 18, range: 220, spread: 0.05, sfx: 'pd' },
@@ -602,7 +920,7 @@
   function detectRange(u) {
     return u.kind === 'capital' ? 1200 : u.kind === 'fighter' ? 340 : u.kind === 'vehicle' ? 300 : (u.role === 'recon' ? 220 : 140);
   }
-  function airAlt(u) { return u.kind === 'capital' ? 520 : 130; }
+  function airAlt(u) { return u.kind === 'capital' ? 200 : 130; }
   function isAir(u) { return u.kind === 'fighter' || u.kind === 'capital'; }
 
   function nearestEnemy(w, u, range) {
@@ -665,35 +983,39 @@
   }
 
   function ai(u, w, dt) {
+    const isCap = u.kind === 'capital';
     const range = weaponOf(u).range || 100;
-    const det = detectRange(u);
-    const enemy = nearestEnemy(w, u, det);
-    // objective to push (enemy or neutral)
-    const obj = nearestObjective(w, u, u.team);
+    const det = isCap ? 1500 : detectRange(u);
+    // capitals seek the enemy flagship (long-range arrays sense it even beyond
+    // gun range); everyone else seeks the nearest enemy in sight
+    const enemy = isCap ? nearestEnemyIn(w, u, 1e9, e => e.kind === 'capital') : nearestEnemy(w, u, det);
+    const obj = isCap ? null : nearestObjective(w, u, u.team);
     // target point
     let tx, tz;
     if (enemy) { tx = enemy.pos.x; tz = enemy.pos.z; }
     else if (obj) { tx = obj.pos.x; tz = obj.pos.z; }
-    else { // advance to enemy HQ
+    else { // advance to enemy HQ / stay in formation
+      if (isCap) return; // hold position
       const hq = w.objectives.find(o => o.role === 'hq' && o.owner !== u.team);
       if (!hq) return;
       tx = hq.pos.x; tz = hq.pos.z;
     }
     const dx = tx - u.pos.x, dz = tz - u.pos.z;
     const dist = Math.hypot(dx, dz);
-    const stopR = obj && (Math.abs(tx - obj.pos.x) < 2 && Math.abs(tz - obj.pos.z) < 2) ? obj.radius * 0.7 : 0;
+    const stopR = isCap ? (enemy ? 480 : 0) : (obj && (Math.abs(tx - obj.pos.x) < 2 && Math.abs(tz - obj.pos.z) < 2) ? obj.radius * 0.7 : 0);
     // move toward target
     if (dist > (stopR + 2)) {
       const desired = Math.atan2(dx, dz);
       u.yaw = E.lerpAngle(u.yaw, desired, Math.min(1, u.turn * dt));
-      const sp = u.speed * (enemy && dist < range * 0.6 ? 0.5 : 1); // slow when engaging
+      const sp = u.speed * (enemy && dist < (isCap ? 600 : range * 0.6) ? 0.5 : 1);
       u.pos.x += Math.sin(u.yaw) * sp * dt;
       u.pos.z += Math.cos(u.yaw) * sp * dt;
     }
     // altitude
     const targetY = isAir(u) ? w.groundY(u.pos.x, u.pos.z) + airAlt(u) + Math.sin(w.t + u.id) * 20 : w.groundY(u.pos.x, u.pos.z);
     u.pos.y += (targetY - u.pos.y) * Math.min(1, dt * (isAir(u) ? 1.5 : 6));
-    // fire
+    // fire (capitals fire via capitalWeapons; others use their own gun)
+    if (isCap) return;
     u.fireT = Math.max(0, u.fireT - dt);
     if (enemy && dist < range) fireAt(u, w, enemy);
     else if (obj && dist < obj.radius) fireAt(u, w, null, obj); // shoot the objective
@@ -721,6 +1043,86 @@
     w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: u.faction, kind: wp.kind });
   }
 
+  // ── capital ship weapons: main (long), side (medium), point-defense (close) ──
+  function capitalWeapons(w, dt) {
+    for (const cap of w.units) {
+      if (!cap.alive || cap.kind !== 'capital') continue;
+      const C = E.CAPITALS[cap.type] || E.CAPITALS.cruiser;
+      cap._cwT = cap._cwT || { main: 0, side: 0, pd: 0, mis: 0 };
+      cap._cwT.main -= dt; cap._cwT.side -= dt; cap._cwT.pd -= dt; cap._cwT.mis -= dt;
+      // main battery: far, slow, heavy
+      if (cap._cwT.main <= 0) {
+        const e = nearestEnemyIn(w, cap, C.main.range, u => u.kind !== 'infantry');
+        if (e) { capitalShot(w, cap, e, C.main, 'main'); cap._cwT.main = 1 / C.main.rate; }
+      }
+      // side guns: medium
+      if (cap._cwT.side <= 0) {
+        const e = nearestEnemyIn(w, cap, C.side.range, u => true);
+        if (e) { capitalShot(w, cap, e, C.side, 'side'); cap._cwT.side = 1 / C.side.rate; }
+      }
+      // point defense: intercept nearby fighters
+      if (cap._cwT.pd <= 0) {
+        const e = nearestEnemyIn(w, cap, C.pd.range, u => u.kind === 'fighter');
+        if (e) { capitalShot(w, cap, e, C.pd, 'pd'); cap._cwT.pd = 1 / C.pd.rate; }
+      }
+      // occasional missile vs capitals
+      if (cap._cwT.mis <= 0) {
+        const e = nearestEnemyIn(w, cap, (C.missile || {}).range || 0, u => u.kind === 'capital');
+        if (e) { fireMissile(w, cap, e, C.missile); cap._cwT.mis = 1 / (C.missile.rate || 0.5); }
+      }
+    }
+  }
+
+  function capitalShot(w, cap, target, wp, which) {
+    const muzzle = E.V3.make(cap.pos.x + Math.sin(cap.yaw) * cap.r * 0.8, cap.pos.y + cap.viewH * 0.5, cap.pos.z + Math.cos(cap.yaw) * cap.r * 0.8);
+    const dir = E.V3.normalize(E.V3.sub(target.pos, muzzle));
+    const sp = wp.spread || 0.01;
+    dir.x += (w.rng.next() - 0.5) * sp; dir.y += (w.rng.next() - 0.5) * sp; dir.z += (w.rng.next() - 0.5) * sp;
+    E.V3.normalize(dir);
+    const spd = wp.speed || 200;
+    w.projectiles.push({ pos: muzzle, dir, speed: spd, dmg: wp.dmg, team: cap.team, life: (wp.range || 600) / spd + 1, color: E.faction(cap.faction).palette.engine, faction: cap.faction, kind: which === 'main' ? 'railgun' : 'pulse', r: which === 'main' ? 3 : 1.5 });
+    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: cap.faction, kind: which === 'main' ? 'capital' : 'pulse' });
+  }
+
+  function fireMissile(w, cap, target, wp) {
+    const muzzle = E.V3.make(cap.pos.x, cap.pos.y, cap.pos.z);
+    const dir = E.V3.normalize(E.V3.sub(target.pos, muzzle));
+    w.projectiles.push({ pos: muzzle, dir, speed: wp.speed || 90, dmg: wp.dmg, team: cap.team, life: (wp.range || 600) / (wp.speed || 90) + 2, color: E.faction(cap.faction).palette.accent, faction: cap.faction, kind: 'missile', r: 2.5, seek: wp.seek || 1, target });
+    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: cap.faction, kind: 'missile' });
+  }
+
+  // capital ships launch fighters into the air when their bays have slots
+  function launchFighters(w, dt) {
+    for (const cap of w.units) {
+      if (!cap.alive || cap.kind !== 'capital') continue;
+      const C = E.CAPITALS[cap.type] || E.CAPITALS.cruiser;
+      cap.bays = cap.bays == null ? C.bays : cap.bays;
+      const myFighters = w.units.filter(u => u.alive && u.kind === 'fighter' && u.team === cap.team && (u.pos.y - cap.pos.y) < 300).length;
+      cap.bayT = (cap.bayT || 0) - dt;
+      if (cap.bays > 0 && myFighters < C.bays && cap.bayT <= 0) {
+        cap.bayT = 2.5;
+        cap.bays--;
+        const ftype = cap.faction === 'aegis' ? 'interceptor' : 'strike';
+        const f = w.unit('fighter', cap.team, ftype, ftype, { x: cap.pos.x, z: cap.pos.z });
+        f.pos.y = cap.pos.y - 10;
+        w.events.push({ type: 'launch', pos: { x: f.pos.x, y: f.pos.y, z: f.pos.z }, faction: cap.faction });
+      }
+      // if the fighter group is low, recharge bays slowly
+      if (myFighters < C.bays) cap.bays = Math.min(C.bays, cap.bays + dt * 0.2);
+    }
+  }
+
+  function nearestEnemyIn(w, u, range, pred) {
+    let best = null, bd = range * range;
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      if (pred && !pred(e)) continue;
+      const d = E.distXZ2(u.pos, e.pos);
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+
   // ── combat ───────────────────────────────────────────────────
   function applyDamage(w, target, dmg, source) {
     if (!target.alive) return;
@@ -744,6 +1146,14 @@
   function updateProjectiles(w, dt) {
     for (let i = w.projectiles.length - 1; i >= 0; i--) {
       const p = w.projectiles[i];
+      // missiles steer toward their target
+      if (p.seek && p.target && p.target.alive) {
+        const want = E.V3.normalize(E.V3.sub(p.target.pos, p.pos));
+        p.dir.x += (want.x - p.dir.x) * Math.min(1, p.seek * dt * 3);
+        p.dir.y += (want.y - p.dir.y) * Math.min(1, p.seek * dt * 3);
+        p.dir.z += (want.z - p.dir.z) * Math.min(1, p.seek * dt * 3);
+        E.V3.normalize(p.dir);
+      }
       p.pos.x += p.dir.x * p.speed * dt; p.pos.y += p.dir.y * p.speed * dt; p.pos.z += p.dir.z * p.speed * dt;
       p.life -= dt;
       let dead = p.life <= 0;
@@ -841,6 +1251,8 @@
     }
     // mark engaged (has a recent target) for intensity
     for (const u of w.units) if (u.alive && nearestEnemy(w, u, detectRange(u))) u._engaged = true;
+    capitalWeapons(w, dt);
+    launchFighters(w, dt);
     updateProjectiles(w, dt);
     regen(w, dt);
     updateObjectives(w, dt);
@@ -976,8 +1388,8 @@
       this.playerLookYaw = 0;
       this.selected = [];
       this.buildObjectives();
-      this.spawnForce('aegis', { x: -2000, z: 0 });
-      this.spawnForce('verdant', { x: 2000, z: 0 });
+      this.spawnForce("aegis", { x: -1500, z: 0 });;
+      this.spawnForce("verdant", { x: 1500, z: 0 });;
       this.playerUnit = this.units.find(u => u.team === this.human) || this.units[0];
     }
 
@@ -1012,7 +1424,7 @@
         for (let i = 0; i < n; i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
       // A bot "capital" in the air for each side (the player's can be boarded).
       const cap = this.unit('capital', faction, F.capital, 'cruiser', { x: base.x, z: base.z });
-      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 520;
+      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 340;
       cap.genome = { r: this.rng.f(0.9, 1.15) };
       cap.yaw = cap.aim = faction === 'aegis' ? Math.PI : 0;
       // medic healers are assigned to the nearest own units
@@ -1045,7 +1457,7 @@
       // space objectives (stations/gateway) appear in M2; reserve the air here
       if (this.planet.biome !== 'gas') {
         const st = mk('station', R.f(-400, 400), R.f(-900, 900), 0);
-        st.pos.y = this.groundY(st.pos.x, st.pos.z) + 700; // an orbital station
+        st.pos.y = this.groundY(st.pos.x, st.pos.z) + 500; // an orbital station
       }
     }
 
@@ -1116,12 +1528,14 @@
     }
 
     setMode(mode, unit) {
+      const id = unit ? unit.id : null;
+      if (id !== this._focusId) { this._snap = true; this._focusId = id; }
       this.mode = mode;
       this.unit = unit;
       if (unit) {
         this.lookYaw = unit.yaw || 0;
         this.lookPitch = mode === 'fps' ? 0 : 0;
-        this.dist = mode === 'fps' ? 0 : mode === 'vehicle' ? 16 : mode === 'ship' ? 220 : 120;
+        this.dist = mode === 'fps' ? 0 : mode === 'vehicle' ? 16 : mode === 'ship' ? 55 : 120;
       }
     }
 
@@ -1160,8 +1574,9 @@
         const back = E.V3.scale(fwd, -d, E.V3.make());
         const eye = E.V3.add(pos, back, E.V3.make());
         eye.y += 5 + Math.abs(this.lookPitch) * 6;
-        // smooth
-        const k = 1 - Math.exp(-dt * 8);
+        // smooth (snap on re-focus)
+        let k = 1 - Math.exp(-dt * 8);
+        if (this._snap) { this._sm.p = E.V3.clone(eye); this._snap = false; k = 1; }
         this._sm.p = E.V3.lerp(this._sm.p, eye, k, this._sm.p);
         cam.position.set(this._sm.p.x, this._sm.p.y, this._sm.p.z);
         cam.up.set(0, 1, 0);
@@ -1173,19 +1588,20 @@
       }
 
       if (this.mode === 'ship') {
-        // bridge: high and behind, looking out at the bow and the space ahead
-        const d = this.dist;
+        // close third-person from the flight deck: the massive hull fills the
+        // lower frame, looking out toward the horizon / enemy ahead
+        const d = Math.min(this.dist, 70);
         const back = E.V3.scale(fwd, -d, E.V3.make());
         const eye = E.V3.add(pos, back, E.V3.make());
-        eye.y += u.viewH * 0.7 + 20;
-        const k = 1 - Math.exp(-dt * 4);
+        eye.y += 22;
+        let k = 1 - Math.exp(-dt * 5);
+        if (this._snap) { this._sm.p = E.V3.clone(eye); this._snap = false; k = 1; }
         this._sm.p = E.V3.lerp(this._sm.p, eye, k, this._sm.p);
         cam.position.set(this._sm.p.x, this._sm.p.y, this._sm.p.z);
         cam.up.set(0, 1, 0);
-        const target = E.V3.add(pos, E.V3.make(0, u.viewH * 0.2, 0), E.V3.make());
-        target.x += fwd.x * 200; target.z += fwd.z * 200;
+        const target = E.V3.make(pos.x + fwd.x * 300, pos.y - 14, pos.z + fwd.z * 300);
         cam.lookAt(target);
-        cam.fov = 60; cam.updateProjectionMatrix();
+        cam.fov = 66; cam.updateProjectionMatrix();
         return;
       }
 
@@ -1227,6 +1643,122 @@
   }
 
   E.Camera = Camera;
+})(window.E = window.E || {});
+
+// ---- js/render/fx.js ----
+// Visual effects: projectile tracers (a single Points cloud), and a pool of
+// expanding billboard "flashes" (muzzle, impact, explosion, shield) that expand
+// and fade. Driven by world.projectiles and world.drainEvents(). Browser-only.
+(function (E) {
+  'use strict';
+
+  function radialTexture() {
+    const T = E.THREE, c = document.createElement('canvas'); c.width = c.height = 64;
+    const x = c.getContext('2d');
+    const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.35, 'rgba(255,255,255,0.7)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+    const t = new T.CanvasTexture(c); t.needsUpdate = true; return t;
+  }
+
+  class FX {
+    constructor(scene) {
+      const T = E.THREE;
+      this.scene = scene;
+      this.tex = radialTexture();
+      this.flashes = [];
+      this.pool = [];
+      // projectile Points cloud
+      const N = 1024;
+      this.capN = N;
+      this.pPos = new Float32Array(N * 3);
+      this.pCol = new Float32Array(N * 3);
+      this.pGeo = new T.BufferGeometry();
+      this.pGeo.setAttribute('position', new T.BufferAttribute(this.pPos, 3).setUsage(T.DynamicDrawUsage));
+      this.pGeo.setAttribute('color', new T.BufferAttribute(this.pCol, 3).setUsage(T.DynamicDrawUsage));
+      this.pMat = new T.PointsMaterial({ size: 6, map: this.tex, transparent: true, depthWrite: false, blending: T.AdditiveBlending, vertexColors: true, sizeAttenuation: true });
+      this.points = new T.Points(this.pGeo, this.pMat);
+      this.points.frustumCulled = false;
+      this.points.visible = false;
+      scene.fx.add(this.points);
+    }
+
+    // spawn a billboard flash
+    flash(pos, opts) {
+      opts = opts || {};
+      let f = this.pool.pop();
+      if (!f) {
+        const T = E.THREE;
+        const m = new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ map: this.tex, transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide }));
+        f = { mesh: m, life: 0, max: 0.3, size: 4, col: new T.Color(1, 1, 1), rot: Math.random() * 6.28 };
+        this.scene.fx.add(f.mesh);
+      }
+      f.life = f.max = opts.max || 0.3;
+      f.size = opts.size || 6;
+      f.col.set(opts.color || '#ffffff');
+      f.mesh.material.color.copy(f.col);
+      f.mesh.position.set(pos.x, pos.y, pos.z);
+      f.mesh.visible = true;
+      this.flashes.push(f);
+    }
+
+    boom(pos, color, big) {
+      const n = big ? 7 : 3;
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * 6.28, d = Math.random() * (big ? 30 : 10);
+        this.flash({ x: pos.x + Math.cos(a) * d, y: pos.y + (Math.random() - 0.3) * (big ? 25 : 8), z: pos.z + Math.sin(a) * d },
+          { color, max: (big ? 0.6 : 0.3) + Math.random() * 0.3, size: (big ? 40 : 14) + Math.random() * 20 });
+      }
+    }
+
+    // apply drained sim events
+    applyEvents(events) {
+      for (const e of events) {
+        if (e.type === 'muzzle') this.flash(e.pos, { color: E.faction(e.faction).palette.engine, max: 0.08, size: 8 });
+        else if (e.type === 'impact') this.flash(e.pos, { color: E.faction(e.faction).palette.engine, max: 0.18, size: 10 });
+        else if (e.type === 'shieldhit') this.flash(e.pos, { color: E.faction(e.team).palette.shield, max: 0.25, size: 22 });
+        else if (e.type === 'death') {
+          const c = E.faction(e.faction).palette.engine;
+          this.boom(e.pos, c, e.kind === 'capital' ? true : e.kind === 'vehicle' ? true : false);
+        }         else if (e.type === 'launch') this.flash(e.pos, { color: E.faction(e.faction).palette.engine, max: 0.5, size: 26 });
+        else if (e.type === 'objectiveCaptured') {
+          this.boom(e.pos, e.team === 'aegis' ? '#ff5a2b' : '#3df0b0', true);
+        }
+      }
+    }
+
+    // sync the projectile tracer cloud
+    syncProjectiles(projectiles) {
+      const n = Math.min(projectiles.length, this.capN);
+      this.points.visible = n > 0;
+      if (!n) return;
+      for (let i = 0; i < n; i++) {
+        const p = projectiles[i];
+        this.pPos[i * 3] = p.pos.x; this.pPos[i * 3 + 1] = p.pos.y; this.pPos[i * 3 + 2] = p.pos.z;
+        const c = p.color; this.pCol[i * 3] = c[0] / 255; this.pCol[i * 3 + 1] = c[1] / 255; this.pCol[i * 3 + 2] = c[2] / 255;
+      }
+      this.pGeo.setDrawRange(0, n);
+      this.pGeo.attributes.position.needsUpdate = true;
+      this.pGeo.attributes.color.needsUpdate = true;
+    }
+
+    update(dt, t) {
+      // flashes expand + fade
+      for (let i = this.flashes.length - 1; i >= 0; i--) {
+        const f = this.flashes[i];
+        f.life -= dt;
+        if (f.life <= 0) { f.mesh.visible = false; this.pool.push(f); this.flashes.splice(i, 1); continue; }
+        const k = 1 - f.life / f.max;      // 0 -> 1
+        const s = f.size * (0.3 + k * 1.7);
+        f.mesh.scale.set(s, s, s);
+        f.mesh.material.opacity = (1 - k) * 0.9;
+        // face camera
+        f.mesh.quaternion.copy(this.scene.camera.quaternion);
+      }
+    }
+  }
+
+  E.FX = FX;
 })(window.E = window.E || {});
 
 // ---- js/render/hulls.js ----
@@ -1595,6 +2127,7 @@
     constructor(canvas) {
       this.scene = new E.Scene(canvas);
       this.camera = new E.Camera(this.scene);
+      this.fx = new E.FX(this.scene);
       this.terrain = null;
       this.planetGroup = null;
       this.sky = null;
@@ -1712,6 +2245,32 @@
       for (const id of [...this.obj.keys()]) if (!seen.has(id)) { const m = this.obj.get(id); this.objGroup.remove(m.g); this.obj.delete(id); }
     }
 
+    // Target ring on the unit the focused capital/ship is engaging.
+    syncTarget(world) {
+      const T = E.THREE;
+      if (!this.targetRing) {
+        this.targetRing = new T.Mesh(new T.TorusGeometry(1, 0.6, 8, 28), new T.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.8, side: T.DoubleSide, depthTest: false }));
+        this.targetRing.rotation.x = Math.PI / 2; this.targetRing.renderOrder = 20;
+        this.scene.hud3d.add(this.targetRing);
+      }
+      const f = world.focusedUnit();
+      if (!f || (f.kind !== 'capital' && f.kind !== 'fighter')) { this.targetRing.visible = false; return; }
+      // nearest enemy unit
+      let best = null, bd = Infinity;
+      for (const e of world.unitList()) {
+        if (!e.alive || e.team === f.team) continue;
+        const d = E.distXZ2(f.pos, e.pos);
+        if (d < bd) { bd = d; best = e; }
+      }
+      if (!best) { this.targetRing.visible = false; this.currentTarget = null; return; }
+      this.currentTarget = best; this.currentTargetDist = Math.sqrt(bd);
+      this.targetRing.visible = true;
+      this.targetRing.position.set(best.pos.x, best.pos.y + best.viewH * 0.5, best.pos.z);
+      const s = Math.max(10, best.r * 1.6);
+      this.targetRing.scale.set(s, s, s);
+      this.targetRing.rotation.z += 0.02;
+    }
+
     // Per-frame animation + camera + render.
     update(dt, t, world) {
       this.time = t;
@@ -1722,6 +2281,7 @@
       if (world) {
         this.syncUnits(world.unitList(), dt);
         this.syncObjectives(world.objectives, dt);
+        this.syncTarget(world);
         // focus: possessed unit, else the centroid of my force
         let focus = world.focusedUnit();
         if (!focus && world.playerUnit && world.playerUnit.alive) {
@@ -1731,6 +2291,7 @@
         }
         this.camera.setMode(world.mode(), focus);
       }
+      this.fx.update(dt, t);
       this.camera.update(dt, t);
       // never let the camera sink below the surface
       if (this.terrain) {
@@ -1986,6 +2547,7 @@
       this.renderer.setPlanet(this.world.planet);
       this.buildHud();
       this.bindInput();
+      this.startMusic();
       this.running = true;
       this.last = performance.now();
       this._raf = requestAnimationFrame(this.frame);
@@ -2001,8 +2563,12 @@
       this.pollInput();
       this.acc.add(dt);
       this.acc.pump((h) => this.world.tick(h));
-      // drain sim events into FX + audio later
-      this.world.drainEvents();
+      // drain sim events into FX + audio
+      const events = this.world.drainEvents();
+      if (events.length) { this.renderer.fx.applyEvents(events); if (E.Music && E.Music.on) E.Music.onEvents(events); }
+      if (E.Music) E.Music.setIntensity(this.world.intensity);
+      if (this.world.winner && !this._won) { this._won = true; if (E.Music && E.Music.on) E.Music.victory(this.world.winner); }
+      this.renderer.fx.syncProjectiles(this.world.projectiles);
       this.renderer.update(dt, this.world.t, this.world);
       if (this.HUD) this.HUD.update(this.world, this.renderer);
       this._raf = requestAnimationFrame(this.frame);
@@ -2133,22 +2699,43 @@
       this.canvas.addEventListener('click', () => { if (this.world.mode() === 'commander') this.lockPointer && this.unlock(); });
     }
 
+    // Audio needs a user gesture to start. Unlock on the first click/keypress.
+    startMusic() {
+      const unlock = () => {
+        if (E.Music && !E.Music.on) { E.Music.start(this.world.human); E.Music.setIntensity(this.world.intensity); }
+        else if (E.Music && E.Music.resume) E.Music.resume();
+        window.removeEventListener('pointerdown', unlock);
+        window.removeEventListener('keydown', unlock);
+      };
+      window.addEventListener('pointerdown', unlock);
+      window.addEventListener('keydown', unlock);
+    }
+
     buildHud() {
       const root = document.getElementById('ui');
       if (!root) return;
       root.innerHTML = `
         <div id="gc-top" class="gc-top"></div>
         <div class="gc-crosshair" id="gc-cross" style="display:none"></div>
+        <div id="gc-bridge" class="gc-bridge" style="display:none"></div>
         <div id="gc-help" class="gc-help">
           <b>Galactic Conquest</b> · Left-click select · Left-drag box · Right-click attack-move · <b>F</b> board · <b>V</b> drive selected · <b>C/Esc</b> release · <b>↑↓←→</b> orbit · WASD move
         </div>`;
       this.HUD = {
         top: document.getElementById('gc-top'),
         cross: document.getElementById('gc-cross'),
+        bridge: document.getElementById('gc-bridge'),
         update: (w, r) => {
           const m = w.mode();
           const u = w.focusedUnit();
           this.HUD.cross.style.display = (m === 'fps' || m === 'fighter') ? 'block' : 'none';
+          const isShip = (m === 'ship' || m === 'fighter') && u;
+          this.HUD.bridge.style.display = isShip ? 'block' : 'none';
+          // throttle DOM rebuild to ~12 Hz
+          this._hudT = (this._hudT || 0) + 1;
+          if (this._hudT % 5 !== 0 && isShip === this._wasShip) return;
+          this._wasShip = isShip;
+          if (isShip) this.bridgeHud(w, u, r);
           const objs = w.objectives;
           const aegisCap = objs.filter(o => o.owner === 'aegis').length;
           const verdantCap = objs.filter(o => o.owner === 'verdant').length;
@@ -2159,6 +2746,31 @@
             `<span class="gc-chip">Obj <b class="aegis">${aegisCap}</b> : <b class="verdant">${verdantCap}</b></span>` +
             `<span class="gc-chip">${w.selected.length ? w.selected.length + ' selected' : (w.units.length) + ' units'}</span>` +
             (w.winner ? `<span class="gc-chip" style="border-color:var(--ok)">VICTORY: ${w.winner.toUpperCase()}</span>` : '');
+        },
+        bridgeHud: (w, u, r) => {
+          const f = E.faction(u.faction);
+          const C = E.CAPITALS[u.type] || {};
+          const hpF = E.clamp01(u.hp / u.maxHp);
+          const shF = u.maxShield ? E.clamp01(u.shield / u.maxShield) : 0;
+          const t = r.currentTarget;
+          const tr = t ? Math.round(r.currentTargetDist) : '—';
+          const tName = t ? E.unitName(t.kind, t.type) : '—';
+          const tFaction = t ? (t.team === 'aegis' ? 'Concord' : 'Pact') : '—';
+          const bays = Math.round(u.bays != null ? u.bays : (C.bays || 0));
+          this.HUD.bridge.innerHTML = `
+            <div class="bridge-fac ${u.team}">${f.short} · ${C.name || u.type}</div>
+            <div class="bridge-bars">
+              <div class="bar hp"><i style="width:${(hpF * 100).toFixed(1)}%"></i><span>${(u.hp | 0).toLocaleString()} / ${u.maxHp.toLocaleString()}</span></div>
+              <div class="bar sh"><i style="width:${(shF * 100).toFixed(1)}%"></i><span>${(u.shield | 0).toLocaleString()}</span></div>
+            </div>
+            <div class="bridge-target">
+              <div class="lbl">TARGET</div>
+              <div class="tv">${tName} <b>${tFaction}</b> · ${tr}m</div>
+            </div>
+            <div class="bridge-sub">
+              <div class="lbl">BAYS</div><div class="tv">${bays} ${u.kind === 'fighter' ? '' : 'fighters'}</div>
+              <div class="lbl">SPEED</div><div class="tv">${u.speed} m/s</div>
+            </div>`;
         }
       };
     }
@@ -2199,7 +2811,7 @@
   window.GC.start = start;
   window.GC.E = E;
   // Defer to the next frame so the canvas is laid out and a menu can unlock audio.
-  const auto = () => start(window.GC_AUTOSTART || { biome: 'tundra', seed: 7 });
+  const auto = () => start(window.GC_AUTOSTART || { biome: 'desert', seed: 7 });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(auto));
   else requestAnimationFrame(auto);
 })(window.E = window.E || {});

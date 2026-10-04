@@ -32,6 +32,7 @@
       this.renderer.setPlanet(this.world.planet);
       this.buildHud();
       this.bindInput();
+      this.startMusic();
       this.running = true;
       this.last = performance.now();
       this._raf = requestAnimationFrame(this.frame);
@@ -47,8 +48,12 @@
       this.pollInput();
       this.acc.add(dt);
       this.acc.pump((h) => this.world.tick(h));
-      // drain sim events into FX + audio later
-      this.world.drainEvents();
+      // drain sim events into FX + audio
+      const events = this.world.drainEvents();
+      if (events.length) { this.renderer.fx.applyEvents(events); if (E.Music && E.Music.on) E.Music.onEvents(events); }
+      if (E.Music) E.Music.setIntensity(this.world.intensity);
+      if (this.world.winner && !this._won) { this._won = true; if (E.Music && E.Music.on) E.Music.victory(this.world.winner); }
+      this.renderer.fx.syncProjectiles(this.world.projectiles);
       this.renderer.update(dt, this.world.t, this.world);
       if (this.HUD) this.HUD.update(this.world, this.renderer);
       this._raf = requestAnimationFrame(this.frame);
@@ -179,22 +184,43 @@
       this.canvas.addEventListener('click', () => { if (this.world.mode() === 'commander') this.lockPointer && this.unlock(); });
     }
 
+    // Audio needs a user gesture to start. Unlock on the first click/keypress.
+    startMusic() {
+      const unlock = () => {
+        if (E.Music && !E.Music.on) { E.Music.start(this.world.human); E.Music.setIntensity(this.world.intensity); }
+        else if (E.Music && E.Music.resume) E.Music.resume();
+        window.removeEventListener('pointerdown', unlock);
+        window.removeEventListener('keydown', unlock);
+      };
+      window.addEventListener('pointerdown', unlock);
+      window.addEventListener('keydown', unlock);
+    }
+
     buildHud() {
       const root = document.getElementById('ui');
       if (!root) return;
       root.innerHTML = `
         <div id="gc-top" class="gc-top"></div>
         <div class="gc-crosshair" id="gc-cross" style="display:none"></div>
+        <div id="gc-bridge" class="gc-bridge" style="display:none"></div>
         <div id="gc-help" class="gc-help">
           <b>Galactic Conquest</b> · Left-click select · Left-drag box · Right-click attack-move · <b>F</b> board · <b>V</b> drive selected · <b>C/Esc</b> release · <b>↑↓←→</b> orbit · WASD move
         </div>`;
       this.HUD = {
         top: document.getElementById('gc-top'),
         cross: document.getElementById('gc-cross'),
+        bridge: document.getElementById('gc-bridge'),
         update: (w, r) => {
           const m = w.mode();
           const u = w.focusedUnit();
           this.HUD.cross.style.display = (m === 'fps' || m === 'fighter') ? 'block' : 'none';
+          const isShip = (m === 'ship' || m === 'fighter') && u;
+          this.HUD.bridge.style.display = isShip ? 'block' : 'none';
+          // throttle DOM rebuild to ~12 Hz
+          this._hudT = (this._hudT || 0) + 1;
+          if (this._hudT % 5 !== 0 && isShip === this._wasShip) return;
+          this._wasShip = isShip;
+          if (isShip) this.bridgeHud(w, u, r);
           const objs = w.objectives;
           const aegisCap = objs.filter(o => o.owner === 'aegis').length;
           const verdantCap = objs.filter(o => o.owner === 'verdant').length;
@@ -205,6 +231,31 @@
             `<span class="gc-chip">Obj <b class="aegis">${aegisCap}</b> : <b class="verdant">${verdantCap}</b></span>` +
             `<span class="gc-chip">${w.selected.length ? w.selected.length + ' selected' : (w.units.length) + ' units'}</span>` +
             (w.winner ? `<span class="gc-chip" style="border-color:var(--ok)">VICTORY: ${w.winner.toUpperCase()}</span>` : '');
+        },
+        bridgeHud: (w, u, r) => {
+          const f = E.faction(u.faction);
+          const C = E.CAPITALS[u.type] || {};
+          const hpF = E.clamp01(u.hp / u.maxHp);
+          const shF = u.maxShield ? E.clamp01(u.shield / u.maxShield) : 0;
+          const t = r.currentTarget;
+          const tr = t ? Math.round(r.currentTargetDist) : '—';
+          const tName = t ? E.unitName(t.kind, t.type) : '—';
+          const tFaction = t ? (t.team === 'aegis' ? 'Concord' : 'Pact') : '—';
+          const bays = Math.round(u.bays != null ? u.bays : (C.bays || 0));
+          this.HUD.bridge.innerHTML = `
+            <div class="bridge-fac ${u.team}">${f.short} · ${C.name || u.type}</div>
+            <div class="bridge-bars">
+              <div class="bar hp"><i style="width:${(hpF * 100).toFixed(1)}%"></i><span>${(u.hp | 0).toLocaleString()} / ${u.maxHp.toLocaleString()}</span></div>
+              <div class="bar sh"><i style="width:${(shF * 100).toFixed(1)}%"></i><span>${(u.shield | 0).toLocaleString()}</span></div>
+            </div>
+            <div class="bridge-target">
+              <div class="lbl">TARGET</div>
+              <div class="tv">${tName} <b>${tFaction}</b> · ${tr}m</div>
+            </div>
+            <div class="bridge-sub">
+              <div class="lbl">BAYS</div><div class="tv">${bays} ${u.kind === 'fighter' ? '' : 'fighters'}</div>
+              <div class="lbl">SPEED</div><div class="tv">${u.speed} m/s</div>
+            </div>`;
         }
       };
     }

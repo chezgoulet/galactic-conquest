@@ -13,7 +13,7 @@
   function detectRange(u) {
     return u.kind === 'capital' ? 1200 : u.kind === 'fighter' ? 340 : u.kind === 'vehicle' ? 300 : (u.role === 'recon' ? 220 : 140);
   }
-  function airAlt(u) { return u.kind === 'capital' ? 520 : 130; }
+  function airAlt(u) { return u.kind === 'capital' ? 200 : 130; }
   function isAir(u) { return u.kind === 'fighter' || u.kind === 'capital'; }
 
   function nearestEnemy(w, u, range) {
@@ -76,35 +76,39 @@
   }
 
   function ai(u, w, dt) {
+    const isCap = u.kind === 'capital';
     const range = weaponOf(u).range || 100;
-    const det = detectRange(u);
-    const enemy = nearestEnemy(w, u, det);
-    // objective to push (enemy or neutral)
-    const obj = nearestObjective(w, u, u.team);
+    const det = isCap ? 1500 : detectRange(u);
+    // capitals seek the enemy flagship (long-range arrays sense it even beyond
+    // gun range); everyone else seeks the nearest enemy in sight
+    const enemy = isCap ? nearestEnemyIn(w, u, 1e9, e => e.kind === 'capital') : nearestEnemy(w, u, det);
+    const obj = isCap ? null : nearestObjective(w, u, u.team);
     // target point
     let tx, tz;
     if (enemy) { tx = enemy.pos.x; tz = enemy.pos.z; }
     else if (obj) { tx = obj.pos.x; tz = obj.pos.z; }
-    else { // advance to enemy HQ
+    else { // advance to enemy HQ / stay in formation
+      if (isCap) return; // hold position
       const hq = w.objectives.find(o => o.role === 'hq' && o.owner !== u.team);
       if (!hq) return;
       tx = hq.pos.x; tz = hq.pos.z;
     }
     const dx = tx - u.pos.x, dz = tz - u.pos.z;
     const dist = Math.hypot(dx, dz);
-    const stopR = obj && (Math.abs(tx - obj.pos.x) < 2 && Math.abs(tz - obj.pos.z) < 2) ? obj.radius * 0.7 : 0;
+    const stopR = isCap ? (enemy ? 480 : 0) : (obj && (Math.abs(tx - obj.pos.x) < 2 && Math.abs(tz - obj.pos.z) < 2) ? obj.radius * 0.7 : 0);
     // move toward target
     if (dist > (stopR + 2)) {
       const desired = Math.atan2(dx, dz);
       u.yaw = E.lerpAngle(u.yaw, desired, Math.min(1, u.turn * dt));
-      const sp = u.speed * (enemy && dist < range * 0.6 ? 0.5 : 1); // slow when engaging
+      const sp = u.speed * (enemy && dist < (isCap ? 600 : range * 0.6) ? 0.5 : 1);
       u.pos.x += Math.sin(u.yaw) * sp * dt;
       u.pos.z += Math.cos(u.yaw) * sp * dt;
     }
     // altitude
     const targetY = isAir(u) ? w.groundY(u.pos.x, u.pos.z) + airAlt(u) + Math.sin(w.t + u.id) * 20 : w.groundY(u.pos.x, u.pos.z);
     u.pos.y += (targetY - u.pos.y) * Math.min(1, dt * (isAir(u) ? 1.5 : 6));
-    // fire
+    // fire (capitals fire via capitalWeapons; others use their own gun)
+    if (isCap) return;
     u.fireT = Math.max(0, u.fireT - dt);
     if (enemy && dist < range) fireAt(u, w, enemy);
     else if (obj && dist < obj.radius) fireAt(u, w, null, obj); // shoot the objective
@@ -132,6 +136,86 @@
     w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: u.faction, kind: wp.kind });
   }
 
+  // ── capital ship weapons: main (long), side (medium), point-defense (close) ──
+  function capitalWeapons(w, dt) {
+    for (const cap of w.units) {
+      if (!cap.alive || cap.kind !== 'capital') continue;
+      const C = E.CAPITALS[cap.type] || E.CAPITALS.cruiser;
+      cap._cwT = cap._cwT || { main: 0, side: 0, pd: 0, mis: 0 };
+      cap._cwT.main -= dt; cap._cwT.side -= dt; cap._cwT.pd -= dt; cap._cwT.mis -= dt;
+      // main battery: far, slow, heavy
+      if (cap._cwT.main <= 0) {
+        const e = nearestEnemyIn(w, cap, C.main.range, u => u.kind !== 'infantry');
+        if (e) { capitalShot(w, cap, e, C.main, 'main'); cap._cwT.main = 1 / C.main.rate; }
+      }
+      // side guns: medium
+      if (cap._cwT.side <= 0) {
+        const e = nearestEnemyIn(w, cap, C.side.range, u => true);
+        if (e) { capitalShot(w, cap, e, C.side, 'side'); cap._cwT.side = 1 / C.side.rate; }
+      }
+      // point defense: intercept nearby fighters
+      if (cap._cwT.pd <= 0) {
+        const e = nearestEnemyIn(w, cap, C.pd.range, u => u.kind === 'fighter');
+        if (e) { capitalShot(w, cap, e, C.pd, 'pd'); cap._cwT.pd = 1 / C.pd.rate; }
+      }
+      // occasional missile vs capitals
+      if (cap._cwT.mis <= 0) {
+        const e = nearestEnemyIn(w, cap, (C.missile || {}).range || 0, u => u.kind === 'capital');
+        if (e) { fireMissile(w, cap, e, C.missile); cap._cwT.mis = 1 / (C.missile.rate || 0.5); }
+      }
+    }
+  }
+
+  function capitalShot(w, cap, target, wp, which) {
+    const muzzle = E.V3.make(cap.pos.x + Math.sin(cap.yaw) * cap.r * 0.8, cap.pos.y + cap.viewH * 0.5, cap.pos.z + Math.cos(cap.yaw) * cap.r * 0.8);
+    const dir = E.V3.normalize(E.V3.sub(target.pos, muzzle));
+    const sp = wp.spread || 0.01;
+    dir.x += (w.rng.next() - 0.5) * sp; dir.y += (w.rng.next() - 0.5) * sp; dir.z += (w.rng.next() - 0.5) * sp;
+    E.V3.normalize(dir);
+    const spd = wp.speed || 200;
+    w.projectiles.push({ pos: muzzle, dir, speed: spd, dmg: wp.dmg, team: cap.team, life: (wp.range || 600) / spd + 1, color: E.faction(cap.faction).palette.engine, faction: cap.faction, kind: which === 'main' ? 'railgun' : 'pulse', r: which === 'main' ? 3 : 1.5 });
+    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: cap.faction, kind: which === 'main' ? 'capital' : 'pulse' });
+  }
+
+  function fireMissile(w, cap, target, wp) {
+    const muzzle = E.V3.make(cap.pos.x, cap.pos.y, cap.pos.z);
+    const dir = E.V3.normalize(E.V3.sub(target.pos, muzzle));
+    w.projectiles.push({ pos: muzzle, dir, speed: wp.speed || 90, dmg: wp.dmg, team: cap.team, life: (wp.range || 600) / (wp.speed || 90) + 2, color: E.faction(cap.faction).palette.accent, faction: cap.faction, kind: 'missile', r: 2.5, seek: wp.seek || 1, target });
+    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: cap.faction, kind: 'missile' });
+  }
+
+  // capital ships launch fighters into the air when their bays have slots
+  function launchFighters(w, dt) {
+    for (const cap of w.units) {
+      if (!cap.alive || cap.kind !== 'capital') continue;
+      const C = E.CAPITALS[cap.type] || E.CAPITALS.cruiser;
+      cap.bays = cap.bays == null ? C.bays : cap.bays;
+      const myFighters = w.units.filter(u => u.alive && u.kind === 'fighter' && u.team === cap.team && (u.pos.y - cap.pos.y) < 300).length;
+      cap.bayT = (cap.bayT || 0) - dt;
+      if (cap.bays > 0 && myFighters < C.bays && cap.bayT <= 0) {
+        cap.bayT = 2.5;
+        cap.bays--;
+        const ftype = cap.faction === 'aegis' ? 'interceptor' : 'strike';
+        const f = w.unit('fighter', cap.team, ftype, ftype, { x: cap.pos.x, z: cap.pos.z });
+        f.pos.y = cap.pos.y - 10;
+        w.events.push({ type: 'launch', pos: { x: f.pos.x, y: f.pos.y, z: f.pos.z }, faction: cap.faction });
+      }
+      // if the fighter group is low, recharge bays slowly
+      if (myFighters < C.bays) cap.bays = Math.min(C.bays, cap.bays + dt * 0.2);
+    }
+  }
+
+  function nearestEnemyIn(w, u, range, pred) {
+    let best = null, bd = range * range;
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      if (pred && !pred(e)) continue;
+      const d = E.distXZ2(u.pos, e.pos);
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+
   // ── combat ───────────────────────────────────────────────────
   function applyDamage(w, target, dmg, source) {
     if (!target.alive) return;
@@ -155,6 +239,14 @@
   function updateProjectiles(w, dt) {
     for (let i = w.projectiles.length - 1; i >= 0; i--) {
       const p = w.projectiles[i];
+      // missiles steer toward their target
+      if (p.seek && p.target && p.target.alive) {
+        const want = E.V3.normalize(E.V3.sub(p.target.pos, p.pos));
+        p.dir.x += (want.x - p.dir.x) * Math.min(1, p.seek * dt * 3);
+        p.dir.y += (want.y - p.dir.y) * Math.min(1, p.seek * dt * 3);
+        p.dir.z += (want.z - p.dir.z) * Math.min(1, p.seek * dt * 3);
+        E.V3.normalize(p.dir);
+      }
       p.pos.x += p.dir.x * p.speed * dt; p.pos.y += p.dir.y * p.speed * dt; p.pos.z += p.dir.z * p.speed * dt;
       p.life -= dt;
       let dead = p.life <= 0;
@@ -252,6 +344,8 @@
     }
     // mark engaged (has a recent target) for intensity
     for (const u of w.units) if (u.alive && nearestEnemy(w, u, detectRange(u))) u._engaged = true;
+    capitalWeapons(w, dt);
+    launchFighters(w, dt);
     updateProjectiles(w, dt);
     regen(w, dt);
     updateObjectives(w, dt);
