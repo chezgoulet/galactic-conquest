@@ -54,9 +54,11 @@
     loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: ['desert', 'jungle', 'urban', 'tundra'][(Math.random() * 4) | 0], seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); then(); });
   }
 
-  function boot() {
+  async function boot() {
     try {
       menu = new E.Menu(ui());
+      // the WebGPU renderer initialises asynchronously (and falls back to WebGL2 on its own)
+      await E.Scene.preinit(document.getElementById('view'), menu.settings);
       game = new E.Game(document.getElementById('view'), menu.settings);
       menu.onStart = battle;
       window.GC.game = game; window.GC.menu = menu; window.GC.battle = battle; window.GC.back = back;
@@ -66,7 +68,7 @@
       console.error('GC boot failed:', err);
       window.__GC_ERROR__ = (err && err.stack) || String(err);
       const el = document.getElementById('gc-loading') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'gc-loading' }));
-      el.style.display = 'grid'; el.innerHTML = '<div><div class="l-title">Could not start<span>This game needs WebGL 2. ' + String(err && err.message || err).replace(/</g, '&lt;') + '</span></div></div>';
+      el.style.display = 'grid'; el.innerHTML = '<div><div class="l-title">Could not start<span>This game needs WebGPU or WebGL 2. ' + String(err && err.message || err).replace(/</g, '&lt;') + '</span></div></div>';
     }
   }
 

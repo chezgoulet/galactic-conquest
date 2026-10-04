@@ -7378,6 +7378,181 @@
   E.Relay = Relay;
 })(window.E = window.E || {});
 
+// ---- js/render/atmo.js ----
+// Screen-space atmosphere, composited in HDR before the temporal resolve:
+//   - height fog (analytic exponential-height integral along the view ray, with
+//     patchy density and a sun in-scatter lobe) = aerial perspective
+//   - ray-marched volumetric cloud layer between ALT.cloudLo and ALT.cloudHi (700-1000 m):
+//     reads from below, from inside the slab and from above; stops at scene geometry
+//   - screen-space light shafts (god rays) toward the sun, strongest in low, hazy air
+// All parameters live in E.Atmo.U (TSL uniforms); Scene drives them from the biome
+// (js/data/biomes.js through sky.js) and from camera altitude.
+// Honest scope: these are screen-space/analytic approximations, not a froxel volume.
+(function (E) {
+  'use strict';
+
+  let U = null, noiseTex = null;
+  function uniforms() {
+    if (U) return U;
+    const T = E.THREE, { uniform } = T.TSL;
+    U = {
+      fogColor: uniform(new T.Color(0.6, 0.7, 0.8)), sunColor: uniform(new T.Color(1, 0.9, 0.7)), sunDir: uniform(new T.Vector3(0, 1, 0)),
+      density: uniform(0.0006), heightK: uniform(0.006), base: uniform(0), maxFog: uniform(0.96),
+      cloudLo: uniform(700), cloudHi: uniform(1000), cover: uniform(0.4), cloudDensity: uniform(0.045),
+      cloudCol: uniform(new T.Color(1, 1, 1)), cloudDark: uniform(new T.Color(0.5, 0.55, 0.65)), wind: uniform(new T.Vector3()),
+      shaft: uniform(0.5), camPos: uniform(new T.Vector3()), frame: uniform(0), airless: uniform(0),
+    };
+    return U;
+  }
+
+  // Tileable 64^3 noise volume, generated on the CPU (no assets): R = fbm value noise, G = inverted Worley, B = finer fbm.
+  function noiseVolume() {
+    if (noiseTex) return noiseTex;
+    const T = E.THREE, N = 64, data = new Uint8Array(N * N * N * 4);
+    const hash = (x, y, z, s) => { let h = (x * 374761393 + y * 668265263 + z * 2147483647 + s * 1274126177) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967295; };
+    const vnoise = (x, y, z, p, s) => {
+      const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), fx = x - xi, fy = y - yi, fz = z - zi;
+      const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy), w = fz * fz * (3 - 2 * fz);
+      const g = (a, b, c) => hash(((xi + a) % p + p) % p, ((yi + b) % p + p) % p, ((zi + c) % p + p) % p, s);
+      const l = (a, b, t) => a + (b - a) * t;
+      return l(l(l(g(0, 0, 0), g(1, 0, 0), u), l(g(0, 1, 0), g(1, 1, 0), u), v), l(l(g(0, 0, 1), g(1, 0, 1), u), l(g(0, 1, 1), g(1, 1, 1), u), v), w);
+    };
+    const fbm = (x, y, z, base, s) => { let a = 0.5, sum = 0, p = base, f = 1; for (let o = 0; o < 4; o++) { sum += a * vnoise(x * p / N * f, y * p / N * f, z * p / N * f, p * f, s + o); f *= 2; a *= 0.5; } return sum / 0.9375; };
+    const cells = 6, pts = [];
+    for (let i = 0; i < cells * cells * cells; i++) pts.push([hash(i, 1, 2, 9), hash(i, 3, 4, 9), hash(i, 5, 6, 9)]);
+    const worley = (x, y, z) => {
+      const px = x / N * cells, py = y / N * cells, pz = z / N * cells, ix = Math.floor(px), iy = Math.floor(py), iz = Math.floor(pz);
+      let md = 9;
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) {
+        const cx = ix + a, cy = iy + b, cz = iz + c, k = (((cx % cells) + cells) % cells) + (((cy % cells) + cells) % cells) * cells + (((cz % cells) + cells) % cells) * cells * cells;
+        const q = pts[k], dx = cx + q[0] - px, dy = cy + q[1] - py, dz = cz + q[2] - pz, d = dx * dx + dy * dy + dz * dz;
+        if (d < md) md = d;
+      }
+      return 1 - Math.min(1, Math.sqrt(md));
+    };
+    for (let z = 0, i = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++, i += 4) {
+      data[i] = Math.min(255, fbm(x, y, z, 4, 1) * 255);
+      data[i + 1] = Math.min(255, worley(x, y, z) * 255);
+      data[i + 2] = Math.min(255, fbm(x, y, z, 8, 7) * 255);
+      data[i + 3] = 255;
+    }
+    const t = new T.Data3DTexture(data, N, N, N);
+    t.format = T.RGBAFormat; t.type = T.UnsignedByteType; t.minFilter = t.magFilter = T.LinearFilter;
+    t.wrapS = t.wrapT = t.wrapR = T.RepeatWrapping; t.generateMipmaps = false; t.unpackAlignment = 1; t.needsUpdate = true;
+    return (noiseTex = t);
+  }
+
+  // Build the compositing node. opts: color (texture node), depth (texture node), camera, near, far,
+  // fog, clouds, shafts (booleans), cloudSteps, shaftSteps.
+  function node(o) {
+    const T = E.THREE, X = T.TSL, A = uniforms(), N = E.TSLN;
+    const { Fn, float, vec2, vec3, vec4, uniform, uv, dot, normalize, length, exp, max, min, pow, mix, smoothstep, select, clamp, abs, If, Loop, int, texture3D,
+      getViewPosition, perspectiveDepthToViewZ, interleavedGradientNoise, screenCoordinate, sin, floor, fract, saturate } = X;
+    const cam = o.camera;
+    const projInv = uniform(cam.projectionMatrixInverse), camWorld = uniform(cam.matrixWorld), proj = uniform(cam.projectionMatrix), view = uniform(cam.matrixWorldInverse);
+    const near = float(o.near), far = float(o.far);
+    const vol = o.clouds ? texture3D(noiseVolume()) : null;
+    return Fn(() => {
+      const p = uv();
+      const src = o.color.sample(p);
+      const dep = o.depth.sample(p).x;
+      const vz = perspectiveDepthToViewZ(dep, near, far);
+      const isSky = vz.negate().greaterThan(far.mul(0.985));
+      const vp = getViewPosition(p, dep, projInv);
+      const wo = camWorld.mul(vec4(vp, 0)).xyz;                   // world-space offset from the camera to the surface
+      const dist0 = length(wo), rd = wo.div(max(dist0, 1e-4));
+      const ro = A.camPos;
+      const dist = min(dist0, float(60000));
+      const col = src.rgb.toVar();
+      const jit = interleavedGradientNoise(screenCoordinate.xy.add(A.frame.mul(5.588)));
+
+      // height fog (skipped for sky pixels: the dome already carries its own horizon haze)
+      if (o.fog) {
+        const t = rd.y.mul(A.heightK);
+        const f = select(abs(t).lessThan(1e-5), dist, float(1).sub(exp(dist.negate().mul(t))).div(t));
+        const wpos = ro.add(rd.mul(min(dist, float(3000))));
+        const patch = N.noise2(wpos.xz.mul(0.004).add(A.frame.mul(0.0))).mul(0.6).add(0.7);
+        const amt = A.density.mul(exp(clamp(ro.y.sub(A.base).mul(A.heightK).negate(), -20, 4))).mul(f).mul(patch);
+        const fog = clamp(float(1).sub(exp(amt.negate())), 0, A.maxFog).mul(select(isSky, float(0), float(1)));
+        const sun = pow(max(dot(rd, A.sunDir), 0), 8);
+        col.assign(mix(col, mix(A.fogColor, A.sunColor, sun.mul(0.55)), fog));
+      }
+
+      // volumetric clouds
+      if (o.clouds) {
+        const lo = A.cloudLo, hi = A.cloudHi, thick = hi.sub(lo);
+        const tA = lo.sub(ro.y).div(select(abs(rd.y).lessThan(1e-4), float(1e-4), rd.y)), tB = hi.sub(ro.y).div(select(abs(rd.y).lessThan(1e-4), float(1e-4), rd.y));
+        const inSlab = ro.y.greaterThan(lo).and(ro.y.lessThan(hi));
+        const horiz = abs(rd.y).lessThan(1e-4);
+        const t0 = select(horiz, float(0), max(min(tA, tB), 0));
+        const t1raw = select(horiz, select(inSlab, float(9000), float(-1)), max(tA, tB));
+        const t1 = min(min(t1raw, select(isSky, float(60000), dist)), t0.add(float(o.cloudSteps * 420)));
+        const seg = max(t1.sub(t0), 0);
+        const dtv = seg.div(float(o.cloudSteps));
+        const thr = float(0.74).sub(A.cover.mul(0.5));
+        const trans = float(1).toVar(), scat = vec3(0).toVar();
+        If(seg.greaterThan(1).and(A.cover.greaterThan(0.01)), () => {
+          const cosS = dot(rd, A.sunDir);
+          const g = 0.55, hg = float(1 - g * g).div(pow(float(1 + g * g).sub(cosS.mul(2 * g)), 1.5).mul(12.566));
+          const phase = hg.mul(0.9).add(0.1 / 12.566 * 4).mul(4.0);
+          for (let i = 0; i < o.cloudSteps; i++) {
+            const tt = t0.add(dtv.mul(float(i).add(jit)));
+            const pp = ro.add(rd.mul(tt));
+            const h = clamp(pp.y.sub(lo).div(thick), 0, 1);
+            const prof = smoothstep(0, 0.18, h).mul(smoothstep(1.0, 0.55, h));
+            const q0 = pp.add(A.wind), q = q0.add(vol.sample(q0.mul(1 / 2300)).xzy.sub(0.5).mul(1400));
+            const q2 = vec3(q.z, q.y, q.x.negate()).mul(1 / 3370).add(vec3(0.37, 0.11, 0.61)), base = vol.sample(q.mul(1 / 5200)).x.mul(0.6).add(vol.sample(q2).x.mul(0.4)), det = vol.sample(q.mul(1 / 1100)).y.mul(0.5).add(vol.sample(q.mul(1 / 380)).z.mul(0.5));
+            const shape = base.mul(0.78).add(det.mul(0.22).mul(float(1).sub(base.mul(0.4))));
+            const dens = clamp(shape.sub(thr).mul(3.2), 0, 1).mul(prof).mul(A.cloudDensity);
+            If(dens.greaterThan(0.0005), () => {
+              // light: two taps toward the sun through the layer
+              const sd = A.sunDir;
+              const l1 = vol.sample(pp.add(sd.mul(thick.mul(0.18))).add(A.wind).mul(1 / 5200)).x, l2 = vol.sample(pp.add(sd.mul(thick.mul(0.45))).add(A.wind).mul(1 / 5200)).x;
+              const od = clamp(l1.sub(thr).mul(3.2), 0, 1).add(clamp(l2.sub(thr).mul(3.2), 0, 1)).mul(A.cloudDensity).mul(thick.mul(0.3));
+              const beer = exp(od.negate().mul(1.1)), powder = float(1).sub(exp(dens.mul(dtv).mul(-2.0)));
+              const lightE = beer.mul(mix(float(1), powder.mul(2.0), 0.5)).mul(max(sd.y.mul(2.5).add(0.5), 0.0).min(1.0));
+              const amb = mix(A.cloudDark, A.cloudCol, h.mul(0.8).add(0.2));
+              const lit = A.sunColor.mul(lightE).mul(phase).mul(0.9).add(amb.mul(0.55)).mul(A.cloudCol.mul(0.5).add(0.5));
+              const ext = dens.mul(dtv);
+              const stepT = exp(ext.negate());
+              scat.addAssign(lit.mul(trans).mul(float(1).sub(stepT)));
+              trans.mulAssign(stepT);
+            });
+          }
+        });
+        // aerial perspective: distant cloud fades into the haze
+        const fade = exp(t0.negate().div(select(isSky, float(26000), float(40000))));
+        col.assign(col.mul(trans).add(scat.mul(fade)).add(A.fogColor.mul(float(1).sub(fade)).mul(float(1).sub(trans)).mul(0.9)));
+      }
+
+      // light shafts toward the sun
+      if (o.shafts) {
+        const sc = proj.mul(view.mul(vec4(ro.add(A.sunDir.mul(1000)), 1)));
+        const front = sc.w.greaterThan(0.1);
+        const ndc = sc.xy.div(max(sc.w, 0.1));
+        const suv = vec2(ndc.x.mul(0.5).add(0.5), ndc.y.mul(0.5).add(0.5).oneMinus());
+        const acc = float(0).toVar();
+        const dl = suv.sub(p).mul(1 / o.shaftSteps).mul(0.85);
+        const sunPow = pow(max(dot(rd, A.sunDir), 0), 2.0);
+        If(front.and(sunPow.greaterThan(0.01)), () => {
+          for (let i = 0; i < o.shaftSteps; i++) {
+            const sp = p.add(dl.mul(float(i).add(jit)));
+            const inb = sp.x.greaterThan(0).and(sp.x.lessThan(1)).and(sp.y.greaterThan(0)).and(sp.y.lessThan(1));
+            const dz = o.depth.sample(sp).x;
+            const sky = perspectiveDepthToViewZ(dz, near, far).negate().greaterThan(far.mul(0.985));
+            acc.addAssign(select(sky.and(inb), float(1), float(0)));
+          }
+        });
+        const k = acc.div(o.shaftSteps).mul(sunPow).mul(A.shaft).mul(float(1).sub(A.airless));
+        col.addAssign(A.sunColor.mul(k).mul(0.35).mul(select(isSky, float(0.25), float(1))));
+      }
+      return vec4(col, src.a);
+    })();
+  }
+
+  E.Atmo = { get U() { return uniforms(); }, node, noiseVolume };
+})(window.E = window.E || {});
+
 // ---- js/render/camera.js ----
 // Camera rig. One look direction (yaw/pitch, driven by the mouse) and a set of
 // framings chosen by what the player controls:
@@ -7545,17 +7720,15 @@
       this.p = new Float32Array(n * 3); this.v = new Float32Array(n * 3); this.c = new Float32Array(n * 4); this.s = new Float32Array(n);
       this.life = new Float32Array(n); this.max = new Float32Array(n); this.s0 = new Float32Array(n); this.s1 = new Float32Array(n);
       this.c0 = new Float32Array(n * 4); this.drag = new Float32Array(n); this.grav = new Float32Array(n);
-      const g = new T.BufferGeometry();
-      g.setAttribute('position', new T.BufferAttribute(this.p, 3).setUsage(T.DynamicDrawUsage));
-      g.setAttribute('aColor', new T.BufferAttribute(this.c, 4).setUsage(T.DynamicDrawUsage));
-      g.setAttribute('aSize', new T.BufferAttribute(this.s, 1).setUsage(T.DynamicDrawUsage));
-      this.mat = new T.ShaderMaterial({
-        transparent: true, depthWrite: false, blending: additive ? T.AdditiveBlending : T.NormalBlending,
-        uniforms: { map: { value: tex }, uScale: { value: 600 } },
-        vertexShader: 'attribute vec4 aColor; attribute float aSize; varying vec4 vC; uniform float uScale; void main(){ vC = aColor; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = min(aSize * uScale / max(-mv.z, 0.1), 900.0); gl_Position = projectionMatrix * mv; }',
-        fragmentShader: 'varying vec4 vC; uniform sampler2D map; void main(){ float a = texture2D(map, gl_PointCoord).r; gl_FragColor = vec4(vC.rgb' + (additive ? ' * a * vC.a, 1.0' : ', a * vC.a') + '); }',
-      });
-      this.pts = new T.Points(g, this.mat); this.pts.frustumCulled = false; this.pts.renderOrder = additive ? 6 : 5;
+      // instanced billboards: one quad, per-instance centre / colour / size attributes (WebGPU has no point sprites)
+      const q = new T.PlaneGeometry(1, 1), g = new T.InstancedBufferGeometry();
+      g.index = q.index; g.setAttribute('position', q.attributes.position); g.setAttribute('uv', q.attributes.uv); g.setAttribute('normal', q.attributes.normal);
+      g.instanceCount = n;
+      g.setAttribute('aPos', new T.InstancedBufferAttribute(this.p, 3).setUsage(T.DynamicDrawUsage));
+      g.setAttribute('aColor', new T.InstancedBufferAttribute(this.c, 4).setUsage(T.DynamicDrawUsage));
+      g.setAttribute('aSize', new T.InstancedBufferAttribute(this.s, 1).setUsage(T.DynamicDrawUsage));
+      this.mat = E.Mat.particle({ tex, additive });
+      this.pts = new T.Mesh(g, this.mat); this.pts.frustumCulled = false; this.pts.renderOrder = additive ? 6 : 5;
       this.geo = g; scene.fx.add(this.pts);
     }
     emit(x, y, z, vx, vy, vz, life, s0, s1, r, g, b, a, drag, grav) {
@@ -7579,7 +7752,7 @@
         const fade = k < 0.12 ? k / 0.12 : 1 - (k - 0.12) / 0.88;
         c[q] = c0[q]; c[q + 1] = c0[q + 1] * (1 - k * 0.45); c[q + 2] = c0[q + 2] * (1 - k * 0.8); c[q + 3] = c0[q + 3] * fade;
       }
-      this.geo.attributes.position.needsUpdate = true; this.geo.attributes.aColor.needsUpdate = true; this.geo.attributes.aSize.needsUpdate = true;
+      this.geo.attributes.aPos.needsUpdate = true; this.geo.attributes.aColor.needsUpdate = true; this.geo.attributes.aSize.needsUpdate = true;
     }
   }
 
@@ -7604,12 +7777,12 @@
       const a = new T.PlaneGeometry(1, 1).rotateX(Math.PI / 2), b = new T.PlaneGeometry(1, 1).rotateX(Math.PI / 2).rotateZ(Math.PI / 2);
       const bg = T.mergeGeometries([a, b]);
       this.boltN = 1400;
-      this.bolts = new T.InstancedMesh(bg, new T.MeshBasicMaterial({ map: boltTex(), transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false }), this.boltN);
+      this.bolts = new T.InstancedMesh(bg, E.Mat.emissive({ map: boltTex(), additive: true, side: 'double' }), this.boltN);
       this.bolts.frustumCulled = false; this.bolts.count = 0; this.bolts.renderOrder = 7;
       this.bolts.setColorAt(0, new T.Color(1, 1, 1));
       scene.fx.add(this.bolts);
       // solid ordnance (grenades, bombs)
-      this.shells = new T.InstancedMesh(new T.IcosahedronGeometry(1, 0), new T.MeshStandardMaterial({ color: 0x15171c, roughness: 0.5, metalness: 0.7, emissive: 0xff5a1a, emissiveIntensity: 0.6 }), 128);
+      this.shells = new T.InstancedMesh(new T.IcosahedronGeometry(1, 0), E.Mat.pbr({ color: 0x15171c, roughness: 0.5, metalness: 0.7, emissive: 0xff5a1a, emissiveIntensity: 0.6 }), 128);
       this.shells.frustumCulled = false; this.shells.count = 0; scene.fx.add(this.shells);
       // shockwave rings + markers
       this.rings = []; this.ringPool = [];
@@ -7624,26 +7797,32 @@
     setBiome(biome, terrain) {
       const T = E.THREE, c = biome.palette.low;
       this.dustCol = [c[0] / 255 * 0.9, c[1] / 255 * 0.9, c[2] / 255 * 0.9]; this.terrain = terrain;
-      if (this.weather) { this.scene.fx.remove(this.weather); this.weather.geometry.dispose(); this.weather = null; }
+      if (this.weather) { this.scene.fx.remove(this.weather); this.weather.geometry.dispose(); this.weather.material.dispose(); this.weather = null; }
       const W = WEATHER[(biome.weather || {}).kind]; if (!W) return;
       const n = Math.round(W.n * this.q * (biome.weather.density || 0.5) * 1.4), pos = new Float32Array(n * 3), r = E.RNG(99);
       for (let i = 0; i < n * 3; i++) pos[i] = r.next();
-      const g = new T.BufferGeometry(); g.setAttribute('position', new T.BufferAttribute(pos, 3));
-      const m = new T.ShaderMaterial({
-        transparent: true, depthWrite: false, blending: W.add ? T.AdditiveBlending : T.NormalBlending,
-        uniforms: { time: { value: 0 }, cam: { value: new T.Vector3() }, col: { value: new T.Vector3(W.col[0], W.col[1], W.col[2]) }, size: { value: W.size }, fall: { value: W.fall }, wind: { value: W.wind }, alpha: { value: W.a }, uScale: { value: 600 }, stretch: { value: W.stretch } },
-        vertexShader: `uniform float time, size, fall, wind, uScale, stretch; uniform vec3 cam; varying float vA;
-          void main(){ vec3 B = vec3(90.0, 60.0, 90.0);
-            vec3 p = position * B; p.y -= time * fall; p.x += time * wind + sin(time * 0.7 + position.z * 40.0) * 1.5; p.z += time * wind * 0.4;
-            p = mod(p - cam, B) - B * 0.5 + cam;
-            vec4 mv = modelViewMatrix * vec4(p, 1.0); float d = max(-mv.z, 0.1);
-            vA = smoothstep(45.0, 28.0, length(p - cam)) * smoothstep(0.6, 3.0, d);
-            gl_PointSize = min(size * (1.0 + stretch * 5.0) * uScale / d, 64.0); gl_Position = projectionMatrix * mv; }`,
-        fragmentShader: `uniform vec3 col; uniform float alpha, stretch; varying float vA;
-          void main(){ vec2 c = gl_PointCoord - 0.5; float a = stretch > 0.5 ? smoothstep(0.09, 0.0, abs(c.x + c.y * 0.12)) * smoothstep(0.5, 0.2, abs(c.y)) : smoothstep(0.5, 0.1, length(c));
-            gl_FragColor = vec4(col, a * alpha * vA); }`,
-      });
-      this.weather = new T.Points(g, m); this.weather.frustumCulled = false; this.weather.renderOrder = 8;
+      // weather: instanced billboards whose positions are wrapped around the camera entirely in the vertex stage
+      const X = T.TSL, { uniform, attribute, vec2, vec3, vec4, float, mod, smoothstep, length, abs, sin, uv, select, positionView, max, min, cameraPosition } = X;
+      const q = new T.PlaneGeometry(1, 1), g = new T.InstancedBufferGeometry();
+      g.index = q.index; g.setAttribute('position', q.attributes.position); g.setAttribute('uv', q.attributes.uv); g.setAttribute('normal', q.attributes.normal);
+      g.instanceCount = n; g.setAttribute('aRnd', new T.InstancedBufferAttribute(pos, 3));
+      const time = uniform(0), cam = uniform(new T.Vector3()), col = uniform(new T.Color(W.col[0], W.col[1], W.col[2]));
+      const rnd = attribute('aRnd', 'vec3'), B = vec3(90, 60, 90);
+      let p = rnd.mul(B).toVar();
+      p = vec3(p.x.add(time.mul(W.wind)).add(sin(time.mul(0.7).add(rnd.z.mul(40))).mul(1.5)), p.y.sub(time.mul(W.fall)), p.z.add(time.mul(W.wind * 0.4)));
+      const wp = mod(p.sub(cam), B).sub(B.mul(0.5)).add(cam);
+      const m = E.Mat.node('sprite');
+      m.positionNode = wp;
+      const mv = T.TSL.modelViewMatrix.mul(vec4(wp, 1)), d = max(mv.z.negate(), 0.1);
+      const vA = smoothstep(45, 28, length(wp.sub(cam))).mul(smoothstep(0.6, 3.0, d));
+      m.scaleNode = vec2(W.size, W.size * (1 + W.stretch * 5));
+      const cc = uv().sub(0.5);
+      const a = W.stretch ? smoothstep(0.09, 0.0, abs(cc.x.add(cc.y.mul(0.12)))).mul(smoothstep(0.5, 0.2, abs(cc.y))) : smoothstep(0.5, 0.1, length(cc));
+      m.colorNode = vec4(col, a.mul(W.a).mul(vA));
+      m.transparent = true; m.depthWrite = false; m.fog = false; m.sizeAttenuation = true;
+      m.blending = W.add ? T.AdditiveBlending : T.NormalBlending;
+      m.userData = { time, cam };
+      this.weather = new T.Mesh(g, m); this.weather.frustumCulled = false; this.weather.renderOrder = 8;
       this.scene.fx.add(this.weather);
     }
 
@@ -7667,7 +7846,7 @@
     ring(p, r1, col, life, flat) {
       const T = E.THREE;
       let m = this.ringPool.pop();
-      if (!m) { m = new T.Mesh(this.ringGeo, new T.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false })); m.renderOrder = 6; this.scene.fx.add(m); }
+      if (!m) { m = new T.Mesh(this.ringGeo, E.Mat.emissive({ additive: true, side: 'double' })); m.renderOrder = 6; this.scene.fx.add(m); }
       m.visible = true; m.position.set(p.x, p.y + 0.3, p.z); m.material.color.setRGB(col[0] * 2, col[1] * 2, col[2] * 2);
       this.rings.push({ m, t: 0, life: life || 0.5, r1, flat: !!flat });
     }
@@ -7728,7 +7907,7 @@
       }
     }
     _marker(p, r) {
-      const T = E.THREE, m = new T.Mesh(this.ringGeo, new T.MeshBasicMaterial({ color: new T.Color(3, 0.25, 0.1), transparent: true, depthWrite: false, depthTest: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false }));
+      const T = E.THREE, m = new T.Mesh(this.ringGeo, E.Mat.emissive({ color: new T.Color(3, 0.25, 0.1), additive: true, depthTest: false, side: 'double' }));
       m.position.set(p.x, (this.terrain ? this.terrain.height(p.x, p.z) : p.y) + 0.6, p.z); m.scale.setScalar(r); m.renderOrder = 6; this.scene.fx.add(m);
       return m;
     }
@@ -7764,8 +7943,6 @@
     }
 
     update(dt, t, cam) {
-      const sc = this.scene.renderer.domElement.height / (2 * Math.tan(cam.fov * Math.PI / 360));
-      this.add.mat.uniforms.uScale.value = sc; this.smoke.mat.uniforms.uScale.value = sc;
       // continuous emitters (burning wrecks, falling debris)
       for (let i = this.emitters.length - 1; i >= 0; i--) {
         const e = this.emitters[i]; e.t += dt; e.acc += dt * e.rate;
@@ -7785,7 +7962,7 @@
         else { const s = r.r1 * (0.15 + 0.85 * (1 - (1 - k) * (1 - k))); r.m.scale.setScalar(s); r.m.material.opacity = (1 - k) * 0.85; }
       }
       for (const l of this.lights) if (l.userData.t > 0) { l.userData.t -= dt * 3.2; l.intensity = Math.max(0, l.userData.t) * l.userData.p; }
-      if (this.weather) { const u = this.weather.material.uniforms; u.time.value = t; u.cam.value.copy(cam.position); u.uScale.value = sc; }
+      if (this.weather) { const u = this.weather.material.userData; u.time.value = t; u.cam.value.copy(cam.position); }
     }
   }
 
@@ -7877,44 +8054,9 @@
     }
   }
 
-  // Shared hull material: PBR + vertex colours + procedural panel lines,
-  // lit windows and HDR emissive (engines, visors) that the bloom pass picks up.
-  let hullMat = null;
-  function material() {
-    if (hullMat) return hullMat;
-    const T = E.THREE;
-    const m = new T.MeshStandardMaterial({ vertexColors: true, metalness: 0.62, roughness: 0.5, envMapIntensity: 0.9 });
-    m.onBeforeCompile = (sh) => {
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nattribute vec2 aFx; varying vec2 vFx; varying vec3 vOPos;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFx = aFx; vOPos = position;');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', `#include <common>
-          varying vec2 vFx; varying vec3 vOPos;
-          float gcHash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }`)
-        .replace('#include <color_fragment>', `#include <color_fragment>
-          float gcMode = floor(vFx.y + 0.5), gcPn = 0.5, gcWin = 0.0;
-          if (gcMode > 0.5) {
-            float fq = gcMode < 1.5 ? 2.6 : 0.16;
-            vec3 pc = vOPos * fq;
-            gcPn = gcHash(floor(pc));
-            vec3 fr = abs(fract(pc) - 0.5);
-            float seam = smoothstep(0.455, 0.5, max(fr.x, max(fr.y, fr.z)));
-            diffuseColor.rgb *= (0.84 + 0.3 * gcPn) * (1.0 - seam * 0.3);
-            if (gcMode > 2.5) {
-              vec3 wc = vOPos * vec3(0.55, 0.9, 0.3);
-              vec3 wf = abs(fract(wc) - 0.5);
-              float lit = step(0.63, gcHash(floor(wc) + 7.0));
-              gcWin = lit * step(wf.y, 0.16) * step(max(wf.x, wf.z), 0.3);
-            }
-          }`)
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + (gcPn - 0.5) * 0.3, 0.08, 1.0);')
-        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-          totalEmissiveRadiance += vColor.rgb * vFx.x + vec3(1.0, 0.86, 0.6) * gcWin * 1.8;`);
-    };
-    hullMat = m;
-    return m;
-  }
+  // Shared hull material (PBR + vertex colour + procedural panels/windows/emissive) lives in the
+  // material factory: see E.Mat.hull() in mat.js.
+  const material = () => E.Mat.hull();
 
   E.Geo = { Builder, material, lin, shade };
 })(window.E = window.E || {});
@@ -8189,6 +8331,261 @@
   E.Models = { makeUnit, makeInfantry, makeVehicle, makeFighter, makeCapital, makeTurret, cache };
 })(window.E = window.E || {});
 
+// ---- js/render/mat.js ----
+// Material factory + TSL helper library. This is the ONE place materials are
+// built: no other file may construct a THREE material by hand. Everything here
+// is a TSL node material (WebGPU renderer, with its WebGL2 fallback backend),
+// so the same code path serves both backends.
+//
+//   E.Mat.pbr({...})       MeshStandard/Physical node material (PBR, lit, shadowed, IBL)
+//   E.Mat.emissive({...})  unlit HDR colour (glows, beams, rings, bolts) - feeds bloom
+//   E.Mat.particle({...})  camera-facing billboard material for instanced particles
+//   E.Mat.terrain(biome)   procedural ground
+//   E.Mat.water(biome)     procedural water surface
+//   E.Mat.hull()           shared panelled hull material (vertex colour + aFx attribute)
+//   E.TSLN                 noise / hash / fbm node functions for building more procedural materials
+//   E.Mat.U                shared global uniforms (time, sun, camera altitude, space factor)
+// Browser-only.
+(function (E) {
+  'use strict';
+
+  // ── TSL noise library (built lazily: THREE.TSL exists only after the vendor bundle loads) ──
+  let LIB = null;
+  function lib() {
+    if (LIB) return LIB;
+    const { Fn, float, vec2, vec3, mix, dot, floor, fract, sin, abs, sub } = E.THREE.TSL;
+    const hash21 = Fn(([p_]) => {
+      const p = fract(p_.mul(vec2(123.34, 456.21))).toVar();
+      p.addAssign(dot(p, p.add(45.32)));
+      return fract(p.x.mul(p.y));
+    });
+    const hash31 = Fn(([p]) => fract(sin(dot(p, vec3(127.1, 311.7, 74.7))).mul(43758.5453)));
+    const noise2 = Fn(([p]) => {
+      const i = floor(p), f = fract(p);
+      const u = f.mul(f).mul(f.mul(-2).add(3));
+      const a = hash21(i), b = hash21(i.add(vec2(1, 0))), c = hash21(i.add(vec2(0, 1))), d = hash21(i.add(vec2(1, 1)));
+      return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+    });
+    const octaves = (n) => Fn(([p_]) => {
+      const p = p_.toVar(), s = float(0).toVar();
+      let a = 0.5;
+      for (let i = 0; i < n; i++) { s.addAssign(noise2(p).mul(a)); p.assign(p.mul(2.03).add(17.1)); a *= 0.5; }
+      return s;
+    });
+    const noise3 = Fn(([p]) => {
+      const i = floor(p), f = fract(p);
+      const u = f.mul(f).mul(f.mul(-2).add(3));
+      const h = (x, y, z) => hash31(i.add(vec3(x, y, z)));
+      return mix(mix(mix(h(0, 0, 0), h(1, 0, 0), u.x), mix(h(0, 1, 0), h(1, 1, 0), u.x), u.y),
+        mix(mix(h(0, 0, 1), h(1, 0, 1), u.x), mix(h(0, 1, 1), h(1, 1, 1), u.x), u.y), u.z);
+    });
+    LIB = { hash21, hash31, noise2, noise3, fbm5: octaves(5), fbm3: octaves(3), fbm4: octaves(4) };
+    return LIB;
+  }
+  Object.defineProperty(E, 'TSLN', { get: lib, configurable: true });
+
+  // ── shared uniforms: updated once per frame by E.Scene, readable by any node material ──
+  let U = null;
+  function uniforms() {
+    if (U) return U;
+    const { uniform } = E.THREE.TSL, T = E.THREE;
+    U = {
+      time: uniform(0),
+      sunDir: uniform(new T.Vector3(0.4, 0.6, -0.5)),
+      sunColor: uniform(new T.Color(1, 0.9, 0.7)),
+      camPos: uniform(new T.Vector3()),
+      altitude: uniform(0),           // camera height above the surface, metres
+      space: uniform(0),              // 0 = full atmosphere .. 1 = vacuum (altitude + airless biomes)
+      airless: uniform(0),            // 1 on worlds with no atmosphere at all
+    };
+    return U;
+  }
+
+  const color = (c) => {
+    const T = E.THREE;
+    if (c && c.isColor) return c;
+    if (Array.isArray(c)) return new T.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255, T.SRGBColorSpace);
+    return new T.Color(c === undefined ? 0xffffff : c);
+  };
+
+  // materials that asked for a custom env intensity, refreshed when the sky environment changes
+  const envUsers = new Set();
+  let envTex = null;
+  function setEnv(tex) {
+    envTex = tex;
+    for (const m of envUsers) { m.envMap = tex; m.needsUpdate = true; }
+  }
+
+  const SIDES = { front: 0, back: 1, double: 2 };
+
+  // PBR surface. Options: color, map, roughness, metalness, emissive, emissiveIntensity, envIntensity,
+  // opacity, transparent, side ('front'|'back'|'double'), flatShading, vertexColors,
+  // clearcoat/clearcoatRoughness/sheen/iridescence/transmission/ior (=> MeshPhysical),
+  // and node overrides: colorNode, roughnessNode, metalnessNode, emissiveNode, normalNode,
+  // opacityNode, positionNode, aoNode.
+  function pbr(o) {
+    const T = E.THREE; o = o || {};
+    const phys = o.clearcoat !== undefined || o.sheen !== undefined || o.iridescence !== undefined || o.transmission !== undefined || o.ior !== undefined;
+    const m = new (phys ? T.MeshPhysicalNodeMaterial : T.MeshStandardNodeMaterial)();
+    m.color = color(o.color);
+    m.roughness = o.roughness === undefined ? 0.7 : o.roughness;
+    m.metalness = o.metalness === undefined ? 0 : o.metalness;
+    if (o.map) m.map = o.map;
+    if (o.emissive !== undefined) { m.emissive = color(o.emissive); m.emissiveIntensity = o.emissiveIntensity === undefined ? 1 : o.emissiveIntensity; }
+    if (o.opacity !== undefined) m.opacity = o.opacity;
+    if (o.transparent) { m.transparent = true; m.depthWrite = o.depthWrite === true; }
+    if (o.side) m.side = SIDES[o.side] || 0;
+    if (o.flatShading) m.flatShading = true;
+    if (o.vertexColors) m.vertexColors = true;
+    if (phys) for (const k of ['clearcoat', 'clearcoatRoughness', 'sheen', 'sheenRoughness', 'iridescence', 'transmission', 'ior', 'thickness']) if (o[k] !== undefined) m[k] = o[k];
+    for (const k of ['colorNode', 'roughnessNode', 'metalnessNode', 'emissiveNode', 'normalNode', 'opacityNode', 'positionNode', 'aoNode']) if (o[k]) m[k] = o[k];
+    if (o.envIntensity !== undefined) { m.envMapIntensity = o.envIntensity; m.envMap = envTex; envUsers.add(m); }
+    if (o.name) m.name = o.name;
+    return m;
+  }
+
+  // Unlit HDR colour. `intensity` > 1 is what bloom picks up. Options: color, intensity, map, opacity,
+  // additive, transparent, side, depthTest, depthWrite, colorNode, opacityNode, positionNode.
+  function emissive(o) {
+    const T = E.THREE; o = o || {};
+    const m = new T.MeshBasicNodeMaterial();
+    m.color = color(o.color);
+    if (o.intensity !== undefined && o.intensity !== 1) m.color.multiplyScalar(o.intensity);
+    if (o.map) m.map = o.map;
+    if (o.additive) { m.blending = T.AdditiveBlending; m.transparent = true; m.depthWrite = false; }
+    if (o.transparent) { m.transparent = true; m.depthWrite = o.depthWrite === true; }
+    if (o.opacity !== undefined) m.opacity = o.opacity;
+    if (o.side) m.side = SIDES[o.side] || 0;
+    if (o.depthTest === false) m.depthTest = false;
+    if (o.depthWrite !== undefined) m.depthWrite = o.depthWrite;
+    for (const k of ['colorNode', 'opacityNode', 'positionNode']) if (o[k]) m[k] = o[k];
+    m.fog = false;
+    if (o.name) m.name = o.name;
+    return m;
+  }
+
+  // Billboard material for instanced particles: the geometry carries per-instance attributes
+  // aPos (vec3 centre), aSize (float, metres) and aColor (vec4, rgb HDR + alpha).
+  // `tex` is a greyscale mask. Options: additive.
+  function particle(o) {
+    const T = E.THREE, X = T.TSL; o = o || {};
+    const m = new T.SpriteNodeMaterial();
+    const aPos = X.attribute('aPos', 'vec3'), aSize = X.attribute('aSize', 'float'), aCol = X.attribute('aColor', 'vec4');
+    m.positionNode = aPos;
+    m.scaleNode = aSize;
+    const a = X.texture(o.tex, X.uv()).r;
+    m.colorNode = X.vec4(aCol.rgb.mul(o.additive ? a.mul(aCol.a) : 1), o.additive ? 1 : a.mul(aCol.a));
+    m.transparent = true; m.depthWrite = false; m.fog = false;
+    m.blending = o.additive ? T.AdditiveBlending : T.NormalBlending;
+    m.sizeAttenuation = true;
+    return m;
+  }
+
+  // ── hull: PBR + vertex colour + procedural panel lines, lit windows and HDR emissive ──
+  let hullMat = null;
+  function hull() {
+    if (hullMat) return hullMat;
+    const X = E.THREE.TSL, N = lib();
+    const { vec3, float, floor, fract, abs, max, smoothstep, step, attribute, positionGeometry, vertexColor, clamp, mix } = X;
+    const fx = attribute('aFx', 'vec2');
+    const mode = floor(fx.y.add(0.5));
+    const hash3 = (p) => N.hash31(p);
+    const fq = mix(float(2.6), float(0.16), step(1.5, mode));
+    const pc = positionGeometry.mul(fq);
+    const pn = hash3(floor(pc)).toVar('gcPn');
+    const fr = abs(fract(pc).sub(0.5));
+    const seam = smoothstep(0.455, 0.5, max(fr.x, max(fr.y, fr.z)));
+    const panels = step(0.5, mode);
+    const shade = mix(float(1), pn.mul(0.3).add(0.84).mul(float(1).sub(seam.mul(0.3))), panels);
+    // lit windows on mode 3 surfaces
+    const wc = positionGeometry.mul(vec3(0.55, 0.9, 0.3));
+    const wf = abs(fract(wc).sub(0.5));
+    const lit = step(0.63, hash3(floor(wc).add(7.0)));
+    const win = lit.mul(step(wf.y, 0.16)).mul(step(max(wf.x, wf.z), 0.3)).mul(step(2.5, mode));
+    const m = pbr({
+      metalness: 0.62, roughness: 0.5, name: 'hull',
+      colorNode: vertexColor(0).mul(shade),
+      roughnessNode: clamp(float(0.5).add(pn.sub(0.5).mul(0.3).mul(panels)), 0.08, 1.0),
+      emissiveNode: vertexColor(0).mul(fx.x).add(vec3(1.0, 0.86, 0.6).mul(win).mul(1.8)),
+    });
+    hullMat = m;
+    return m;
+  }
+
+  // ── terrain ──
+  const LOOK = {};   // filled by planet.js (per-biome ground look), kept there with the geometry code
+  function terrain(biomeId, look) {
+    const X = E.THREE.TSL, N = lib(), T = E.THREE, L = look;
+    const { vec3, float, vec2, uniform, positionWorld, normalWorld, vertexColor, smoothstep, normalize, mix, sin, cameraViewMatrix, vec4, normalView, abs, max } = X;
+    const U = uniforms();
+    const uRock = uniform(new T.Color(L.rock)), uTint = uniform(new T.Vector3(L.tint[0], L.tint[1], L.tint[2])), uLava = uniform(new T.Color(L.lava || '#000000'));
+    const uTime = U.time, uLavaLevel = float(L.lava ? L.lavaLevel : -1e6), uRockAt = float(L.rockAt), uBump = float(L.bump);
+    const gwp = positionWorld.xz;
+    const gn1 = N.fbm5(gwp.mul(0.31)), gn2 = N.fbm3(gwp.mul(0.045).add(31.0)), gn3 = N.noise2(gwp.mul(2.7));
+    const steep = float(1).sub(normalize(normalWorld).y);
+    const rockK = smoothstep(uRockAt, uRockAt.add(0.2), steep.add(gn2.sub(0.5).mul(0.22))).toVar();
+    const base0 = vertexColor(0).mul(gn1.mul(0.42).add(0.7).add(gn3.mul(0.14)));
+    const base = mix(base0, base0.mul(uTint), smoothstep(0.42, 0.68, gn2));
+    const rockC = uRock.mul(N.fbm5(vec2(gwp.x.mul(0.4).add(positionWorld.y.mul(0.8)), gwp.y.mul(0.4).sub(positionWorld.y.mul(0.6)))).mul(0.7).add(0.55));
+    const colorNode = mix(base, rockC, rockK);
+    // per-pixel bump from finite differences of the same noise
+    const ge = 0.4, b0 = N.fbm3(gwp.mul(0.8)), bx = N.fbm3(gwp.add(vec2(ge, 0)).mul(0.8)), bz = N.fbm3(gwp.add(vec2(0, ge)).mul(0.8));
+    const off = vec3(b0.sub(bx), 0, b0.sub(bz)).mul(uBump).mul(rockK.add(1));
+    const normalNode = normalize(normalView.add(cameraViewMatrix.mul(vec4(off, 0)).xyz));
+    // lava cracks
+    const lv = smoothstep(uLavaLevel.add(5.0), uLavaLevel.sub(3.0), positionWorld.y);
+    const cr = N.fbm5(gwp.mul(0.07).add(vec2(uTime.mul(0.012), 0)));
+    const crack = smoothstep(0.1, 0.0, abs(cr.sub(0.5))).add(lv.mul(smoothstep(0.45, 0.62, cr)));
+    const emissiveNode = uLava.mul(lv).mul(crack).mul(sin(uTime.mul(1.7).add(cr.mul(30))).mul(0.8).add(2.2));
+    return pbr({ name: 'terrain:' + biomeId, roughness: L.rough, metalness: 0, colorNode, normalNode, emissiveNode });
+  }
+
+  // ── water: PBR with procedural wave normals; reflects the sky through the environment map + SSR ──
+  function water(biome) {
+    const X = E.THREE.TSL, N = lib(), T = E.THREE;
+    const { vec3, float, vec2, uniform, positionWorld, normalize, mix, cameraViewMatrix, vec4, pow, max, dot, cameraPosition, clamp } = X;
+    const U = uniforms(), w = biome.water.color, swell = float(biome.water.swell ? 1.0 : 0.45);
+    const deep = uniform(new T.Color().setRGB(w[0] / 255, w[1] / 255, w[2] / 255, T.SRGBColorSpace));
+    const p = positionWorld.xz, t = U.time;
+    const wave = (q) => N.fbm3(q.mul(0.05).add(vec2(t.mul(0.06), t.mul(0.04)))).add(N.fbm3(q.mul(0.19).sub(vec2(t.mul(0.09), t.mul(-0.07)))).mul(0.5)).add(N.noise2(q.mul(0.9).add(t.mul(0.5))).mul(0.12));
+    const e = 0.6, h0 = wave(p), hx = wave(p.add(vec2(e, 0))), hz = wave(p.add(vec2(0, e)));
+    const nW = normalize(vec3(h0.sub(hx).mul(2.2).mul(swell), 1.0, h0.sub(hz).mul(2.2).mul(swell)));
+    const normalNode = normalize(cameraViewMatrix.mul(vec4(nW, 0)).xyz);
+    const v = normalize(cameraPosition.sub(positionWorld));
+    const fr = pow(float(1).sub(max(dot(nW, v), 0)), 4);
+    return pbr({
+      name: 'water', roughness: 0.06, metalness: 0.0, transparent: true, depthWrite: true,
+      colorNode: deep.mul(h0.mul(0.5).add(0.5)),
+      normalNode,
+      opacityNode: clamp(float(0.72).add(fr.mul(0.28)), 0, 1),
+      envIntensity: 1.0,
+    });
+  }
+
+  // Camera-facing sprite (glows, flares): a THREE.Sprite material with an HDR tint and a greyscale/alpha map.
+  function sprite(o) {
+    const T = E.THREE; o = o || {};
+    const m = new T.SpriteNodeMaterial();
+    m.color = color(o.color);
+    if (o.intensity) m.color.multiplyScalar(o.intensity);
+    if (o.map) m.map = o.map;
+    m.transparent = true; m.depthWrite = false; m.fog = false;
+    if (o.additive) m.blending = T.AdditiveBlending;
+    return m;
+  }
+
+  // Escape hatch for bespoke node materials (sky, weather...): still created here, never by hand elsewhere.
+  // kind: 'basic' (unlit) | 'sprite' (billboard) | 'standard' | 'physical'; props are assigned onto the material.
+  function node(kind, props) {
+    const T = E.THREE;
+    const C = { basic: T.MeshBasicNodeMaterial, sprite: T.SpriteNodeMaterial, standard: T.MeshStandardNodeMaterial, physical: T.MeshPhysicalNodeMaterial }[kind];
+    return Object.assign(new C(), props || {});
+  }
+
+  E.Mat = { pbr, emissive, particle, sprite, node, hull, terrain, water, color, setEnv, LOOK, get U() { return uniforms(); } };
+  // geometry code (geo.js / hulls.js / planet.js) asks for the shared hull material through E.Geo.material()
+})(window.E = window.E || {});
+
 // ---- js/render/planet.js ----
 // Builds the visible planet surface from the pure terrain sampler: a
 // high-resolution arena mesh on the sim's own height grid (so feet meet the
@@ -8211,37 +8608,8 @@
   };
 
   function groundMaterial(biomeId) {
-    const T = E.THREE, L = LOOK[biomeId] || LOOK.desert;
-    const m = new T.MeshStandardMaterial({ vertexColors: true, roughness: L.rough, metalness: 0.0, envMapIntensity: 0.35 });
-    const U = { uRock: { value: new T.Color(L.rock) }, uTint: { value: new T.Vector3(L.tint[0], L.tint[1], L.tint[2]) }, uRockAt: { value: L.rockAt }, uBump: { value: L.bump },
-      uLava: { value: new T.Color(L.lava || '#000000') }, uLavaLevel: { value: L.lava ? L.lavaLevel : -1e6 }, uTime: { value: 0 } };
-    m.onBeforeCompile = (sh) => {
-      Object.assign(sh.uniforms, U);
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz; vWNrm = normalize(mat3(modelMatrix) * objectNormal);');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm; uniform vec3 uRock, uTint, uLava; uniform float uRockAt, uBump, uLavaLevel, uTime;' + E.GLSL_NOISE)
-        .replace('#include <color_fragment>', `#include <color_fragment>
-          vec2 gwp = vWPos.xz;
-          float gn1 = gcFbm(gwp * 0.31), gn2 = gcFbm3(gwp * 0.045 + 31.0), gn3 = gcN2(gwp * 2.7);
-          float gSteep = 1.0 - normalize(vWNrm).y;
-          float gRock = smoothstep(uRockAt, uRockAt + 0.2, gSteep + (gn2 - 0.5) * 0.22);
-          vec3 gBase = diffuseColor.rgb * (0.7 + 0.42 * gn1 + 0.14 * gn3);
-          gBase = mix(gBase, gBase * uTint, smoothstep(0.42, 0.68, gn2));
-          vec3 gRockC = uRock * (0.55 + 0.7 * gcFbm(vec2(gwp.x * 0.4 + vWPos.y * 0.8, gwp.y * 0.4 - vWPos.y * 0.6)));
-          diffuseColor.rgb = mix(gBase, gRockC, gRock);`)
-        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-          { float ge = 0.4; float b0 = gcFbm3(gwp * 0.8), bx = gcFbm3((gwp + vec2(ge, 0.0)) * 0.8), bz = gcFbm3((gwp + vec2(0.0, ge)) * 0.8);
-            normal = normalize(normal + (viewMatrix * vec4(vec3(b0 - bx, 0.0, b0 - bz) * uBump * (1.0 + gRock), 0.0)).xyz); }`)
-        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-          { float lv = smoothstep(uLavaLevel + 5.0, uLavaLevel - 3.0, vWPos.y);
-            float cr = gcFbm(gwp * 0.07 + vec2(uTime * 0.012, 0.0));
-            float crack = smoothstep(0.1, 0.0, abs(cr - 0.5)) + lv * smoothstep(0.45, 0.62, cr);
-            totalEmissiveRadiance += uLava * lv * crack * (2.2 + 0.8 * sin(uTime * 1.7 + cr * 30.0)); }`);
-    };
-    m.userData.U = U;
-    return m;
+    const L = LOOK[biomeId] || LOOK.desert;
+    return E.Mat.terrain(biomeId, Object.assign({ lava: null }, L));
   }
 
   function colorAt(terrain, biome, noise, x, z, h, out) {
@@ -8305,28 +8673,7 @@
 
     // ── water ──
     if (terrain.waterLevel > -1e8) {
-      const w = biome.water.color, S = E.SKY[terrain.biome] || E.SKY.desert;
-      const wm = new T.ShaderMaterial({
-        transparent: true, depthWrite: true,
-        uniforms: { time: { value: 0 }, deep: { value: new T.Color().setRGB(w[0] / 255, w[1] / 255, w[2] / 255, T.SRGBColorSpace) }, skyHor: { value: new T.Color(S.hor) }, skyTop: { value: new T.Color(S.top) },
-          sunDir: { value: new T.Vector3(S.sun[0], S.sun[1], S.sun[2]).normalize() }, sunCol: { value: new T.Color(S.sunCol) }, swell: { value: biome.water.swell ? 1.0 : 0.45 } },
-        vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
-        fragmentShader: E.GLSL_NOISE + `
-          varying vec3 vW; uniform float time, swell; uniform vec3 deep, skyHor, skyTop, sunDir, sunCol;
-          float wave(vec2 p){ return gcFbm3(p * 0.05 + vec2(time * 0.06, time * 0.04)) + gcFbm3(p * 0.19 - vec2(time * 0.09, -time * 0.07)) * 0.5 + gcN2(p * 0.9 + time * 0.5) * 0.12; }
-          void main(){
-            vec2 p = vW.xz; float e = 0.6;
-            float h0 = wave(p), hx = wave(p + vec2(e, 0.0)), hz = wave(p + vec2(0.0, e));
-            vec3 n = normalize(vec3((h0 - hx) * 2.2 * swell, 1.0, (h0 - hz) * 2.2 * swell));
-            vec3 v = normalize(cameraPosition - vW);
-            float fr = pow(1.0 - max(dot(n, v), 0.0), 4.0);
-            vec3 r = reflect(-v, n);
-            vec3 sky = mix(skyHor, skyTop, pow(max(r.y, 0.0), 0.5));
-            vec3 col = mix(deep * (0.5 + h0 * 0.5), sky, 0.12 + fr * 0.8);
-            col += sunCol * (pow(max(dot(r, sunDir), 0.0), 220.0) * 9.0 + pow(max(dot(r, sunDir), 0.0), 24.0) * 0.25);
-            gl_FragColor = vec4(col, 0.72 + fr * 0.28);
-          }`,
-      });
+      const wm = E.Mat.water(biome);
       const water = new T.Mesh(new T.PlaneGeometry(26000, 26000, 1, 1).rotateX(-Math.PI / 2), wm);
       water.position.y = terrain.waterLevel; water.renderOrder = 1;
       group.add(water); group.userData.water = water;
@@ -8340,7 +8687,7 @@
   // ── cover ────────────────────────────────────────────────────
   let natureMat = null;
   function nature() {
-    if (!natureMat) natureMat = new E.THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.0, envMapIntensity: 0.3 });
+    if (!natureMat) natureMat = E.Mat.pbr({ vertexColors: true, roughness: 0.92, metalness: 0.0 });
     return natureMat;
   }
   function rockGeo(seed, col) {
@@ -8418,6 +8765,193 @@
   E.LOOK = LOOK;
 })(window.E = window.E || {});
 
+// ---- js/render/post.js ----
+// The post-processing stack (THREE.RenderPipeline + TSL nodes). Frame graph:
+//
+//   scene pass (HDR, rendered below native res, MRT: colour / view normal / velocity [/ metal+rough])
+//     -> GTAO ambient occlusion              (tier-gated)
+//     -> screen-space reflections            (tier-gated)
+//     -> atmosphere: height fog, volumetric clouds, light shafts   (atmo.js)
+//     -> TAAU: jittered temporal anti-aliasing + upscale to native  (this IS the temporal super-resolution;
+//                                                                    it is TAA-upsampling, not a vendor upscaler)
+//     -> depth of field                      (off unless a cinematic camera asks)
+//     -> motion blur                         (velocity buffer, scaled by camera speed)
+//     -> bloom
+//     -> chromatic aberration, ACES filmic tone map + exposure, sRGB, lift/gamma/gain grade,
+//        vignette, damage / fade, film grain
+//
+// Everything user-facing goes through Post.set(); the graph only rebuilds when a
+// structural flag (a pass on/off, tier, res scale mode) changes.
+//   scene.post.set({ dof: { on: true, focus: 80, range: 60, bokeh: 3 }, grade: { exposure: 1.1, sat: 1.1 }, motionBlur: 0.5 })
+(function (E) {
+  'use strict';
+
+  // per-biome colour grade (lift/gamma/gain in display space). Subtle by design.
+  const BIOME_GRADE = {
+    tundra:   { lift: [0.0, 0.004, 0.012], gamma: [1, 1, 1.02], gain: [0.97, 1.0, 1.06], sat: 0.96, contrast: 1.04 },
+    desert:   { lift: [0.006, 0.004, 0.004], gamma: [1, 1, 1], gain: [1.02, 1.0, 0.96], sat: 0.94, contrast: 1.03 },
+    jungle:   { lift: [0.004, 0.004, 0.004], gamma: [1, 1, 1], gain: [1.0, 1.0, 0.97], sat: 0.95, contrast: 1.03 },
+    urban:    { lift: [0.01, 0.004, 0.012], gamma: [1.02, 1, 0.98], gain: [1.08, 0.98, 0.92], sat: 1.05, contrast: 1.08 },
+    volcanic: { lift: [0.012, 0.0, 0.0], gamma: [1.02, 0.98, 0.96], gain: [1.1, 0.94, 0.84], sat: 1.1, contrast: 1.1 },
+    ocean:    { lift: [0, 0.004, 0.01], gamma: [0.98, 1, 1.02], gain: [0.94, 1.02, 1.08], sat: 1.04, contrast: 1.03 },
+    cratered: { lift: [0, 0, 0.004], gamma: [1, 1, 1], gain: [0.98, 0.98, 1.02], sat: 0.9, contrast: 1.1 },
+    gas:      { lift: [0.01, 0.0, 0.016], gamma: [1.02, 0.98, 1.02], gain: [1.04, 0.92, 1.1], sat: 1.12, contrast: 1.06 },
+  };
+
+  const DEFAULTS = {
+    exposure: 1.0, sat: 1.0, contrast: 1.0, lift: [0, 0, 0], gamma: [1, 1, 1], gain: [1, 1, 1],
+    vignette: 0.32, grain: 0.018, aberration: 0.012, motionBlur: 0.0,
+    bloom: { strength: 0.5, radius: 0.55, threshold: 1.0 },
+    dof: { on: false, focus: 60, range: 80, bokeh: 3 },
+    ao: { intensity: 1.0 }, ssr: { intensity: 1.0 }, shafts: 0.3,
+  };
+
+  class Post {
+    constructor(S) {
+      const T = E.THREE, { uniform } = T.TSL;
+      this.S = S;
+      this.P = JSON.parse(JSON.stringify(DEFAULTS));
+      this.biomeGrade = null;
+      this.pipeline = new T.RenderPipeline(S.renderer);
+      this.pipeline.outputColorTransform = false;
+      this._nodes = []; this._sig = ''; this.flags = {};
+      // user-facing uniforms
+      const v3 = (a) => uniform(new T.Vector3(a[0], a[1], a[2]));
+      this.u = {
+        exposure: uniform(1), sat: uniform(1), contrast: uniform(1), lift: v3([0, 0, 0]), gamma: v3([1, 1, 1]), gain: v3([1, 1, 1]),
+        vig: uniform(0), grain: uniform(0), ca: uniform(0), mb: uniform(0),
+        bloomS: uniform(0.5), bloomR: uniform(0.55), bloomT: uniform(1.0),
+        dofFocus: uniform(60), dofRange: uniform(80), dofBokeh: uniform(3),
+        aoI: uniform(1), ssrI: uniform(1), time: uniform(0), damage: uniform(0), fade: uniform(0), zoom: uniform(0),
+      };
+      this.apply();
+    }
+
+    // Deep-merge a patch of user parameters. Structural changes (dof.on) rebuild the graph.
+    set(patch) {
+      const merge = (dst, src) => { for (const k of Object.keys(src)) { if (src[k] && typeof src[k] === 'object' && !Array.isArray(src[k])) merge(dst[k] || (dst[k] = {}), src[k]); else dst[k] = src[k]; } };
+      if (patch.grade) { const g = patch.grade; patch = Object.assign({}, patch); delete patch.grade; merge(this.P, g); }
+      merge(this.P, patch);
+      this.apply();
+    }
+    // biome grade sits under user grade (user values multiply/override via set({grade}))
+    setBiome(id) { this.biomeGrade = BIOME_GRADE[id] || null; this.apply(); }
+
+    apply() {
+      const P = this.P, u = this.u, B = this.biomeGrade || {}, v = (a, b, d) => a || b || d;
+      u.exposure.value = P.exposure;
+      u.sat.value = P.sat * (B.sat || 1); u.contrast.value = P.contrast * (B.contrast || 1);
+      const L = v(null, B.lift, [0, 0, 0]), G = v(null, B.gamma, [1, 1, 1]), N = v(null, B.gain, [1, 1, 1]);
+      u.lift.value.set(L[0] + P.lift[0], L[1] + P.lift[1], L[2] + P.lift[2]);
+      u.gamma.value.set(G[0] * P.gamma[0], G[1] * P.gamma[1], G[2] * P.gamma[2]);
+      u.gain.value.set(N[0] * P.gain[0], N[1] * P.gain[1], N[2] * P.gain[2]);
+      u.vig.value = P.vignette; u.grain.value = P.grain; u.ca.value = P.aberration; u.mb.value = P.motionBlur;
+      u.bloomS.value = P.bloom.strength; u.bloomR.value = P.bloom.radius; u.bloomT.value = P.bloom.threshold;
+      u.dofFocus.value = P.dof.focus; u.dofRange.value = P.dof.range; u.dofBokeh.value = P.dof.bokeh;
+      u.aoI.value = P.ao.intensity; u.ssrI.value = P.ssr.intensity;
+      if (E.Atmo && E.Atmo.U) E.Atmo.U.shaft.value = P.shafts;
+      if (this._sig && this._sig !== this.signature()) this.build();
+    }
+
+    signature() {
+      const Q = this.S.Q, P = this.P;
+      return [Q.name, P.dof.on ? 1 : 0, P.motionBlur > 0.001 && Q.motionBlur ? 1 : 0, this.S.renderer.reversedDepthBuffer ? 1 : 0].join('|');
+    }
+
+    setScale(s) {
+      this.scale = s;
+      if (this.sp) this.sp.setResolutionScale(s);
+      if (this.beauty && this.beauty.setResolutionScale) this.beauty.setResolutionScale(s);
+    }
+
+    build() {
+      const T = E.THREE, X = T.TSL, XX = T.TSLX, S = this.S, Q = S.Q, u = this.u, P = this.P;
+      const { pass, mrt, output, velocity, normalView, metalness, roughness, vec2, vec3, vec4, float, uniform, uv, mix, pow, max, min, clamp,
+        dot, smoothstep, length, Fn, convertToTexture, rtt, toneMapping, convertColorSpace, interleavedGradientNoise, screenCoordinate, fract, sin, abs, select } = X;
+      for (const n of this._nodes) { try { n.dispose && n.dispose(); } catch (e) { /* node already gone */ } }
+      this._nodes = [];
+      const track = (n) => { this._nodes.push(n); return n; };
+      this._sig = this.signature();
+      const cam = S.camera, scale = this.scale || S.resScale;
+
+      // ── scene pass ──
+      const spec = { output, normal: normalView, velocity };
+      if (Q.ssr) spec.metalrough = vec2(metalness, roughness);
+      const sp = track(pass(S.scene, cam, { samples: 0 }));
+      sp.setMRT(mrt(spec));
+      sp.setResolutionScale(scale);
+      this.sp = sp;
+      const depthN = sp.getTextureNode('depth'), normalN = sp.getTextureNode('normal'), velN = sp.getTextureNode('velocity');
+      let color = sp.getTextureNode('output');
+
+      const skyMask = Fn(() => X.perspectiveDepthToViewZ(depthN.sample(uv()).x, float(cam.near), float(cam.far)).negate().greaterThan(float(cam.far).mul(0.985)).select(float(0), float(1)))();
+      // ── ambient occlusion (applied to the lit colour; screen-space approximation of indirect shadowing) ──
+      if (Q.ao) {
+        const aoP = track(XX.ao(depthN, normalN, cam));
+        aoP.resolutionScale = Q.ao.scale; aoP.samples.value = Q.ao.samples; aoP.radius.value = 0.6; aoP.thickness.value = 1.5; aoP.distanceExponent.value = 1.2; aoP.distanceFallOff.value = 1.0; aoP.scale.value = 1.1;
+        const aoT = aoP.getTextureNode().r;
+        color = vec4(color.rgb.mul(mix(float(1), aoT, u.aoI.mul(skyMask))), color.a);
+      }
+      // ── screen-space reflections (SSR): metals, glass canopies, water ──
+      if (Q.ssr) {
+        const mr = sp.getTextureNode('metalrough');
+        const ssrP = track(XX.ssr(convertToTexture(color), depthN, normalN, { metalnessNode: mr.r, roughnessNode: mr.g, camera: cam, reflectNonMetals: true }));
+        ssrP.resolutionScale = Q.ssr.scale; ssrP.quality.value = Q.ssr.quality; ssrP.maxDistance.value = 600; ssrP.thickness.value = 2.0; ssrP.intensity.value = 1.0;
+        color = vec4(color.rgb.add(ssrP.getTextureNode().rgb.mul(u.ssrI).mul(0.9).mul(skyMask)), color.a);
+      }
+      // ── atmosphere: fog / clouds / shafts ──
+      const A = Q.atmo;
+      if (A.fog || A.clouds || A.shafts) {
+        color = E.Atmo.node({ color: convertToTexture(color), depth: depthN, camera: cam, near: cam.near, far: cam.far, fog: A.fog, clouds: A.clouds > 0, cloudSteps: A.clouds, shafts: A.shafts > 0, shaftSteps: A.shafts });
+      }
+      // ── TAAU: temporal AA + upscale ──
+      const beauty = track(rtt(color, null, null, { resolutionScale: scale }));
+      this.beauty = beauty;
+      let out;
+      if (Q.taa) out = track(XX.taau(beauty, depthN, velN, cam));
+      else out = beauty;
+      // ── depth of field ──
+      if (P.dof.on && Q.dof) out = track(XX.dof(out, sp.getViewZNode(), u.dofFocus, u.dofRange, u.dofBokeh));
+      // ── motion blur ──
+      if (P.motionBlur > 0.001 && Q.motionBlur) out = track(convertToTexture(XX.motionBlur(convertToTexture(out), velN.xy.mul(u.mb.mul(2.5)), X.int(Q.motionBlur))));
+      // ── bloom ──
+      let bloomN = null;
+      if (Q.bloom) { const b = track(XX.bloom(convertToTexture(out), u.bloomS, u.bloomR, u.bloomT)); bloomN = b; }
+      const hdr = convertToTexture(out);
+
+      // ── output stage: CA, tone map, grade ──
+      const final = Fn(() => {
+        const p = uv();
+        const c = p.sub(0.5), r2 = dot(c, c);
+        const ab = c.mul(r2).mul(u.ca);
+        const col = (Q.ca ? vec3(hdr.sample(p.add(ab)).r, hdr.sample(p).g, hdr.sample(p.sub(ab)).b) : hdr.sample(p).rgb).toVar();
+        if (bloomN) col.addAssign(bloomN.rgb);
+        const tm = toneMapping(T.ACESFilmicToneMapping, u.exposure, col).rgb;
+        const srgb = convertColorSpace(tm, T.LinearSRGBColorSpace, T.SRGBColorSpace).toVar();
+        // lift / gamma / gain
+        srgb.assign(pow(max(srgb.mul(u.gain).add(u.lift), 0.0), float(1).div(u.gamma)));
+        const l = dot(srgb, vec3(0.2126, 0.7152, 0.0722));
+        srgb.assign(mix(vec3(l), srgb, u.sat.sub(u.damage.mul(0.5))));
+        srgb.assign(srgb.sub(0.5).mul(u.contrast).add(0.5));
+        // vignette (tightens when zoomed), damage tint, fade
+        srgb.mulAssign(float(1).sub(smoothstep(0.12, 0.85, r2.mul(u.zoom.mul(2.4).add(1.6))).mul(u.vig.add(u.zoom.mul(0.5)))));
+        srgb.assign(mix(srgb, vec3(0.75, 0.03, 0.0).mul(l.add(0.4)), smoothstep(0.08, 0.5, r2).mul(u.damage)));
+        if (Q.grain) srgb.addAssign(interleavedGradientNoise(screenCoordinate.xy.add(u.time.mul(37.0))).sub(0.5).mul(u.grain));
+        const o = max(srgb, 0.0).mul(float(1).sub(u.fade)); return vec4(o.x, o.y, o.z, 1.0);
+      })();
+      this.pipeline.outputNode = final;
+      this.pipeline.needsUpdate = true;
+    }
+
+    render() { this.pipeline.render(); }
+    dispose() { for (const n of this._nodes) { try { n.dispose && n.dispose(); } catch (e) { /* ignore */ } } this.pipeline.dispose && this.pipeline.dispose(); }
+  }
+
+  E.Post = Post;
+  E.Post.BIOME_GRADE = BIOME_GRADE;
+  E.Post.DEFAULTS = DEFAULTS;
+})(window.E = window.E || {});
+
 // ---- js/render/props.js ----
 // Battlefield structures: command posts (platform, pylon, holo-beacon, capture
 // ring), home-base bunkers and scattered barricades. The glowing parts use a
@@ -8473,12 +9007,12 @@
     }
     im.castShadow = im.receiveShadow = true; g.add(im);
     // glow: beam, holo ring, ground ring (tinted live)
-    const glow = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false });
-    const beamMat = glow.clone(); beamMat.opacity = 0.16;
+    const glow = E.Mat.emissive({ color: 0xffffff, opacity: 0.9, additive: true, side: 'double' });
+    const beamMat = E.Mat.emissive({ color: 0xffffff, opacity: 0.16, additive: true, side: 'double' });
     const beam = new T.Mesh(new T.CylinderGeometry(0.5, 1.5, 220, 10, 1, true), beamMat); beam.position.y = 119; g.add(beam);
     const holo = new T.Mesh(new T.TorusGeometry(2.3, 0.12, 6, 28), glow); holo.position.y = 10.4; holo.rotation.x = Math.PI / 2; g.add(holo);
     const holo2 = new T.Mesh(new T.TorusGeometry(1.5, 0.08, 6, 24), glow); holo2.position.y = 11.6; g.add(holo2);
-    const ringMat = glow.clone(); ringMat.opacity = 0.55;
+    const ringMat = E.Mat.emissive({ color: 0xffffff, opacity: 0.55, additive: true, side: 'double' });
     const ring = new T.Mesh(new T.RingGeometry(cp.r - 0.5, cp.r, 72).rotateX(-Math.PI / 2), ringMat); ring.position.y = 0.25; g.add(ring);
     const light = new T.PointLight(0xffffff, 60, 46, 1.6); light.position.y = 9; g.add(light);
     return { g, glow, beamMat, ringMat, holo, holo2, light, col: new T.Color(1, 1, 1) };
@@ -8527,7 +9061,7 @@
       const biome = world.planet.biomeDef;
       this.sky = E.makeSky(S, world.planet, biome);
       S.setAtmosphere(this.sky.atmosphere);
-      S.setEnvironment(this.sky.dome);
+      S.setEnvironment(this.sky);
       this.planetGroup = E.buildTerrain(S, world.terrain, biome, S.qualityName);
       this.camera.terrain = world.terrain;
       this.fx.setBiome(biome, world.terrain);
@@ -8563,7 +9097,7 @@
       const tex = this._glowTex || (this._glowTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 64; const x = cv.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.3, 'rgba(255,255,255,0.4)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new T.CanvasTexture(cv); })());
       const n = org ? 3 : (u.type === 'dreadnought' ? 4 : 3), W = d.h * 2.5, H = d.h * 1.25;
       for (let i = 0; i < n; i++) {
-        const s = new T.Sprite(new T.SpriteMaterial({ map: tex, color: new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), blending: T.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+        const s = new T.Sprite(E.Mat.sprite({ map: tex, color: new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), additive: true }));
         s.scale.setScalar(H * 1.5); s.position.set((i - (n - 1) / 2) * W * (org ? 0.26 : 0.24), 0, -d.len * 0.57); r.m.body.add(s);
       }
     }
@@ -8671,7 +9205,7 @@
       for (const id of ids || []) {
         const r = this.models.get(id); if (!r) continue;
         let m = this.selRings[n];
-        if (!m) { m = new T.Mesh(new T.RingGeometry(0.86, 1, 32).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthTest: false, blending: T.AdditiveBlending, fog: false })); m.renderOrder = 9; this.scene.hud3d.add(m); this.selRings.push(m); }
+        if (!m) { m = new T.Mesh(new T.RingGeometry(0.86, 1, 32).rotateX(-Math.PI / 2), E.Mat.emissive({ opacity: 0.9, depthTest: false, additive: true })); m.renderOrder = 9; this.scene.hud3d.add(m); this.selRings.push(m); }
         m.visible = true; m.material.color.setRGB(col[0] * 2, col[1] * 2, col[2] * 2);
         const u = r.u, s = Math.max(1.4, u.r * 1.5); m.scale.setScalar(s);
         m.position.set(r.x, (u.kind === 'fighter' ? r.y - 2 : this.terrain.height(r.x, r.z) + 0.3), r.z); n++;
@@ -8684,8 +9218,6 @@
       this.time = t;
       const S = this.scene;
       S.gov(dt * 1000);
-      const pg = this.planetGroup;
-      if (pg) { if (pg.userData.water) pg.userData.water.material.uniforms.time.value = t; pg.userData.ground.userData.U.uTime.value = t; }
       const local = view.unit ? view.unit.id : 0;
       this.syncUnits(world, dt, t, local);
       this.updateDead(dt);
@@ -8699,8 +9231,23 @@
       const f = view.mode === 'unit' && view.unit ? view.pos : (view.mode === 'commander' ? { x: this.camera.cmd.x, y: 0, z: this.camera.cmd.z } : this.camera.orbit);
       const ext = view.mode === 'unit' && view.unit ? (view.unit.kind === 'infantry' ? 110 : view.unit.kind === 'capital' ? 700 : 240) : 520;
       S.focusShadows(f, ext);
-      S.atmo.uniforms.density.value = this.sky.atmosphere.density * (1 - E.smoothstep(300, 1400, cam.position.y) * 0.75);
+      this.postFor(view, dt);
       S.render(t);
+    }
+    // per-frame post-processing parameters from the camera mode: depth of field is off in first/third person
+    // gameplay and used by the cinematic (menu / orbit), commander and capital framings; motion blur follows camera speed.
+    postFor(view, dt) {
+      const S = this.scene, cam = S.camera, c = this.camera;
+      const mode = view.mode === 'commander' ? 'commander' : (view.mode === 'unit' && view.unit ? 'unit' : 'orbit');
+      const cinematic = mode !== 'unit';
+      let focus = 80, range = 90, bokeh = 2.5;
+      if (mode === 'commander') { focus = c.cmd.dist; range = Math.max(200, c.cmd.dist * 1.1); bokeh = 1.2; }
+      else if (mode === 'orbit') { const o = c.orbit; focus = Math.hypot(cam.position.x - o.x, cam.position.y - o.y, cam.position.z - o.z); range = Math.max(60, focus * 0.4); bokeh = 2.8; }
+      S.post.set({ dof: { on: cinematic, focus, range, bokeh } });
+      const p = cam.position, l = this._pp || (this._pp = { x: p.x, y: p.y, z: p.z });
+      const sp = Math.hypot(p.x - l.x, p.y - l.y, p.z - l.z) / Math.max(dt, 1e-3); l.x = p.x; l.y = p.y; l.z = p.z;
+      this._sp = (this._sp || 0) * 0.9 + Math.min(sp, 400) * 0.1;
+      S.post.set({ motionBlur: mode === 'unit' && view.unit && view.unit.kind !== 'infantry' ? Math.min(1, this._sp / 120) * 0.6 : Math.min(1, this._sp / 200) * 0.25 });
     }
     dispose() { window.removeEventListener('resize', this._resize); this.clear(); this.scene.dispose(); }
   }
@@ -8709,100 +9256,69 @@
 })(window.E = window.E || {});
 
 // ---- js/render/scene.js ----
-// three.js scene core: renderer, HDR post-processing chain, lights, shadows and
-// a quality governor. The frame is rendered to a float target, then:
-//   scene -> atmosphere (depth-based height fog + sun in-scatter)
-//         -> bloom -> grade (vignette, grain, damage, fade) -> tone-map/output.
-// Browser-only (needs THREE + WebGL2).
+// three.js scene core on the WebGPU renderer (THREE.WebGPURenderer, which falls
+// back to its WebGL2 backend when navigator.gpu is missing): renderer boot,
+// light rig + cascaded shadow maps, altitude-dependent ambient, the environment
+// (IBL) baked from the procedural sky, the post stack (post.js), quality tiers,
+// the resolution/tier governor and the ?debug readout. Browser-only.
+//
+// Boot is async:   await E.Scene.preinit(canvas, settings)   then   new E.Scene(canvas, opts)
+// (js/ui/main.js does this before it constructs the Game).
 (function (E) {
   'use strict';
 
+  // ── quality tiers: every pass is a per-tier toggle ──
+  //  res/resMin  internal render scale range for the dynamic-resolution governor (TAAU resolves to native)
+  //  dpr         cap on devicePixelRatio (ultra supersamples hi-dpi screens)
+  //  csm         shadow cascades x map size    ao/ssr  {scale: pass res, samples/quality}
+  //  atmo        {fog, clouds: march steps (0 = off), shafts: steps (0 = off)}
   const QUALITY = {
-    low:    { dpr: 0.75, shadows: 0,    bloom: false, msaa: 0, particles: 0.4 },
-    medium: { dpr: 1,    shadows: 1024, bloom: true,  msaa: 0, particles: 0.7 },
-    high:   { dpr: 1.5,  shadows: 2048, bloom: true,  msaa: 4, particles: 1 },
+    low:    { name: 'low',    res: 0.6, resMin: 0.5, dpr: 1,   csm: { n: 2, size: 1024 }, taa: true, ao: null, ssr: null, bloom: true, motionBlur: 0, dof: false, ca: false, grain: false, atmo: { fog: true, clouds: 10, shafts: 0 },   particles: 0.4, shadows: 1024, msaa: 0 },
+    medium: { name: 'medium', res: 0.75, resMin: 0.55, dpr: 1,  csm: { n: 3, size: 1024 }, taa: true, ao: { scale: 0.5, samples: 8 }, ssr: null, bloom: true, motionBlur: 0, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 12, shafts: 12 },   particles: 0.7, shadows: 1024, msaa: 0 },
+    high:   { name: 'high',   res: 1.0, resMin: 0.62, dpr: 1.5, csm: { n: 3, size: 2048 }, taa: true, ao: { scale: 0.75, samples: 12 }, ssr: { scale: 0.5, quality: 0.5 }, bloom: true, motionBlur: 8, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 14, shafts: 24 }, particles: 1, shadows: 2048, msaa: 0 },
+    ultra:  { name: 'ultra',  res: 1.0, resMin: 0.75, dpr: 2,   csm: { n: 4, size: 2048 }, taa: true, ao: { scale: 1, samples: 16 }, ssr: { scale: 0.75, quality: 0.8 }, bloom: true, motionBlur: 12, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 20, shafts: 32 }, particles: 1, shadows: 4096, msaa: 0 },
   };
+  const ORDER = ['low', 'medium', 'high', 'ultra'];
+  const AUTO_MAX = 2;      // the governor never probes above 'high'; ultra is opt-in
 
-  const VS = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
-
-  function atmospherePass() {
-    const T = E.THREE;
-    const pass = new T.Pass();
-    const mat = new T.ShaderMaterial({
-      depthTest: false, depthWrite: false,
-      uniforms: {
-        tDiffuse: { value: null }, tDepth: { value: null },
-        invProj: { value: new T.Matrix4() }, invView: { value: new T.Matrix4() }, camPos: { value: new T.Vector3() },
-        fogColor: { value: new T.Color(0.6, 0.7, 0.8) }, sunColor: { value: new T.Color(1, 0.9, 0.7) }, sunDir: { value: new T.Vector3(0, 1, 0) },
-        density: { value: 0.0006 }, heightK: { value: 0.006 }, base: { value: 0 }, maxFog: { value: 0.96 },
-      },
-      vertexShader: VS,
-      fragmentShader: `
-        varying vec2 vUv; uniform sampler2D tDiffuse, tDepth; uniform mat4 invProj, invView;
-        uniform vec3 camPos, fogColor, sunColor, sunDir; uniform float density, heightK, base, maxFog;
-        void main(){
-          vec4 col = texture2D(tDiffuse, vUv);
-          float d = texture2D(tDepth, vUv).x;
-          if (d < 0.99999) {
-            vec4 v = invProj * vec4(vUv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0); v /= v.w;
-            vec3 wp = (invView * v).xyz;
-            vec3 rd = wp - camPos; float dist = length(rd); rd /= max(dist, 1e-4);
-            float t = rd.y * heightK;
-            float f = abs(t) < 1e-5 ? dist : (1.0 - exp(-dist * t)) / t;
-            float amt = density * exp(clamp(-(camPos.y - base) * heightK, -20.0, 4.0)) * f;
-            float fog = clamp(1.0 - exp(-amt), 0.0, maxFog);
-            float sun = pow(max(dot(rd, sunDir), 0.0), 8.0);
-            col.rgb = mix(col.rgb, mix(fogColor, sunColor, sun * 0.55), fog);
-          }
-          gl_FragColor = col;
-        }`,
-    });
-    const quad = new T.FullScreenQuad(mat);
-    pass.uniforms = mat.uniforms;
-    pass.render = function (renderer, writeBuffer, readBuffer) {
-      mat.uniforms.tDiffuse.value = readBuffer.texture;
-      mat.uniforms.tDepth.value = readBuffer.depthTexture;
-      renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
-      quad.render(renderer);
-    };
-    pass.dispose = function () { mat.dispose(); quad.dispose(); };
-    return pass;
-  }
-
-  const GradeShader = {
-    uniforms: { tDiffuse: { value: null }, time: { value: 0 }, damage: { value: 0 }, fade: { value: 0 }, sat: { value: 1.08 }, vig: { value: 0.32 }, zoom: { value: 0 } },
-    vertexShader: VS,
-    fragmentShader: `
-      varying vec2 vUv; uniform sampler2D tDiffuse; uniform float time, damage, fade, sat, vig, zoom;
-      float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-      void main(){
-        vec2 c = vUv - 0.5; float r2 = dot(c, c);
-        vec2 ab = c * r2 * 0.012;
-        vec3 col = vec3(texture2D(tDiffuse, vUv + ab).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - ab).b);
-        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
-        col = mix(vec3(l), col, sat - damage * 0.5);
-        col *= 1.0 - smoothstep(0.12, 0.85, r2 * (1.6 + zoom * 2.4)) * (vig + zoom * 0.5);
-        col = mix(col, vec3(0.75, 0.03, 0.0) * (0.4 + l), smoothstep(0.08, 0.5, r2) * damage);
-        col += (h(vUv * 800.0 + time) - 0.5) * 0.018;
-        gl_FragColor = vec4(col * (1.0 - fade), 1.0);
-      }`,
-  };
+  const urlParam = (k) => { try { return new URLSearchParams(window.location.search).get(k); } catch (e) { return null; } };
 
   class Scene {
+    // Create + initialise the renderer. Must complete before `new Scene`.
+    static async preinit(canvas, opts) {
+      const T = E.THREE;
+      if (window.GC_TRACE) T.Node.captureStackTrace = true;
+      if (!T.WebGPURenderer) throw new Error('vendor/three.min.js is not the WebGPU build (run npm run vendor:three)');
+      const force = (window.GC_BACKEND || urlParam('backend')) === 'webgl';
+      const make = (forceWebGL) => new T.WebGPURenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance', forceWebGL, reversedDepthBuffer: true, stencil: false });
+      let r = make(force);
+      try { await r.init(); }
+      catch (e) {
+        console.warn('WebGPU init failed, retrying on the WebGL2 backend:', e && e.message);
+        try { r.dispose(); } catch (e2) { /* ignore */ }
+        r = make(true); await r.init();
+      }
+      Scene._pre = r;
+      return r;
+    }
+
     constructor(canvas, opts) {
       const T = E.THREE; opts = opts || {};
       this.cv = canvas;
-      this.renderer = new T.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
-      this.renderer.outputColorSpace = T.SRGBColorSpace;
-      this.renderer.toneMapping = T.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.0;
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = T.PCFSoftShadowMap;
-      this.renderer.info.autoReset = false;
+      const r = this.renderer = Scene._pre;
+      if (!r) throw new Error('E.Scene: renderer not initialised; await E.Scene.preinit(canvas) first');
+      Scene._pre = null;
+      this.backend = r.backend && r.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
+      r.toneMapping = T.NoToneMapping;               // tone mapping happens in the post graph (post.js)
+      r.shadowMap.enabled = true;
+      r.shadowMap.type = T.PCFShadowMap;
+      r.info.autoReset = false;
 
       this.scene = new T.Scene();
-      this.scene.background = new T.Color(0x05070c);
-      this.camera = new T.PerspectiveCamera(60, 1, 0.4, 30000);
+      this.scene.background = null;
+      // soldier at 2 m ... hull several km away: near 0.3, far 60 km, with a reversed floating-point depth buffer
+      // (depth precision is ~uniform in log space; falls back to the same layout on WebGL2 via EXT_clip_control)
+      this.camera = new T.PerspectiveCamera(60, 1, 0.3, 60000);
       this.camera.position.set(0, 60, 160);
 
       this.world = new T.Group(); this.units = new T.Group(); this.fx = new T.Group(); this.hud3d = new T.Group();
@@ -8811,116 +9327,198 @@
       this.hemi = new T.HemisphereLight(0xbfd4ff, 0x30281c, 0.9);
       this.sun = new T.DirectionalLight(0xffffff, 3);
       this.sun.castShadow = true;
-      this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.6;
+      this.sun.shadow.bias = -0.0003; this.sun.shadow.normalBias = 0.35; this.sun.shadow.radius = 2.5;
       this.scene.add(this.hemi, this.sun, this.sun.target);
       this.sunDir = new T.Vector3(0.4, 0.6, -0.5).normalize();
-      this.shadowExtent = 160;
+      this.shadowRange = 600;
 
-      this.qualityName = opts.quality && opts.quality !== 'auto' ? opts.quality : 'high';
-      this.auto = !opts.quality || opts.quality === 'auto';
+      this.qualityName = 'high';
+      const want = window.GC_QUALITY || urlParam('quality') || opts.quality;
+      this.auto = !want || want === 'auto';
+      this.qualityName = want && QUALITY[want] ? want : 'high';
       this.Q = QUALITY[this.qualityName];
-      this.frameAvg = 16; this._gt = 0;
-      this.buildComposer();
+      this.resScale = this.Q.res; this.altitude = 0; this.frames = 0;
+      this.frameMs = 16; this._gt = 0; this._lastT = 0; this._upT = 0; this._downT = 0;
+      this.noGov = !!(window.GC_NO_GOV || urlParam('gov') === '0');
+      const fixedRes = parseFloat(window.GC_RES || urlParam('res'));
+      if (fixedRes > 0) { this.noGov = true; this.resScale = Math.min(1, fixedRes); }
+
+      this._atm = null; this._env = {}; this._envKey = '';
+      this.post = new E.Post(this);
+      // compatibility handle for the game controller: damage / zoom / fade live in the post stack
+      const u = this.post.u;
+      this.grade = { uniforms: { damage: u.damage, zoom: u.zoom, fade: u.fade, time: u.time } };
       this.applyQuality();
       this.resize();
+      this.makeDebug();
     }
 
-    buildComposer() {
-      const T = E.THREE, Q = this.Q;
-      if (this.composer) { this.composer.dispose(); this.rt.dispose(); }
-      const rt = new T.WebGLRenderTarget(4, 4, { type: T.HalfFloatType, samples: Q.msaa, depthBuffer: true });
-      rt.depthTexture = new T.DepthTexture(4, 4, T.UnsignedIntType);
-      this.rt = rt;
-      const c = new T.EffectComposer(this.renderer, rt);
-      c.addPass(new T.RenderPass(this.scene, this.camera));
-      this.atmo = atmospherePass(); c.addPass(this.atmo);
-      this.bloom = new T.UnrealBloomPass(new T.Vector2(256, 256), 0.5, 0.55, 1.0); c.addPass(this.bloom);
-      this.grade = new T.ShaderPass(GradeShader); c.addPass(this.grade);
-      c.addPass(new T.OutputPass());
-      this.composer = c;
-      if (this._atmo) this.setAtmosphere(this._atmo);
-    }
-
+    // ── quality ──
     applyQuality() {
-      const Q = this.Q, r = this.renderer;
-      this.bloom.enabled = Q.bloom;
-      r.shadowMap.enabled = Q.shadows > 0; this.sun.castShadow = Q.shadows > 0;
-      if (Q.shadows && this.sun.shadow.mapSize.x !== Q.shadows) { this.sun.shadow.mapSize.set(Q.shadows, Q.shadows); if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; } }
-      this.scene.traverse(o => { if (o.material && o.isMesh) o.material.needsUpdate = true; });
+      const Q = this.Q;
+      this.makeShadows();
+      this.resScale = Math.min(Q.res, Math.max(Q.resMin, this.resScale));
+      this.post.P.bloom.strength = this.post.P.bloom.strength || 0.5;
+      this.post.setScale(this.resScale);
+      this.post.build();
+      this.scene.traverse(o => { if (o.material && (o.isMesh || o.isInstancedMesh)) o.material.needsUpdate = true; });
     }
     setQuality(name) {
       this.auto = name === 'auto';
       if (this.auto) name = this.qualityName;
-      const msaa = this.Q.msaa;
-      this.qualityName = name; this.Q = QUALITY[name] || QUALITY.high;
-      if (this.Q.msaa !== msaa) this.buildComposer();
-      this.applyQuality(); this.resize();
+      if (!QUALITY[name]) name = 'high';
+      const changed = name !== this.qualityName;
+      this.qualityName = name; this.Q = QUALITY[name];
+      if (changed || !this._built) { this._built = true; this.resScale = this.Q.res; this.applyQuality(); }
+      this.resize();
+      if (this.fxScale) this.fxScale(this.Q.particles);
     }
 
-    // biome atmosphere: sun, ambient, fog
+    // cascaded shadow maps for the sun, split for a 2 m soldier .. km-scale view ranges
+    makeShadows() {
+      const T = E.THREE, c = this.Q.csm, sun = this.sun;
+      if (this.csm) { try { this.csm.dispose(); } catch (e) { /* ignore */ } this.csm = null; }
+      sun.shadow.mapSize.set(c.size, c.size);
+      if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+      const n = c.n, self = this;
+      // cascade k covers [r*f(k-1), r*f(k)] of the range r; tight near the player, long toward the horizon
+      const fr = { 1: [1], 2: [0.12, 1], 3: [0.06, 0.24, 1], 4: [0.04, 0.12, 0.38, 1] }[n];
+      this.csm = new T.CSMShadowNode(sun, { cascades: n, maxFar: this.shadowRange, mode: 'custom', customSplitsCallback: (cascades, near, far, target) => { for (const f of fr) target.push(f); } });
+      sun.shadow.shadowNode = this.csm;
+    }
+
+    // ── atmosphere / lighting driven by the biome ──
     setAtmosphere(a) {
-      this._atmo = a;
-      const u = this.atmo.uniforms;
-      u.fogColor.value.copy(a.fogColor); u.sunColor.value.copy(a.sunColor); u.sunDir.value.copy(a.sunDir);
-      u.density.value = a.density; u.heightK.value = a.heightK; u.base.value = a.base || 0;
+      this._atm = a;
+      const A = E.Atmo.U, M = E.Mat.U;
+      A.fogColor.value.copy(a.fogColor); A.sunColor.value.copy(a.sunColor); A.sunDir.value.copy(a.sunDir);
+      A.density.value = a.density; A.heightK.value = a.heightK; A.base.value = a.base || 0;
+      A.cover.value = a.cloud; A.cloudCol.value.copy(a.cloudCol); A.cloudDark.value.copy(a.cloudDark);
+      A.airless.value = a.airless; M.airless.value = a.airless;
+      M.sunDir.value.copy(a.sunDir); M.sunColor.value.copy(a.sunColor);
       this.sunDir.copy(a.sunDir);
       this.sun.color.copy(a.sunColor); this.sun.intensity = a.sunI;
       this.hemi.color.copy(a.skyColor); this.hemi.groundColor.copy(a.groundColor); this.hemi.intensity = a.ambI;
-      this.bloom.strength = a.bloom || 0.5;
+      this.post.P.bloom.strength = a.bloom || 0.5;
+      this.post.setBiome(a.biome);
+      this.post.apply();
     }
-    setEnvironment(skyMesh) {
-      const T = E.THREE;
+
+    // Bake the sky into image-based lighting: one cube for the surface, one for orbit (stars + planet below).
+    setEnvironment(sky) {
+      const T = E.THREE, M = E.Mat.U;
       try {
-        const pm = new T.PMREMGenerator(this.renderer), s = new T.Scene();
-        const m = new T.Mesh(skyMesh.geometry, skyMesh.material); s.add(m);
-        const env = pm.fromScene(s, 0, 1, 40000).texture;
-        if (this.scene.environment) this.scene.environment.dispose();
-        this.scene.environment = env; this.scene.environmentIntensity = 0.75;
+        const pm = new T.PMREMGenerator(this.renderer);
+        const bake = (alt) => {
+          const s = new T.Scene(), m = new T.Mesh(sky.dome.geometry, sky.dome.material);
+          s.add(m); M.altitude.value = alt;
+          return pm.fromScene(s, 0, 1, 50000, { size: 128 }).texture;
+        };
+        for (const k of ['ground', 'space']) if (this._env[k]) this._env[k].dispose();
+        this._env.ground = bake(2); this._env.space = bake(3300);
         pm.dispose();
+        this._envKey = ''; this.scene.environment = this._env.ground; E.Mat.setEnv(this._env.ground);
       } catch (e) { console.warn('env map failed', e); }
     }
 
     resize() {
       const W = window.innerWidth || 1280, H = window.innerHeight || 720;
       this.camera.aspect = W / H; this.camera.updateProjectionMatrix();
-      const dpr = Math.min(this.Q.dpr, window.devicePixelRatio || 1) * (this.dprScale || 1);
+      const dpr = Math.min(this.Q.dpr, window.devicePixelRatio || 1);
       this.renderer.setPixelRatio(dpr);
       this.renderer.setSize(W, H, false);
-      this.composer.setPixelRatio(dpr);
-      this.composer.setSize(W, H);
+      this._W = W; this._H = H; this._dpr = dpr;
     }
 
-    // keep the shadow frustum centred on what the player is looking at
+    // keep the shadow cascades sized for what the player is looking at
     focusShadows(p, extent) {
-      const s = this.sun, cam = s.shadow.camera, ex = extent || this.shadowExtent;
-      if (cam.right !== ex) { cam.left = cam.bottom = -ex; cam.right = cam.top = ex; cam.near = 10; cam.far = 2400; cam.updateProjectionMatrix(); }
-      const texel = (ex * 2) / (this.Q.shadows || 1024) * 4;
-      const fx = Math.round(p.x / texel) * texel, fz = Math.round(p.z / texel) * texel, fy = Math.round(p.y / texel) * texel;
-      s.target.position.set(fx, fy, fz);
-      s.position.set(fx + this.sunDir.x * 1100, fy + this.sunDir.y * 1100, fz + this.sunDir.z * 1100);
-      s.target.updateMatrixWorld();
+      const ex = extent || 160, range = Math.max(250, Math.min(3600, ex * 5));
+      if (Math.abs(range - this.shadowRange) > this.shadowRange * 0.15 && this.csm) {
+        this.shadowRange = range; this.csm.maxFar = range;
+        if (this.csm.camera) this.csm.updateFrustums();
+      }
+      const s = this.sun, c = this.camera.position;
+      s.target.position.copy(c);
+      s.position.set(c.x + this.sunDir.x * 1000, c.y + this.sunDir.y * 1000, c.z + this.sunDir.z * 1000);
+      s.target.updateMatrixWorld(); s.updateMatrixWorld();
     }
 
-    // quality governor: step down before a visible stutter, probe back up
+    // ── governor: dynamic resolution first, then tier steps, both from measured wall-clock frame time ──
     gov(dtMs) {
-      this.frameAvg = this.frameAvg * 0.95 + dtMs * 0.05;
-      if (!this.auto) return;
-      this._gt += dtMs; if (this._gt < 2500) return; this._gt = 0;
-      const order = ['low', 'medium', 'high'], i = order.indexOf(this.qualityName);
-      if (this.frameAvg > 24 && i > 0) { this._swap(order[i - 1]); this._up = 0; }
-      else if (this.frameAvg < 13 && i < 2) { this._up = (this._up || 0) + 1; if (this._up >= 4 && !this._capped) { this._swap(order[i + 1]); this._up = 0; this._capped = (this._downs = (this._downs || 0) + 1) > 3; } }
+      if (this.noGov) return;
+      this._gt += dtMs; if (this._gt < 500) return;
+      const ms = this.frameMs; this._gt = 0;
+      const Q = this.Q;
+      if (ms > 21) {
+        this._upT = 0; this._downT++;
+        if (this.resScale > Q.resMin + 1e-3) { this.resScale = Math.max(Q.resMin, this.resScale - 0.06); this.post.setScale(this.resScale); }
+        else if (this.auto && this._downT >= 6) { const i = ORDER.indexOf(this.qualityName); if (i > 0) this._swap(ORDER[i - 1]); }
+      } else if (ms < 13.5) {
+        this._downT = 0; this._upT++;
+        if (this.resScale < Q.res - 1e-3) { this.resScale = Math.min(Q.res, this.resScale + 0.03); this.post.setScale(this.resScale); }
+        else if (this.auto && this._upT >= 20) { const i = ORDER.indexOf(this.qualityName); if (i < AUTO_MAX && !this._capped) { this._swap(ORDER[i + 1]); this._capped = (this._ups = (this._ups || 0) + 1) > 3; } this._upT = 0; }
+      } else { this._upT = 0; this._downT = Math.max(0, this._downT - 1); }
     }
-    _swap(name) { const msaa = this.Q.msaa; this.qualityName = name; this.Q = QUALITY[name]; if (this.Q.msaa !== msaa) this.buildComposer(); this.applyQuality(); this.resize(); this.frameAvg = 16; }
+    _swap(name) { this.qualityName = name; this.Q = QUALITY[name]; this.resScale = this.Q.res; this.applyQuality(); this.resize(); this.frameMs = 16; this._downT = this._upT = 0; if (this.fxScale) this.fxScale(this.Q.particles); }
 
+    // ── per-frame ──
     render(t) {
-      const u = this.atmo.uniforms, cam = this.camera;
+      const cam = this.camera, A = E.Atmo.U, M = E.Mat.U, P = this.post;
       cam.updateMatrixWorld();
-      u.invProj.value.copy(cam.projectionMatrixInverse); u.invView.value.copy(cam.matrixWorld); u.camPos.value.copy(cam.position);
-      this.grade.uniforms.time.value = t % 100;
+      const alt = cam.position.y; this.altitude = alt;
+      const ALT = (E.SIM && E.SIM.ALT) || { cloudLo: 700, cloudHi: 1000, space: 2600, orbit: 3200, ceiling: 4400 };
+      const airless = this._atm ? this._atm.airless : 0;
+      const k = Math.max(0, Math.min(1, 1 - alt / ALT.space));                  // air density 1 at the surface .. 0 in space
+      const spaceK = Math.max(airless, 1 - k);
+      M.time.value = t; M.camPos.value.copy(cam.position); M.altitude.value = alt; M.space.value = spaceK;
+      A.camPos.value.copy(cam.position); A.frame.value = (A.frame.value + 1) % 4096; A.wind.value.set(t * 7, 0, t * 3.5);
+      A.cloudLo.value = ALT.cloudLo; A.cloudHi.value = ALT.cloudHi;
+      P.u.time.value = t % 100;
+      if (this._atm) {
+        const a = this._atm;
+        A.density.value = a.density * (1 - E.smoothstep(300, 1400, alt) * 0.75);
+        // ground bounce low down; hard single-source light with planet-shine in space
+        const sm = 1 - Math.pow(k, 0.6);
+        this.hemi.intensity = a.ambI * (0.12 + 0.88 * Math.pow(k, 0.7)) + 0.16 * sm * (1 - airless * 0.5);
+        this.sun.intensity = a.sunI * (1 + 0.45 * sm);
+        if (sm > 0.05) { this._shine = this._shine || new (E.THREE.Color)(); this._shine.copy(a.groundColor).multiplyScalar(2); this.hemi.groundColor.copy(a.groundColor).lerp(this._shine, sm); this.hemi.color.copy(a.skyColor).lerp(new (E.THREE.Color)(0.02, 0.03, 0.07), sm); }
+        else { this.hemi.color.copy(a.skyColor); this.hemi.groundColor.copy(a.groundColor); }
+        this.scene.environmentIntensity = 0.75 * (0.18 + 0.82 * k) + 0.25 * sm * 0.6;
+        const key = alt > 1750 || airless ? 'space' : 'ground';
+        if (key !== this._envKey && this._env[key]) { this._envKey = key; this.scene.environment = this._env[key]; E.Mat.setEnv(this._env[key]); }
+      }
+      // keep cascade frusta in step with FOV changes (ADS zoom)
+      if (this.csm && this.csm.camera && Math.abs(this._csmFov - cam.fov) > 0.4) { this._csmFov = cam.fov; this.csm.updateFrustums(); }
       this.renderer.info.reset();
-      this.composer.render();
+      const t0 = performance.now();
+      P.render();
+      this.frames++;
+      const now = performance.now();
+      if (this._lastT) { const d = now - this._lastT; this.frameMs += (Math.min(d, 200) - this.frameMs) * 0.08; }
+      this._lastT = now;
+      this._renderMs = now - t0;
+      if (this.dbg) this.updateDebug(now);
     }
-    dispose() { this.composer.dispose(); this.renderer.dispose(); }
+
+    // ── ?debug / window.GC_DEBUG readout ──
+    makeDebug() {
+      if (!(window.GC_DEBUG || urlParam('debug') !== null)) return;
+      const el = document.createElement('pre');
+      el.id = 'gc-debug';
+      el.style.cssText = 'position:fixed;right:8px;bottom:8px;margin:0;padding:6px 8px;font:11px/1.35 ui-monospace,Menlo,monospace;color:#9f9;background:rgba(0,0,0,.6);border-radius:4px;z-index:99999;pointer-events:none;white-space:pre';
+      document.body.appendChild(el); this.dbg = el; this._dbgT = 0;
+    }
+    stats() {
+      const i = this.renderer.info.render;
+      return { frameMs: +this.frameMs.toFixed(1), cpuMs: +(this._renderMs || 0).toFixed(1), drawCalls: i.drawCalls, triangles: i.triangles, backend: this.backend, tier: this.qualityName + (this.auto ? ' (auto)' : ''), resScale: +this.resScale.toFixed(2), size: this._W + 'x' + this._H, frames: this.frames };
+    }
+    updateDebug(now) {
+      if (now - this._dbgT < 250) return; this._dbgT = now;
+      const s = this.stats();
+      this.dbg.textContent = `frame  ${s.frameMs} ms (${(1000 / s.frameMs).toFixed(0)} fps)  cpu ${s.cpuMs} ms\ndraws  ${s.drawCalls}   tris ${s.triangles}\nbackend ${s.backend}   tier ${s.tier}\nres    ${s.size} x${s.resScale} (TAAU)`;
+    }
+
+    dispose() { this.post.dispose(); this.renderer.dispose(); if (this.dbg) this.dbg.remove(); }
   }
 
   E.Scene = Scene;
@@ -8928,23 +9526,24 @@
 })(window.E = window.E || {});
 
 // ---- js/render/sky.js ----
-// Procedural sky: an art-directed shader dome per biome (scattering-style
-// gradient, sun disc + halo, drifting fbm clouds, stars and nebulae that emerge
-// as the camera climbs toward space), plus distant shaded planets, moons and
-// rings. Everything is generated in the shader — no images.
+// Procedural sky (TSL node material on a camera-centred dome):
+//  - single-scattering Rayleigh + Mie atmosphere, ray-marched through an
+//    exponential atmosphere on a small (game-scaled) planet. Because the camera
+//    height is a real input, the same shader gives blue sky at the surface,
+//    thinning air with altitude, a curved limb with a glowing atmosphere rim
+//    and a star field once above the air (E.SIM.ALT.space ~ 2600 m).
+//  - a planet under the camera: rays that miss the atmosphere's far side hit a
+//    shaded planet sphere, so the horizon curves away from orbit.
+//  - stars, nebulae, sun disc, plus distant shaded planets / moons / rings.
+// Per-biome art direction (palette, sun, airless) comes from the SKY table and
+// is carried by uniforms, so every biome shares one compiled shader.
+// Clouds, fog and light shafts are screen-space volumetrics in atmo.js.
 (function (E) {
   'use strict';
 
-  E.GLSL_NOISE = `
-    float gcH2(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
-    float gcN2(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-      return mix(mix(gcH2(i), gcH2(i + vec2(1, 0)), f.x), mix(gcH2(i + vec2(0, 1)), gcH2(i + vec2(1, 1)), f.x), f.y); }
-    float gcFbm(vec2 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++) { s += a * gcN2(p); p = p * 2.03 + 17.1; a *= 0.5; } return s; }
-    float gcFbm3(vec2 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 3; i++) { s += a * gcN2(p); p = p * 2.03 + 17.1; a *= 0.5; } return s; }`;
-
   const hex = (h) => new E.THREE.Color(h);
-  // Per-biome art direction. sun = direction to the sun; space = how much of
-  // the sky is already "space" at ground level (airless worlds).
+  // sun = direction to the sun; space = how much of the sky is already "space" at ground level (airless worlds);
+  // cloud/cloudCol/cloudDark drive the volumetric layer (atmo.js); fog = aerial-perspective colour.
   const SKY = {
     tundra:   { top: '#1d3f78', hor: '#c6d6ea', sunCol: '#ffe2c4', sun: [0.55, 0.3, -0.5], sunI: 3.0, cloud: 0.5, cloudCol: '#eef3fa', cloudDark: '#7d8ea8', fog: '#a9bfd6', amb: 1.0, space: 0.0, bloom: 0.5 },
     desert:   { top: '#1f4f9a', hor: '#efcfa2', sunCol: '#fff0d0', sun: [0.4, 0.52, -0.55], sunI: 3.6, cloud: 0.22, cloudCol: '#fff3e0', cloudDark: '#c9a988', fog: '#e2c49c', amb: 0.95, space: 0.0, bloom: 0.5 },
@@ -8956,105 +9555,162 @@
     gas:      { top: '#120a2a', hor: '#7a3f8c', sunCol: '#ffd0f0', sun: [0.45, 0.3, -0.6], sunI: 2.6, cloud: 0.35, cloudCol: '#e0a8f0', cloudDark: '#2c1a44', fog: '#5a3470', amb: 0.8, space: 0.45, bloom: 0.7 },
   };
 
-  function planetMesh(radius, cA, cB, seed, banded, sunDir) {
-    const T = E.THREE;
-    const m = new T.ShaderMaterial({
-      fog: false, uniforms: { cA: { value: hex(cA) }, cB: { value: hex(cB) }, sunDir: { value: sunDir }, seed: { value: seed }, banded: { value: banded ? 1 : 0 } },
-      vertexShader: 'varying vec3 vN, vP; void main(){ vN = normalize(normal); vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: E.GLSL_NOISE + `
-        varying vec3 vN, vP; uniform vec3 cA, cB, sunDir; uniform float seed, banded;
-        void main(){
-          vec3 n = normalize(vN);
-          vec2 uv = vec2(atan(n.z, n.x) * 2.0, n.y * 6.0) + seed;
-          float pat = banded > 0.5 ? gcFbm(vec2(uv.x * 0.25 + gcFbm(uv * 1.5) * 0.6, uv.y * 2.2)) : gcFbm(uv * 3.0);
-          vec3 col = mix(cA, cB, smoothstep(0.3, 0.7, pat));
-          if (banded < 0.5) col *= 0.75 + 0.5 * gcFbm(uv * 9.0);
-          float l = smoothstep(-0.15, 0.55, dot(n, sunDir));
-          float rim = pow(1.0 - max(dot(n, normalize(cameraPosition - vP)), 0.0), 3.0);
-          gl_FragColor = vec4(col * (0.03 + l * 1.1) + cB * rim * l * 0.5, 1.0);
-        }`,
-    });
+  // game-scaled planet: radius and atmosphere heights in metres
+  const PLANET = { R: 40000, Ratm: 49000, Hr: 1500, Hm: 450 };
+
+  // ── dome material (one shared compiled shader; per-biome values are uniforms) ──
+  let domeMat = null, SU = null;
+  function skyUniforms() {
+    if (SU) return SU;
+    const { uniform } = E.THREE.TSL, T = E.THREE;
+    SU = {
+      betaR: uniform(new T.Vector3(0.2, 0.45, 1.0)), hor: uniform(new T.Color()), sunI: uniform(3), ground: uniform(new T.Color()),
+      nebA: uniform(new T.Color()), nebB: uniform(new T.Color()), seed: uniform(0),
+    };
+    return SU;
+  }
+  function dome() {
+    if (domeMat) return domeMat;
+    const T = E.THREE, X = T.TSL, N = E.TSLN, U = E.Mat.U, S = skyUniforms();
+    const { Fn, float, vec2, vec3, vec4, dot, normalize, length, exp, max, min, sqrt, pow, mix, smoothstep, select, positionLocal, floor, fract, sin, clamp, atan, abs, cameraPosition } = X;
+    const { R, Ratm, Hr, Hm } = PLANET;
+    const STEPS = 10;
+    // ray (origin on the +y axis at distance L from the planet centre) vs sphere of radius r, written as a
+    // difference of squares so float32 holds up at planetary magnitudes
+    const raySphere = (L, d, r) => {
+      const b = L.mul(d.y), perp = L.mul(length(d.xz));
+      const disc = float(r).sub(perp).mul(float(r).add(perp));
+      const s = sqrt(max(disc, 0));
+      return { t0: b.negate().sub(s), t1: b.negate().add(s), hit: disc.greaterThan(0) };
+    };
+    const stars = (d, sc) => {
+      const p = d.mul(sc), i = floor(p), f = fract(p).sub(0.5);
+      const h = N.hash31(i);
+      return smoothstep(0.985, 1.0, h).mul(smoothstep(0.38, 0.0, length(f))).mul(sin(U.time.mul(2.0).add(h.mul(90.0))).mul(0.4).add(0.6));
+    };
+    const m = E.Mat.node('basic');
+    m.side = T.BackSide; m.depthWrite = false; m.depthTest = false; m.fog = false;
+    m.colorNode = Fn(() => {
+      const d = normalize(positionLocal);
+      const alt = max(U.altitude, 0.5);
+      const o = vec3(0, alt.add(R), 0);
+      const sd = U.sunDir;
+      const air = float(1).sub(U.airless).mul(float(1).sub(smoothstep(1200, 2800, alt).mul(0.93)));
+      const L0 = alt.add(R), atm = raySphere(L0, d, Ratm), pl = raySphere(L0, d, R);
+      const hitP = pl.hit.and(pl.t0.greaterThan(0));
+      const tmax = select(hitP, pl.t0, max(atm.t1, 0.0)).toVar();
+      const tau = vec3(0).toVar(), sum = vec3(0).toVar();
+      const cosV = dot(d, sd);
+      const phR = float(0.0596831).mul(cosV.mul(cosV).add(1));                    // 3/(16 pi) (1 + cos^2)
+      const g = 0.76, gg = g * g;
+      const phM = float(0.0795775).mul(float(1 - gg)).mul(cosV.mul(cosV).add(1)).div(float(2 + gg).mul(pow(float(1 + gg).sub(cosV.mul(2 * g)), 1.5)));
+      const betaM = vec3(0.045, 0.047, 0.05).div(Hm);
+      const betaR = S.betaR.div(Hr);
+      for (let i = 0; i < STEPS; i++) {
+        const u = (i + 0.5) / STEPS, dt = tmax.mul(2 * u / STEPS), p = o.add(d.mul(tmax.mul(u * u)));
+        const h = max(length(p).sub(R), 0.0);
+        const rR = exp(h.negate().div(Hr)).mul(air), rM = exp(h.negate().div(Hm)).mul(air);
+        const ext = betaR.mul(rR).add(betaM.mul(rM));
+        tau.addAssign(ext.mul(dt));
+        const cosS = dot(normalize(p), sd);
+        const k = float(1).div(max(cosS, 0.0).mul(0.9).add(0.1));
+        const sunT = exp(betaR.mul(rR.mul(Hr)).add(betaM.mul(rM.mul(Hm))).mul(k).negate()).mul(smoothstep(-0.12, 0.1, cosS));
+        sum.addAssign(sunT.mul(betaR.mul(rR).mul(phR).add(betaM.mul(rM).mul(phM))).mul(exp(tau.negate())).mul(dt));
+      }
+      const viewT = exp(tau.negate());
+      let col = sum.mul(S.sunI).mul(U.sunColor).mul(0.9).toVar();
+      // ground-level multiple-scatter haze: the horizon lifts toward the biome's palette colour
+      const hz = pow(float(1).sub(abs(d.y)), 3).mul(exp(alt.negate().div(Hr * 1.4))).mul(air);
+      col.addAssign(S.hor.mul(hz).mul(0.35));
+      // the planet below: shaded surface seen through the atmosphere
+      const pp = o.add(d.mul(pl.t0));
+      const pn = normalize(pp);
+      const gn = N.fbm3(pp.xz.mul(0.0006).add(S.seed)).mul(0.5).add(0.75);
+      const sunOnGround = smoothstep(-0.05, 0.4, dot(pn, sd));
+      const sunTg = exp(S.betaR.div(Hr).mul(Hr).mul(air).mul(float(1).div(max(dot(pn, sd), 0.08))).negate().mul(0.9));
+      const groundLit = S.ground.mul(gn).mul(sunOnGround).mul(sunTg).mul(U.sunColor).mul(S.sunI).mul(0.32).add(S.ground.mul(0.01));
+      col.addAssign(select(hitP, groundLit.mul(viewT), vec3(0)));
+      // stars + nebula, dimmed by the air in front of them
+      const space = float(1);
+      const st = stars(d, 140.0).add(stars(d, 260.0).mul(0.6));
+      const nuv = vec2(atan(d.z, d.x).mul(1.4), d.y.mul(2.6)).add(S.seed);
+      const nb = N.fbm5(nuv.mul(1.3).add(N.fbm3(nuv.mul(2.0)).mul(0.8)));
+      const neb = mix(S.nebA, S.nebB, N.fbm3(nuv.mul(0.7).add(5.0))).mul(smoothstep(0.42, 0.85, nb)).mul(0.5);
+      const skyView = select(hitP, vec3(0), viewT);                              // no stars through the planet
+      col.addAssign(vec3(st).mul(2.2).add(neb).mul(skyView));
+      // sun disc + halo (attenuated by the atmosphere, hidden by the planet)
+      const sdot = max(dot(d, sd), 0.0);
+      const sunTr = exp(betaR.mul(exp(alt.negate().div(Hr)).mul(Hr)).add(betaM.mul(exp(alt.negate().div(Hm)).mul(Hm))).mul(air).mul(float(1).div(max(sd.y, 0.04))).negate().mul(1.0));
+      const disc = smoothstep(0.9994, 0.9998, sdot).mul(30.0).add(pow(sdot, 400.0).mul(3.0)).add(pow(sdot, 40.0).mul(0.25));
+      const sunVis = select(hitP, float(0), float(1));
+      col.addAssign(U.sunColor.mul(sunTr).mul(disc).mul(sunVis));
+      return vec4(col, 1.0);
+    })();
+    domeMat = m;
+    return m;
+  }
+
+  // ── distant bodies ──
+  function planetMesh(radius, cA, cB, seed, banded) {
+    const T = E.THREE, X = T.TSL, N = E.TSLN, U = E.Mat.U;
+    const { vec2, vec3, vec4, float, uniform, normalLocal, normalize, atan, mix, smoothstep, dot, max, pow, positionView, normalView } = X;
+    const m = E.Mat.node('basic'); m.fog = false;
+    const A = uniform(hex(cA)), B = uniform(hex(cB));
+    const n = normalize(normalLocal);
+    const uv = vec2(atan(n.z, n.x).mul(2.0), n.y.mul(6.0)).add(seed);
+    const pat = banded ? N.fbm5(vec2(uv.x.mul(0.25).add(N.fbm5(uv.mul(1.5)).mul(0.6)), uv.y.mul(2.2))) : N.fbm5(uv.mul(3.0));
+    let col = mix(A, B, smoothstep(0.3, 0.7, pat));
+    if (!banded) col = col.mul(N.fbm5(uv.mul(9.0)).mul(0.5).add(0.75));
+    const l = smoothstep(-0.15, 0.55, dot(n, U.sunDir));
+    const rim = pow(float(1).sub(max(dot(normalView, normalize(positionView.negate())), 0)), 3);
+    m.colorNode = vec4(col.mul(l.mul(1.1).add(0.03)).add(B.mul(rim).mul(l).mul(0.5)).mul(2.2), 1);
     return new T.Mesh(new T.SphereGeometry(radius, 48, 32), m);
   }
   function ringMesh(r0, r1, col) {
-    const T = E.THREE, g = new T.RingGeometry(r0, r1, 96, 1);
-    const m = new T.ShaderMaterial({
-      fog: false, transparent: true, side: T.DoubleSide, depthWrite: false, uniforms: { col: { value: hex(col) }, r0: { value: r0 }, r1: { value: r1 } },
-      vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: E.GLSL_NOISE + `varying vec3 vP; uniform vec3 col; uniform float r0, r1;
-        void main(){ float t = (length(vP.xy) - r0) / (r1 - r0); float b = gcN2(vec2(t * 46.0, 0.5)) * 0.7 + gcN2(vec2(t * 9.0, 3.5)) * 0.5;
-          gl_FragColor = vec4(col * (0.5 + b * 0.6), smoothstep(0.0, 0.06, t) * smoothstep(1.0, 0.9, t) * b * 0.8); }`,
-    });
-    return new T.Mesh(g, m);
+    const T = E.THREE, X = T.TSL, N = E.TSLN;
+    const { vec2, vec4, float, uniform, positionLocal, length, smoothstep } = X;
+    const m = E.Mat.node('basic'); m.fog = false; m.transparent = true; m.side = T.DoubleSide; m.depthWrite = false;
+    const C = uniform(hex(col));
+    const t = length(positionLocal.xy).sub(r0).div(r1 - r0);
+    const b = N.noise2(vec2(t.mul(46.0), 0.5)).mul(0.7).add(N.noise2(vec2(t.mul(9.0), 3.5)).mul(0.5));
+    m.colorNode = vec4(C.mul(b.mul(0.6).add(0.5)).mul(2.0), smoothstep(0.0, 0.06, t).mul(smoothstep(1.0, 0.9, t)).mul(b).mul(0.8));
+    return new T.Mesh(new T.RingGeometry(r0, r1, 96, 1), m);
   }
 
   function makeSky(scene, planet, biome) {
-    const T = E.THREE, S = SKY[planet.biome] || SKY.desert;
+    const T = E.THREE, S = SKY[planet.biome] || SKY.desert, SUn = skyUniforms();
     const group = new T.Group();
     const sunDir = new T.Vector3(S.sun[0], S.sun[1], S.sun[2]).normalize();
-    const uniforms = {
-      top: { value: hex(S.top) }, hor: { value: hex(S.hor) }, sunDir: { value: sunDir }, sunCol: { value: hex(S.sunCol) },
-      cloudCol: { value: hex(S.cloudCol) }, cloudDark: { value: hex(S.cloudDark) }, cover: { value: S.cloud },
-      time: { value: 0 }, space: { value: S.space }, seed: { value: (planet.seed % 1000) * 0.37 },
-      nebA: { value: hex(E.rgbStr(E.hsl2rgb((planet.seed % 97) / 97, 0.7, 0.45))) }, nebB: { value: hex(E.rgbStr(E.hsl2rgb(((planet.seed % 97) / 97 + 0.35) % 1, 0.8, 0.4))) },
+    // per-biome scattering tint: the Rayleigh colour follows the palette's zenith colour
+    const tc = hex(S.top), mx = Math.max(tc.r, tc.g, tc.b, 1e-3);
+    const tint = [Math.max(tc.r / mx, 0.06) * 0.2, Math.max(tc.g / mx, 0.06) * 0.45, Math.max(tc.b / mx, 0.06)];
+    const lowC = biome.palette.low, ground = new T.Color().setRGB(lowC[0] / 255, lowC[1] / 255, lowC[2] / 255, T.SRGBColorSpace);
+    const setBiome = () => {
+      const k = 0.55 * (S.space >= 1 ? 1 : 1);
+      SUn.betaR.value.set(tint[0] * k, tint[1] * k, tint[2] * k);
+      SUn.hor.value.copy(hex(S.hor)); SUn.sunI.value = S.sunI * 7.5; SUn.ground.value.copy(ground);
+      SUn.seed.value = (planet.seed % 1000) * 0.37;
+      SUn.nebA.value.copy(hex(E.rgbStr(E.hsl2rgb((planet.seed % 97) / 97, 0.7, 0.45))));
+      SUn.nebB.value.copy(hex(E.rgbStr(E.hsl2rgb(((planet.seed % 97) / 97 + 0.35) % 1, 0.8, 0.4))));
     };
-    const mat = new T.ShaderMaterial({
-      side: T.BackSide, depthWrite: false, depthTest: false, fog: false, uniforms,
-      vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: E.GLSL_NOISE + `
-        varying vec3 vDir; uniform vec3 top, hor, sunDir, sunCol, cloudCol, cloudDark, nebA, nebB; uniform float cover, time, space, seed;
-        float stars(vec3 d, float sc){
-          vec3 p = d * sc; vec3 i = floor(p), f = fract(p) - 0.5;
-          float h = fract(sin(dot(i, vec3(127.1, 311.7, 74.7))) * 43758.5453);
-          float s = smoothstep(0.985, 1.0, h) * smoothstep(0.38, 0.0, length(f));
-          return s * (0.6 + 0.4 * sin(time * 2.0 + h * 90.0));
-        }
-        void main(){
-          vec3 d = normalize(vDir);
-          float h = max(d.y, 0.0);
-          float sd = max(dot(d, sunDir), 0.0);
-          vec3 sky = mix(hor, top, pow(h, 0.5));
-          sky += sunCol * pow(sd, 6.0) * 0.22 * (1.0 - h);                    // warm scatter near the sun
-          sky = mix(sky, hor * 0.7, smoothstep(0.0, -0.3, d.y));
-          float sp = clamp(space, 0.0, 1.0) * smoothstep(-0.2, 0.35, d.y + space * 0.4);
-          vec3 col = sky * (1.0 - sp * 0.97);
-          // stars + nebula (space)
-          float st = stars(d, 140.0) + stars(d, 260.0) * 0.6;
-          vec2 nuv = vec2(atan(d.z, d.x) * 1.4, d.y * 2.6) + seed;
-          float nb = gcFbm(nuv * 1.3 + gcFbm(nuv * 2.0) * 0.8);
-          vec3 neb = mix(nebA, nebB, gcFbm(nuv * 0.7 + 5.0)) * smoothstep(0.42, 0.85, nb) * 0.5;
-          col += (vec3(st) * 2.2 + neb) * sp;
-          // clouds: project onto a plane above the viewer
-          if (cover > 0.01 && d.y > 0.0) {
-            vec2 cp = d.xz / (d.y + 0.14) * 1.1 + vec2(time * 0.006, time * 0.003) + seed;
-            float n = gcFbm(cp + gcFbm(cp * 2.3 + time * 0.01) * 0.35);
-            float dens = smoothstep(1.0 - cover, 1.0 - cover + 0.3, n + 0.18) * smoothstep(0.0, 0.16, d.y);
-            float lit = smoothstep(0.2, 0.9, gcFbm(cp + sunDir.xz * 0.12) - n + 0.55);
-            vec3 cc = mix(cloudDark, cloudCol, lit) + sunCol * pow(sd, 10.0) * 0.6;
-            col = mix(col, cc, dens * 0.92 * (1.0 - sp * 0.85));
-          }
-          // sun disc + halo
-          col += sunCol * (smoothstep(0.9994, 0.9998, sd) * 30.0 + pow(sd, 400.0) * 3.0 + pow(sd, 40.0) * 0.4);
-          gl_FragColor = vec4(col, 1.0);
-        }`,
-    });
-    const dome = new T.Mesh(new T.SphereGeometry(20000, 48, 24), mat);
-    dome.renderOrder = -100; dome.frustumCulled = false;
-    group.add(dome);
+    setBiome();
+    const dm = new T.Mesh(new T.SphereGeometry(30000, 48, 24), dome());
+    dm.renderOrder = -100; dm.frustumCulled = false;
+    group.add(dm);
 
     // distant bodies (they ride with the dome so they never get closer)
     const r = E.RNG(planet.seed ^ 0x1234), bodies = new T.Group(); group.add(bodies);
     const place = (m, az, el, dist) => { m.position.set(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el)).multiplyScalar(dist); bodies.add(m); return m; };
     if (planet.biome === 'gas') {
-      const g = place(planetMesh(6200, '#c08a5a', '#6a3a8c', planet.seed % 50, true, sunDir), 2.4, 0.42, 16000);
+      const g = place(planetMesh(6200, '#c08a5a', '#6a3a8c', planet.seed % 50, true), 2.4, 0.42, 16000);
       const ring = ringMesh(7800, 12500, '#d8b8e8'); ring.rotation.x = 1.25; ring.rotation.y = 0.3; g.add(ring);
-      place(planetMesh(520, '#8a8f9a', '#c4c9d4', 3, false, sunDir), 0.9, 0.5, 17000);
+      place(planetMesh(520, '#8a8f9a', '#c4c9d4', 3, false), 0.9, 0.5, 17000);
     } else {
       const n = 1 + (planet.seed % 2) + (S.space > 0.5 ? 1 : 0);
       for (let i = 0; i < n; i++) {
         const big = i === 0 && r.chance(0.5);
         const hue = r.next();
-        const m = place(planetMesh(big ? r.f(1700, 2600) : r.f(380, 900), E.rgbStr(E.hsl2rgb(hue, 0.25, 0.55)), E.rgbStr(E.hsl2rgb(hue + 0.08, 0.35, 0.3)), r.f(0, 50), big && r.chance(0.5), sunDir), r.angle(), r.f(0.2, 0.75), 17500);
+        const m = place(planetMesh(big ? r.f(1700, 2600) : r.f(380, 900), E.rgbStr(E.hsl2rgb(hue, 0.25, 0.55)), E.rgbStr(E.hsl2rgb(hue + 0.08, 0.35, 0.3)), r.f(0, 50), big && r.chance(0.5)), r.angle(), r.f(0.2, 0.75), 17500);
         if (big && r.chance(0.4)) { const ring = ringMesh(m.geometry.parameters.radius * 1.3, m.geometry.parameters.radius * 2.1, '#cfc8b8'); ring.rotation.x = r.f(1.0, 1.5); m.add(ring); }
       }
     }
@@ -9062,21 +9718,20 @@
     scene.scene.add(group);
 
     const atmosphere = {
-      fogColor: hex(S.fog), sunColor: hex(S.sunCol), sunDir, sunI: S.sunI, skyColor: hex(S.hor).lerp(hex(S.top), 0.45), groundColor: new T.Color().setRGB(biome.palette.low[0] / 255, biome.palette.low[1] / 255, biome.palette.low[2] / 255, T.SRGBColorSpace).multiplyScalar(0.5),
+      fogColor: hex(S.fog), sunColor: hex(S.sunCol), sunDir, sunI: S.sunI, skyColor: hex(S.hor).lerp(hex(S.top), 0.45), groundColor: new T.Color().setRGB(lowC[0] / 255, lowC[1] / 255, lowC[2] / 255, T.SRGBColorSpace).multiplyScalar(0.5),
       ambI: S.amb, density: 2.0 / ((biome.challenge && biome.challenge.fog) || 3000), heightK: S.space > 0.5 ? 0.02 : 0.0045, base: 0, bloom: S.bloom,
+      biome: planet.biome, cloud: S.cloud, cloudCol: hex(S.cloudCol), cloudDark: hex(S.cloudDark), airless: S.space >= 1 ? 1 : 0, spaceBase: S.space,
     };
     return {
-      group, dome, uniforms, atmosphere, S,
-      update(t, camPos) {
-        uniforms.time.value = t;
-        group.position.copy(camPos);
-        uniforms.space.value = Math.max(S.space, E.smoothstep(350, 1500, camPos.y) * 0.85);
-      },
+      group, dome: dm, atmosphere, S,
+      // ride the camera; `alt` (height above the surface) is written to the shared uniforms by Scene
+      update(t, camPos) { group.position.copy(camPos); },
     };
   }
 
   E.makeSky = makeSky;
   E.SKY = SKY;
+  E.PLANET = PLANET;
 })(window.E = window.E || {});
 
 // ---- js/ui/game.js ----
@@ -10103,9 +10758,11 @@
     loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: ['desert', 'jungle', 'urban', 'tundra'][(Math.random() * 4) | 0], seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); then(); });
   }
 
-  function boot() {
+  async function boot() {
     try {
       menu = new E.Menu(ui());
+      // the WebGPU renderer initialises asynchronously (and falls back to WebGL2 on its own)
+      await E.Scene.preinit(document.getElementById('view'), menu.settings);
       game = new E.Game(document.getElementById('view'), menu.settings);
       menu.onStart = battle;
       window.GC.game = game; window.GC.menu = menu; window.GC.battle = battle; window.GC.back = back;
@@ -10115,7 +10772,7 @@
       console.error('GC boot failed:', err);
       window.__GC_ERROR__ = (err && err.stack) || String(err);
       const el = document.getElementById('gc-loading') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'gc-loading' }));
-      el.style.display = 'grid'; el.innerHTML = '<div><div class="l-title">Could not start<span>This game needs WebGL 2. ' + String(err && err.message || err).replace(/</g, '&lt;') + '</span></div></div>';
+      el.style.display = 'grid'; el.innerHTML = '<div><div class="l-title">Could not start<span>This game needs WebGPU or WebGL 2. ' + String(err && err.message || err).replace(/</g, '&lt;') + '</span></div></div>';
     }
   }
 

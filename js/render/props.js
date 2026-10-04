@@ -52,12 +52,12 @@
     }
     im.castShadow = im.receiveShadow = true; g.add(im);
     // glow: beam, holo ring, ground ring (tinted live)
-    const glow = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false });
-    const beamMat = glow.clone(); beamMat.opacity = 0.16;
+    const glow = E.Mat.emissive({ color: 0xffffff, opacity: 0.9, additive: true, side: 'double' });
+    const beamMat = E.Mat.emissive({ color: 0xffffff, opacity: 0.16, additive: true, side: 'double' });
     const beam = new T.Mesh(new T.CylinderGeometry(0.5, 1.5, 220, 10, 1, true), beamMat); beam.position.y = 119; g.add(beam);
     const holo = new T.Mesh(new T.TorusGeometry(2.3, 0.12, 6, 28), glow); holo.position.y = 10.4; holo.rotation.x = Math.PI / 2; g.add(holo);
     const holo2 = new T.Mesh(new T.TorusGeometry(1.5, 0.08, 6, 24), glow); holo2.position.y = 11.6; g.add(holo2);
-    const ringMat = glow.clone(); ringMat.opacity = 0.55;
+    const ringMat = E.Mat.emissive({ color: 0xffffff, opacity: 0.55, additive: true, side: 'double' });
     const ring = new T.Mesh(new T.RingGeometry(cp.r - 0.5, cp.r, 72).rotateX(-Math.PI / 2), ringMat); ring.position.y = 0.25; g.add(ring);
     const light = new T.PointLight(0xffffff, 60, 46, 1.6); light.position.y = 9; g.add(light);
     return { g, glow, beamMat, ringMat, holo, holo2, light, col: new T.Color(1, 1, 1) };

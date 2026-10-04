@@ -19,37 +19,8 @@
   };
 
   function groundMaterial(biomeId) {
-    const T = E.THREE, L = LOOK[biomeId] || LOOK.desert;
-    const m = new T.MeshStandardMaterial({ vertexColors: true, roughness: L.rough, metalness: 0.0, envMapIntensity: 0.35 });
-    const U = { uRock: { value: new T.Color(L.rock) }, uTint: { value: new T.Vector3(L.tint[0], L.tint[1], L.tint[2]) }, uRockAt: { value: L.rockAt }, uBump: { value: L.bump },
-      uLava: { value: new T.Color(L.lava || '#000000') }, uLavaLevel: { value: L.lava ? L.lavaLevel : -1e6 }, uTime: { value: 0 } };
-    m.onBeforeCompile = (sh) => {
-      Object.assign(sh.uniforms, U);
-      sh.vertexShader = sh.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm;')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz; vWNrm = normalize(mat3(modelMatrix) * objectNormal);');
-      sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm; uniform vec3 uRock, uTint, uLava; uniform float uRockAt, uBump, uLavaLevel, uTime;' + E.GLSL_NOISE)
-        .replace('#include <color_fragment>', `#include <color_fragment>
-          vec2 gwp = vWPos.xz;
-          float gn1 = gcFbm(gwp * 0.31), gn2 = gcFbm3(gwp * 0.045 + 31.0), gn3 = gcN2(gwp * 2.7);
-          float gSteep = 1.0 - normalize(vWNrm).y;
-          float gRock = smoothstep(uRockAt, uRockAt + 0.2, gSteep + (gn2 - 0.5) * 0.22);
-          vec3 gBase = diffuseColor.rgb * (0.7 + 0.42 * gn1 + 0.14 * gn3);
-          gBase = mix(gBase, gBase * uTint, smoothstep(0.42, 0.68, gn2));
-          vec3 gRockC = uRock * (0.55 + 0.7 * gcFbm(vec2(gwp.x * 0.4 + vWPos.y * 0.8, gwp.y * 0.4 - vWPos.y * 0.6)));
-          diffuseColor.rgb = mix(gBase, gRockC, gRock);`)
-        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-          { float ge = 0.4; float b0 = gcFbm3(gwp * 0.8), bx = gcFbm3((gwp + vec2(ge, 0.0)) * 0.8), bz = gcFbm3((gwp + vec2(0.0, ge)) * 0.8);
-            normal = normalize(normal + (viewMatrix * vec4(vec3(b0 - bx, 0.0, b0 - bz) * uBump * (1.0 + gRock), 0.0)).xyz); }`)
-        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-          { float lv = smoothstep(uLavaLevel + 5.0, uLavaLevel - 3.0, vWPos.y);
-            float cr = gcFbm(gwp * 0.07 + vec2(uTime * 0.012, 0.0));
-            float crack = smoothstep(0.1, 0.0, abs(cr - 0.5)) + lv * smoothstep(0.45, 0.62, cr);
-            totalEmissiveRadiance += uLava * lv * crack * (2.2 + 0.8 * sin(uTime * 1.7 + cr * 30.0)); }`);
-    };
-    m.userData.U = U;
-    return m;
+    const L = LOOK[biomeId] || LOOK.desert;
+    return E.Mat.terrain(biomeId, Object.assign({ lava: null }, L));
   }
 
   function colorAt(terrain, biome, noise, x, z, h, out) {
@@ -113,28 +84,7 @@
 
     // ── water ──
     if (terrain.waterLevel > -1e8) {
-      const w = biome.water.color, S = E.SKY[terrain.biome] || E.SKY.desert;
-      const wm = new T.ShaderMaterial({
-        transparent: true, depthWrite: true,
-        uniforms: { time: { value: 0 }, deep: { value: new T.Color().setRGB(w[0] / 255, w[1] / 255, w[2] / 255, T.SRGBColorSpace) }, skyHor: { value: new T.Color(S.hor) }, skyTop: { value: new T.Color(S.top) },
-          sunDir: { value: new T.Vector3(S.sun[0], S.sun[1], S.sun[2]).normalize() }, sunCol: { value: new T.Color(S.sunCol) }, swell: { value: biome.water.swell ? 1.0 : 0.45 } },
-        vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
-        fragmentShader: E.GLSL_NOISE + `
-          varying vec3 vW; uniform float time, swell; uniform vec3 deep, skyHor, skyTop, sunDir, sunCol;
-          float wave(vec2 p){ return gcFbm3(p * 0.05 + vec2(time * 0.06, time * 0.04)) + gcFbm3(p * 0.19 - vec2(time * 0.09, -time * 0.07)) * 0.5 + gcN2(p * 0.9 + time * 0.5) * 0.12; }
-          void main(){
-            vec2 p = vW.xz; float e = 0.6;
-            float h0 = wave(p), hx = wave(p + vec2(e, 0.0)), hz = wave(p + vec2(0.0, e));
-            vec3 n = normalize(vec3((h0 - hx) * 2.2 * swell, 1.0, (h0 - hz) * 2.2 * swell));
-            vec3 v = normalize(cameraPosition - vW);
-            float fr = pow(1.0 - max(dot(n, v), 0.0), 4.0);
-            vec3 r = reflect(-v, n);
-            vec3 sky = mix(skyHor, skyTop, pow(max(r.y, 0.0), 0.5));
-            vec3 col = mix(deep * (0.5 + h0 * 0.5), sky, 0.12 + fr * 0.8);
-            col += sunCol * (pow(max(dot(r, sunDir), 0.0), 220.0) * 9.0 + pow(max(dot(r, sunDir), 0.0), 24.0) * 0.25);
-            gl_FragColor = vec4(col, 0.72 + fr * 0.28);
-          }`,
-      });
+      const wm = E.Mat.water(biome);
       const water = new T.Mesh(new T.PlaneGeometry(26000, 26000, 1, 1).rotateX(-Math.PI / 2), wm);
       water.position.y = terrain.waterLevel; water.renderOrder = 1;
       group.add(water); group.userData.water = water;
@@ -148,7 +98,7 @@
   // ── cover ────────────────────────────────────────────────────
   let natureMat = null;
   function nature() {
-    if (!natureMat) natureMat = new E.THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.0, envMapIntensity: 0.3 });
+    if (!natureMat) natureMat = E.Mat.pbr({ vertexColors: true, roughness: 0.92, metalness: 0.0 });
     return natureMat;
   }
   function rockGeo(seed, col) {
