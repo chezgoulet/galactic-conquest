@@ -152,10 +152,11 @@
       AP.q -= u.stall * sw * 1.3;
       AP.p += u.stall * Math.sin(w.t * 5 + u.id) * 0.9;
     }
+    if (u.evT > 0 && rho > 0.3 && !u.pid && pos.y - Math.max(T.height(pos.x, pos.z), T.waterLevel) < 180 - Math.min(0, vel.y) * 1.6) u.evT = 0;   // bots never barrel-roll into the ground
     if (u.evT > 0) {
       u.evT -= dt;
       const k = Math.min(1, u.evT * 6 + 0.3);
-      AP.p = u.evDir * d.roll * 1.35 * k; AP.q = Math.max(AP.q * 0.3, auth * 0.75 * k); AP.r *= 0.3;
+      AP.p = u.evDir * d.roll * 1.35 * k; AP.q = Math.max(AP.q * 0.3, auth * 0.4 * k); AP.r *= 0.3;
     }
     const kr = Math.min(1, dt * 7);
     F.wq += (AP.q - F.wq) * kr; F.wr += (AP.r - F.wr) * kr; F.wp += (AP.p - F.wp) * kr;

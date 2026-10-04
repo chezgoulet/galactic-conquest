@@ -33,6 +33,7 @@
   // ── perception ───────────────────────────────────────────────
   function perceive(w, u, a) {
     const role = u.def.role, pref = PREF[role] || PREF.interceptor, sense = SENSE[role] || 1200, R = w.rng;
+    const picks = role === 'interceptor' || role === 'gunship';      // bombers / strike craft plan their own targets
     let best = null, bs = 0, thr = null, td = 1e9;
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
@@ -40,6 +41,7 @@
       if (e.kind === 'fighter' && e.fl && d < 700 && d < td && !e.inCloud) {   // is somebody pointing at me?
         if ((e.fl.fx * -dx + e.fl.fy * -dy + e.fl.fz * -dz) / (d || 1) > 0.86) { thr = e; td = d; }
       }
+      if (!picks) continue;
       let pf = e.kind === 'fighter' ? (pref.fighter && pref.fighter[e.type]) : pref[e.kind];
       if (e.kind === 'vehicle' && e.type === 'tank' && pref.vehicle) pf = pref.vehicle * 1.2;
       if (!pf || (d > sense && e.kind !== 'capital')) continue;
@@ -50,7 +52,8 @@
       if (e.id === a.tid) s *= 1.35;
       if (s > bs) { bs = s; best = e; }
     }
-    if (best) { a.tid = best.id; a.lx = best.pos.x; a.ly = best.pos.y; a.lz = best.pos.z; a.lostT = w.t; }
+    if (!picks) { /* planned target stays */ }
+    else if (best) { a.tid = best.id; a.lx = best.pos.x; a.ly = best.pos.y; a.lz = best.pos.z; a.lostT = w.t; }
     else if (a.tid) { a.tid = 0; }
     a.threat = thr ? thr.id : 0; a.threatD = td;
     const k = w.cfg.aiErr * 0.55;
@@ -403,7 +406,7 @@
       C.thr = 0.78; C.brake = hd < 520 && u.spd > 40;
       if (u.pos.y > gy + agl + 150) C.dy = Math.min(C.dy, -0.25);
       else if (u.pos.y < gy + agl - 20 && C.dy < 0.15) lookDir(C.dx, 0.15, C.dz);
-      if (hd < 450) { C.thr = 0; C.brake = u.spd > 24; }
+      if (hd < 450) { C.thr = u.spd > 24 ? 0 : 0.3; C.brake = u.spd > 24; }
       return hd;
     }
     const sp = Math.min(vmax || 16, hd * 0.22);
