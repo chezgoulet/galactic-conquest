@@ -17,7 +17,7 @@ const start = (port) => {
       fs.createReadStream(file).pipe(res);
     });
   });
-  if (port) { server.listen(port); return server; }
+  if (port !== undefined) { server.listen(port); return server; }
   const P = +process.env.PORT || 8080;
   server.listen(P, () => console.log(`serving ${ROOT} on http://localhost:${P}`));
   return server;

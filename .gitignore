@@ -5,5 +5,5 @@ www/
 *.log
 .DS_Store
 apps/play/dist/
-data/
+/data/
 server/run/

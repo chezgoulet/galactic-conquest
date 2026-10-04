@@ -10,7 +10,16 @@ const banner = `/* three.js ${ver} (MIT) vendored by tools/vendor-three.cjs */`;
 (async () => {
   fs.mkdirSync(out, { recursive: true });
   await esbuild.build({
-    stdin: { contents: "export * from 'three';", resolveDir: __dirname },
+    stdin: { contents: [
+      "export * from 'three';",
+      "export { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';",
+      "export { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';",
+      "export { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';",
+      "export { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';",
+      "export { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';",
+      "export { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';",
+      "export { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';",
+    ].join('\n'), resolveDir: __dirname },
     bundle: true, minify: true, format: 'iife', globalName: 'THREE',
     outfile: path.join(out, 'three.min.js'), banner: { js: banner }, legalComments: 'none',
   });

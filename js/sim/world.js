@@ -1,143 +1,91 @@
-// The World: owns the match state and serializes it. Pure and deterministic —
-// it draws only from this.rng and never touches THREE or the DOM. Rendering,
-// audio and networking read its state and submit commands (focus, command,
-// input) which it applies. M1: surface battle with infantry, vehicles, fighters,
-// objectives, combat and bots; M2 adds capitals + orbital space.
+// The World: owns the match state. Pure and deterministic — it draws only from
+// this.rng and never touches THREE or the DOM. Rendering, audio and networking
+// read its state and submit player commands (input, possess, deploy, order).
+//
+// A match is a conquest battle: two factions fight over five command posts on
+// the ground while their capital ships duel overhead. Every death costs the
+// side a reinforcement ticket, holding the majority of posts bleeds the enemy,
+// and the side that runs out of tickets (or loses every post and soldier) loses.
 (function (E) {
   'use strict';
+  const TEAMS = ['aegis', 'verdant'];
+  const DIFF = {
+    easy:   { aiErr: 0.075, enemyDmg: 0.55, enemyTickets: 0.85 },
+    normal: { aiErr: 0.06, enemyDmg: 0.8,  enemyTickets: 1 },
+    hard:   { aiErr: 0.045, enemyDmg: 1.0,  enemyTickets: 1.2 },
+  };
 
   class World {
     constructor(opts) {
       opts = opts || {};
       this.human = opts.human || 'aegis';
-      this.fleetScale = opts.fleetScale || 1;
-      this.planet = E.makePlanet(opts.biome || 'tundra', opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9), opts.scale || 1);
+      this.planet = E.makePlanet(opts.biome || 'desert', opts.seed !== undefined ? opts.seed : 1, opts.scale || 1);
       this.terrain = E.makeTerrain(this.planet);
+      this.layout = this.terrain.layout;
       this.rng = E.RNG((this.planet.seed * 7919 + 17) | 0);
-      this.units = [];
-      this.projectiles = [];
-      this.objectives = [];
-      this.nextId = 1;
+      this.units = []; this.umap = new Map();
+      this.projectiles = []; this.strikes = [];
+      this.nextId = 1; this.nextProj = 1;
       this.t = 0; this.tickN = 0;
-      this.possessedId = null;
-      this.winner = null;
-      this.intensity = 0;
-      this.stats = { kills: { aegis: 0, verdant: 0 }, captures: { aegis: 0, verdant: 0 } };
+      this.winner = null; this.intensity = 0;
       this.events = [];
-      this.playerInput = { x: 0, y: 0, fire: false };
-      this.playerLookYaw = 0;
-      this.selected = [];
-      this.buildObjectives();
-      this.spawnForce("aegis", { x: -1500, z: 0 });;
-      this.spawnForce("verdant", { x: 1500, z: 0 });;
-      this.playerUnit = this.units.find(u => u.team === this.human) || this.units[0];
-    }
-
-    groundY(x, z) { return this.terrain.height(x, z); }
-
-    unit(kind, faction, type, role, pos) {
-      const T = kind === 'infantry' ? E.INFANTRY : kind === 'vehicle' ? E.VEHICLES : kind === 'fighter' ? E.FIGHTERS : E.CAPITALS;
-      const def = (T[type] || T.rifle) || {};
-      const u = {
-        id: this.nextId++, kind, faction, type, role: role || (def.role || type),
-        pos: { x: pos.x, y: this.groundY(pos.x, pos.z), z: pos.z },
-        yaw: 0, aim: 0,
-        hp: def.hp || 100, maxHp: def.hp || 100,
-        shield: 0, maxShield: (kind === 'capital' ? 12000 : kind === 'vehicle' ? 200 : 0) * (this.planet.biomeDef.challenge && this.planet.biomeDef.challenge.thinAir ? 0.6 : 1),
-        speed: def.speed || 8, turn: def.turn || 3,
-        viewH: def.viewH || 1.7, r: def.r || 1,
-        alive: true, team: faction, kills: 0,
-        fireT: 0, regenT: 99, _engaged: false, order: null,
-      };
-      this.units.push(u);
-      return u;
-    }
-
-    spawnForce(faction, base) {
-      const F = E.FORCE_DEFAULT;
-      const sc = (faction === this.human && this.fleetScale) ? this.fleetScale : 1;
-      const rr = (n) => { const a = this.rng.angle(), d = this.rng.f(10, 70); return { x: base.x + Math.cos(a) * d, z: base.z + Math.sin(a) * d }; };
-      const ni = (n) => Math.max(1, Math.round(n * sc));
-      for (const [role, n] of Object.entries({ rifle: F.rifle, recon: F.recon, medic: F.medic }))
-        for (let i = 0; i < ni(n); i++) this.unit('infantry', faction, role, role, rr());
-      for (const [type, n] of Object.entries(F.vehicle))
-        for (let i = 0; i < ni(n); i++) this.unit('vehicle', faction, type, 'gunship', rr());
-      for (const [type, n] of Object.entries(F.fighter))
-        for (let i = 0; i < ni(n); i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
-      // A bot "capital" in the air for each side (the player's can be boarded).
-      // A bigger fleet gets a bigger flagship.
-      const capType = sc > 1.4 ? 'dreadnought' : (sc > 1.15 ? 'carrier' : F.capital);
-      const cap = this.unit('capital', faction, capType, capType, { x: base.x, z: base.z });
-      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 200;
-      cap.genome = { r: this.rng.f(0.9, 1.15) };
-      cap.yaw = cap.aim = faction === 'aegis' ? Math.PI : 0;
-      // medic healers are assigned to the nearest own units
-      this.medics = this.units.filter(u => u.role === 'medic');
-      return cap;
-    }
-
-    buildObjectives() {
-      const R = this.rng;
-      const O = E.STRUCTURES;
-      const mk = (role, x, z, y) => {
-        const def = O[role];
-        const o = { id: this.nextId++, role, team: role === 'hq' ? (x < 0 ? 'aegis' : 'verdant') : null,
-          pos: { x, y: this.groundY(x, z), z }, radius: def.r * 1.4, hp: def.hp, maxHp: def.hp,
-          hold: def.hold || 15, owner: def.role === 'hq' ? (x < 0 ? 'aegis' : 'verdant') : null,
-          progress: def.role === 'hq' ? 1 : 0, alive: true };
-        this.objectives.push(o);
-        return o;
-      };
-      // two HQs (one per side), destroyable -> the main win condition
-      mk('hq', -2350, 0, 0);
-      mk('hq', 2350, 0, 0);
-      // neutral power + depot per side to hold
-      mk('power', -1400, R.f(-600, 600), 0);
-      mk('power', 1400, R.f(-600, 600), 0);
-      mk('depot', -800, R.f(-800, 800), 0);
-      mk('depot', 800, R.f(-800, 800), 0);
-      // a central power core both fight over
-      mk('power', R.f(-200, 200), R.f(-400, 400), 0);
-      // space objectives (stations/gateway) appear in M2; reserve the air here
-      if (this.planet.biome !== 'gas') {
-        const st = mk('station', R.f(-400, 400), R.f(-900, 900), 0);
-        st.pos.y = this.groundY(st.pos.x, st.pos.z) + 500; // an orbital station
+      this.players = {};
+      this.diff = opts.difficulty || 'normal';
+      const D = DIFF[this.diff] || DIFF.normal;
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg };
+      // per-side scale + campaign bonuses
+      const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
+      const bon = (f) => (opts.bonus && opts.bonus[f]) || {};
+      this.teams = {};
+      for (const f of TEAMS) {
+        const b = bon(f), s = sc(f);
+        const enemyT = (f !== this.human && !opts.pvp) ? D.enemyTickets : 1;
+        this.teams[f] = {
+          id: f, scale: s, bonus: b,
+          tickets: Math.round(E.FORCE.tickets * (0.75 + s * 0.25) * enemyT * (b.ticketMul || 1) + (b.reserves ? 40 : 0)), startTickets: 0,
+          infCap: Math.round(E.FORCE.infantry * (0.8 + s * 0.2)),
+          waveT: 4, vehT: { skiff: 20, tank: 35 }, airT: 10, bleedT: 0, strikeT: b.orbital ? 25 : 60,
+          kills: 0, deaths: 0, captures: 0, cps: 0,
+          fleet: opts.fleet && opts.fleet[f] ? opts.fleet[f].slice() : [s > 1.7 ? 'dreadnought' : s > 1.3 ? 'carrier' : E.FORCE.capital].concat(b.escort ? ['cruiser'] : []),
+        };
+        this.teams[f].startTickets = this.teams[f].tickets;
       }
+      this.cps = this.layout.cps.map((c, i) => ({
+        id: i, name: c.name, pos: { x: c.x, y: c.y, z: c.z }, r: c.r, home: c.home || null,
+        owner: c.home || null, cap: c.home ? (c.home === 'aegis' ? 1 : -1) : 0, // cap: +1 aegis .. -1 verdant
+        n: { aegis: 0, verdant: 0 }, contested: false,
+      }));
+      E.SIM.setup(this);
     }
 
+    // ── queries ────────────────────────────────────────────────
+    groundY(x, z) { return this.terrain.ground(x, z); }
+    byId(id) { return this.umap.get(id) || null; }
     unitList() { return this.units; }
-    byId(id) { return this.units.find(u => u.id === id); }
-    focusedUnit() { return this.possessedId != null ? this.byId(this.possessedId) : null; }
-    playerUnit() { return this.playerUnit; }
+    player(pid) { return this.players[pid] || null; }
+    unitOf(pid) { const p = this.players[pid]; return p && p.unitId ? this.byId(p.unitId) : null; }
+    team(f) { return this.teams[f]; }
 
-    // ── commands (submitted by local or remote players) ─────────
-    focus(id) {
-      const u = this.byId(id);
-      if (u && u.alive) this.possessedId = id;
-      else this.possessedId = null;
+    // ── player commands ────────────────────────────────────────
+    addPlayer(pid, team, name) {
+      const p = { id: pid, team, name: name || 'Commander', unitId: 0, deadT: -99, selected: [],
+        input: { mx: 0, mz: 0, moveYaw: 0, yaw: 0, pitch: 0, fire: false, abil: false, sprint: false, jump: false },
+        score: 0, kills: 0, deaths: 0, captures: 0, streak: 0, best: 0 };
+      this.players[pid] = p;
+      return p;
     }
-    release() { this.possessedId = null; }
-    setInput(inp) { this.playerInput = Object.assign(this.playerInput, inp); }
-    setLook(yaw) { this.playerLookYaw = yaw; }
-    select(units) { this.selected = units; }
-    // 'move'/'attack' pos; 'follow' unit; 'hold'; 'select' handled by Game
-    order(sel, type, arg) { E.SIM.command(this, sel || this.selected || E.SIM.myUnits(this, null), type, arg); }
+    removePlayer(pid) { this.release(pid); delete this.players[pid]; }
+    setInput(pid, inp) { const p = this.players[pid]; if (p) Object.assign(p.input, inp); }
+    possess(pid, uid) { return E.SIM.possess(this, pid, uid); }
+    release(pid) { E.SIM.release(this, pid); }
+    deploy(pid, type, cpId) { return E.SIM.deploy(this, pid, type, cpId); }
+    order(pid, ids, type, pos) { E.SIM.order(this, pid, ids, type, pos); }
 
-    // which view mode the player is in
-    mode() {
-      const u = this.focusedUnit();
-      if (!u) return 'commander';
-      if (u.kind === 'infantry') return 'fps';
-      if (u.kind === 'vehicle') return 'vehicle';
-      if (u.kind === 'fighter') return 'fighter';
-      if (u.kind === 'capital') return 'ship';
-      return 'commander';
-    }
-
-    // one simulation step (fixed timestep). Pure: reads opts, writes this state.
     tick(dt) { E.SIM.update(this, dt); }
     drainEvents() { const e = this.events; this.events = []; return e; }
   }
 
   E.World = World;
+  E.TEAMS = TEAMS;
+  E.DIFFICULTY = DIFF;
 })(window.E = window.E || {});

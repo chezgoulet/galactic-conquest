@@ -1,188 +1,208 @@
-// The Renderer: owns the three.js Scene, the planet (terrain/sky/atmosphere),
-// and a pool of unit meshes it keeps in sync with world state. It is the only
-// bridge between the simulation and the GPU. Browser-only (needs THREE).
+// The Renderer: owns the three.js Scene, the planet (terrain / sky / props),
+// the FX, and a set of unit models it keeps in sync with world state. It is the
+// only bridge between the simulation and the GPU. Browser-only (needs THREE).
 (function (E) {
   'use strict';
 
   class Renderer {
-    constructor(canvas) {
-      this.scene = new E.Scene(canvas);
+    constructor(canvas, opts) {
+      opts = opts || {};
+      this.scene = new E.Scene(canvas, opts);
       this.camera = new E.Camera(this.scene);
-      this.fx = new E.FX(this.scene);
-      this.terrain = null;
-      this.planetGroup = null;
-      this.sky = null;
-      this.meshes = new Map();      // unit id -> { group, kind, faction, prev }
-      this.time = 0;
-      window.addEventListener('resize', () => this.scene.resize());
+      this.fx = new E.FX(this.scene, this.scene.Q.particles);
+      this.fx.onShake = (p, size) => { const d = this.scene.camera.position.distanceTo(p); this.camera.shake(E.clamp(size * 5 / (d + 12), 0, 0.7)); };
+      this.models = new Map();     // unit id -> record
+      this.corpses = []; this.wrecks = []; this.posts = [];
+      this.selRings = []; this.time = 0; this.world = null;
+      this._q = new E.THREE.Quaternion(); this._q2 = new E.THREE.Quaternion(); this._up = new E.THREE.Vector3(0, 1, 0); this._n = new E.THREE.Vector3(); this._e = new E.THREE.Euler(0, 0, 0, 'YXZ');
+      this._resize = () => this.scene.resize();
+      window.addEventListener('resize', this._resize);
     }
 
-    // Build a full visible world for a planet.
-    setPlanet(planet) {
-      const biome = E.biome(planet.biome);
-      const T = E.THREE;
-      // clear any previous world
-      if (this.planetGroup) { this.scene.world.remove(this.planetGroup); this.planetGroup.traverse(o => o.geometry && o.geometry.dispose()); }
-      if (this.sky) { this.scene.scene.remove(this.sky.group); }
-      this.meshes.forEach(m => this.scene.units.remove(m.group));
-      this.meshes.clear();
-
-      this.terrain = E.makeTerrain(planet);
-      this.scene.setBiomeAtmosphere(biome);
-      this.planetGroup = E.buildTerrain(this.scene, this.terrain, biome, this.scene.quality);
-      this.sky = E.makeSky(this.scene, planet, biome);
-      this.planet = planet;
+    // Build the visible world for a match.
+    setWorld(world) {
+      const T = E.THREE, S = this.scene;
+      this.clear();
+      this.world = world; this.terrain = world.terrain;
+      const biome = world.planet.biomeDef;
+      this.sky = E.makeSky(S, world.planet, biome);
+      S.setAtmosphere(this.sky.atmosphere);
+      S.setEnvironment(this.sky.dome);
+      this.planetGroup = E.buildTerrain(S, world.terrain, biome, S.qualityName);
+      this.camera.terrain = world.terrain;
+      this.fx.setBiome(biome, world.terrain);
+      for (const cp of world.cps) { const p = E.Props.makePost(cp, world.terrain); S.world.add(p.g); this.posts.push(p); }
+      this.camera.snap();
+    }
+    clear() {
+      const S = this.scene;
+      const kill = (g) => g.traverse(o => { if (o.isInstancedMesh || (o.geometry && o.geometry.userData.own)) o.geometry.dispose(); });
+      if (this.planetGroup) { S.world.remove(this.planetGroup); this.planetGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); }); this.planetGroup = null; }
+      if (this.sky) { S.scene.remove(this.sky.group); this.sky = null; }
+      for (const p of this.posts) S.world.remove(p.g); this.posts.length = 0;
+      this.models.forEach(m => S.units.remove(m.m.root)); this.models.clear();
+      for (const c of this.corpses) S.units.remove(c.root); this.corpses.length = 0;
+      for (const w of this.wrecks) S.units.remove(w.rec.m.root); this.wrecks.length = 0;
+      for (const r of this.selRings) S.hud3d.remove(r); this.selRings.length = 0;
+      this.fx.emitters.length = 0;
     }
 
-    groundY(x, z) { return this.terrain ? this.terrain.height(x, z) : 0; }
-
-    // Create (once) the mesh for a unit, return it.
-    meshFor(unit) {
-      let m = this.meshes.get(unit.id);
-      if (m && m.kind === unit.kind) return m;
-      if (m) { this.scene.units.remove(m.group); this.scene.units.remove(m); }
-      const faction = E.faction(unit.faction);
-      let group;
-      if (unit.kind === 'infantry') group = E.makeInfantry(faction, unit.role);
-      else if (unit.kind === 'vehicle') group = E.makeVehicle(faction, unit.type);
-      else if (unit.kind === 'fighter') group = E.makeFighter(faction, unit.type);
-      else if (unit.kind === 'capital') group = E.makeCapital(faction, unit.type, unit.genome || null);
-      else group = new E.THREE.Group();
-      // faction ring marker under ground units
-      group.position.set(unit.pos.x, unit.pos.y, unit.pos.z);
-      group.rotation.y = unit.yaw || 0;
-      // floating health bar (hidden at full health)
-      const bar = new E.THREE.Mesh(new E.THREE.PlaneGeometry(2, 0.35), new E.THREE.MeshBasicMaterial({ color: 0x22ff66, side: E.THREE.DoubleSide, transparent: true, depthTest: false }));
-      bar.position.y = (unit.viewH || 2) + 1.2; bar.renderOrder = 10;
-      bar.userData.baseW = 2;
-      group.add(bar);
-      this.scene.units.add(group);
-      m = { group, kind: unit.kind, faction: unit.faction, role: unit.role, type: unit.type, bar, prev: E.V3.make(unit.pos.x, unit.pos.y, unit.pos.z) };
-      this.meshes.set(unit.id, m);
-      return m;
+    record(u) {
+      let r = this.models.get(u.id);
+      if (r) return r;
+      const m = E.Models.makeUnit(u);
+      m.root.position.set(u.pos.x, u.pos.y, u.pos.z); m.root.rotation.y = u.yaw;
+      this.scene.units.add(m.root);
+      r = { m, kind: u.kind, x: u.pos.x, y: u.pos.y, z: u.pos.z, phase: (u.id * 1.7) % 6.28, fresh: true, smokeT: 0, u };
+      if (u.kind === 'capital') this.capitalGlow(r, u);
+      this.models.set(u.id, r);
+      return r;
+    }
+    capitalGlow(r, u) {
+      const T = E.THREE, c = E.faction(u.team).palette.engine, d = u.def, org = E.faction(u.team).hull.style === 'organic';
+      const tex = this._glowTex || (this._glowTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 64; const x = cv.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.3, 'rgba(255,255,255,0.4)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new T.CanvasTexture(cv); })());
+      const n = org ? 3 : (u.type === 'dreadnought' ? 4 : 3), W = d.h * 2.5, H = d.h * 1.25;
+      for (let i = 0; i < n; i++) {
+        const s = new T.Sprite(new T.SpriteMaterial({ map: tex, color: new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), blending: T.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+        s.scale.setScalar(H * 1.5); s.position.set((i - (n - 1) / 2) * W * (org ? 0.26 : 0.24), 0, -d.len * 0.57); r.m.body.add(s);
+      }
     }
 
-    removeUnit(id) {
-      const m = this.meshes.get(id);
-      if (m) { this.scene.units.remove(m.group); this.meshes.delete(id); }
-    }
-
-    // Sync all tracked units to their world state (with a little smoothing).
-    syncUnits(units, dt) {
-      const k = 1 - Math.exp(-dt * 10);
-      const seen = new Set();
-      for (const u of units) {
-        if (!u.alive) { this.removeUnit(u.id); continue; }
+    syncUnits(world, dt, t, localId) {
+      const k = 1 - Math.exp(-dt * 20), T = this.terrain, seen = this._seen || (this._seen = new Set());
+      seen.clear();
+      const cam = this.scene.camera.position;
+      for (const u of world.units) {
+        if (!u.alive) continue;
         seen.add(u.id);
-        const m = this.meshFor(u);
-        const g = m.group;
-        const p = u.pos, prev = m.prev;
-        g.position.x += (p.x - g.position.x) * k;
-        g.position.y += (p.y - g.position.y) * k;
-        g.position.z += (p.z - g.position.z) * k;
-        g.rotation.y = E.lerpAngle(g.rotation.y, u.yaw || 0, k);
-        prev.x = p.x; prev.y = p.y; prev.z = p.z;
-        // vehicle turret follows unit aim
-        if (g.userData.turret && !g.userData.turret.userData.locked) g.userData.turret.rotation.y = (u.aim || 0) - (u.yaw || 0);
-        // health bar: show only when damaged
-        if (m.bar && u.maxHp) {
-          const f = E.clamp01(u.hp / u.maxHp);
-          const show = f < 0.999;
-          m.bar.visible = show;
-          if (show) {
-            m.bar.scale.x = f;
-            m.bar.position.x = (f - 1) * (m.bar.userData.baseW || 2) * 0.5;
-            m.bar.material.color.setRGB(1 - f * 0.6, f, 0.2);
+        const r = this.record(u), m = r.m, g = m.root;
+        r.u = u;
+        if (r.fresh || Math.abs(u.pos.x - r.x) + Math.abs(u.pos.z - r.z) > 60) { r.x = u.pos.x; r.y = u.pos.y; r.z = u.pos.z; r.fresh = false; }
+        else { r.x += (u.pos.x - r.x) * k; r.y += (u.pos.y - r.y) * k; r.z += (u.pos.z - r.z) * k; }
+        g.position.set(r.x, r.y, r.z);
+        const d2 = (r.x - cam.x) * (r.x - cam.x) + (r.z - cam.z) * (r.z - cam.z);
+        if (u.kind === 'infantry') {
+          g.rotation.y = E.lerpAngle(g.rotation.y, u.yaw, Math.min(1, dt * 14));
+          g.visible = d2 < 1500 * 1500;
+          if (d2 < 420 * 420) {
+            const sp = Math.hypot(u.vel.x, u.vel.z), amp = Math.min(1, sp / 4) * (u.onGround ? 1 : 0.3);
+            r.phase += sp * dt * 2.3;
+            const sw = Math.sin(r.phase) * 0.8 * amp;
+            m.legL.rotation.x = sw + (u.onGround ? 0 : -0.5); m.legR.rotation.x = -sw + (u.onGround ? 0 : 0.4);
+            m.up.rotation.x = -E.clamp(u.aimPitch, -0.7, 0.7) * 0.8 + amp * 0.12;
+            m.up.position.y = 1.0 + Math.abs(Math.cos(r.phase)) * 0.045 * amp;
+            const rec = Math.max(0, 1 - (world.t - u.lastFire) * 9); m.up.position.z = -rec * 0.05;
+          }
+        } else if (u.kind === 'vehicle') {
+          T.normal(r.x, r.z, this._n);
+          this._q.setFromUnitVectors(this._up, this._n); this._q2.setFromAxisAngle(this._up, u.yaw); this._q.multiply(this._q2);
+          g.quaternion.slerp(this._q, Math.min(1, dt * 7));
+          m.body.position.y = Math.sin(t * 2.2 + u.id) * 0.07;
+          m.turret.rotation.y = u.aimYaw - u.yaw; m.gun.rotation.x = -u.aimPitch;
+          const rec = Math.max(0, 1 - (world.t - u.lastFire) * 5); m.gun.position.z = 0.5 - rec * 0.5;
+          if (d2 < 500 * 500 && Math.abs(u.spd) > 4 && this.fx.rng.next() < dt * 14) this.fx.puff({ x: r.x - Math.sin(u.yaw) * u.r * 0.7, y: r.y - u.def.hover + 0.2, z: r.z - Math.cos(u.yaw) * u.r * 0.7 }, 1, this.fx.dustCol, 1.5, 1.4, 0.8, 2.5);
+        } else if (u.kind === 'turret') {
+          m.turret.rotation.y = u.aimYaw; m.gun.rotation.x = -u.aimPitch;
+        } else if (u.kind === 'fighter') {
+          this._e.set(-u.pitch, u.yaw, -u.roll); this._q.setFromEuler(this._e);
+          g.quaternion.slerp(this._q, Math.min(1, dt * 16));
+          if (d2 < 1600 * 1600) { // engine streak
+            const c = E.faction(u.team).palette.engine, fx = Math.sin(u.yaw) * Math.cos(u.pitch), fy = Math.sin(u.pitch), fz = Math.cos(u.yaw) * Math.cos(u.pitch), b = u.r * 0.95;
+            this.fx.add.emit(r.x - fx * b, r.y - fy * b, r.z - fz * b, -fx * 8, -fy * 8, -fz * 8, 0.22 + u.spd * 0.0012, 1.5, 0.3, c[0] / 255 * 2.2, c[1] / 255 * 2.2, c[2] / 255 * 2.2, 1, 0, 0);
+          }
+        } else if (u.kind === 'capital') {
+          this._e.set(0, u.yaw, -u.roll); g.quaternion.setFromEuler(this._e);
+          // battle damage: fires and smoke along the hull as health drops
+          const dmg = 1 - u.hp / u.maxHp;
+          if (dmg > 0.25) {
+            r.smokeT -= dt * dmg * 6;
+            while (r.smokeT < 0) {
+              r.smokeT += 1;
+              const rg = this.fx.rng, lz = rg.f(-0.4, 0.3) * u.def.len, lx = rg.f(-0.3, 0.3) * u.h * 2, fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
+              const px = r.x + fx * lz - fz * lx, py = r.y + u.h * 0.45, pz = r.z + fz * lz + fx * lx;
+              this.fx.smoke.emit(px, py, pz, rg.f(-3, 3), rg.f(4, 12), rg.f(-3, 3), 5, 9, 40, 0.07, 0.07, 0.07, 0.55, 0.3, -1);
+              if (rg.next() < dmg) this.fx.add.emit(px, py, pz, rg.f(-2, 2), rg.f(3, 9), rg.f(-2, 2), 0.9, 8, 15, 3, 1.3, 0.3, 1, 0.6, -2);
+            }
           }
         }
+        if (u.id === localId) g.visible = !(u.kind === 'infantry' && this.camera.zoom > 0.85 && u.type === 'sniper');
       }
-      // remove stale
-      for (const id of [...this.meshes.keys()]) if (!seen.has(id)) this.removeUnit(id);
+      for (const [id, r] of this.models) if (!seen.has(id)) { this.scene.units.remove(r.m.root); this.models.delete(id); }
     }
 
-    // Objective beacons: a pillar + base ring, tinted by owner, height = progress.
-    syncObjectives(objectives, dt) {
-      if (!this.objGroup) { this.objGroup = new E.THREE.Group(); this.scene.hud3d.add(this.objGroup); this.obj = new Map(); }
-      const T = E.THREE, seen = new Set();
-      for (const o of objectives) {
-        seen.add(o.id);
-        let m = this.obj.get(o.id);
-        if (!m) {
-          const g = new T.Group();
-          const base = new T.Mesh(new T.TorusGeometry(o.radius, 1.2, 8, 32), new T.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.7, side: T.DoubleSide }));
-          base.rotation.x = Math.PI / 2; base.position.y = 1; g.add(base);
-          const pillar = new T.Mesh(new T.CylinderGeometry(2.5, 2.5, 400, 12, 1, true), new T.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.28, side: T.DoubleSide, depthWrite: false }));
-          pillar.position.y = 200; g.add(pillar);
-          g.position.set(o.pos.x, o.pos.y, o.pos.z);
-          this.objGroup.add(g);
-          m = { g, base, pillar };
-          this.obj.set(o.id, m);
+    // deaths: infantry fall, capitals break up and fall out of the sky
+    applyEvents(events, world) {
+      this.fx.applyEvents(events, world);
+      for (const e of events) {
+        if (e.type !== 'death') continue;
+        const r = this.models.get(e.uid); if (!r) continue;
+        this.models.delete(e.uid);
+        if (e.kind === 'infantry') { this.corpses.push({ root: r.m.root, body: r.m.body, t: 0, dir: this.fx.rng.sign() }); if (this.corpses.length > 40) this.scene.units.remove(this.corpses.shift().root); }
+        else if (e.kind === 'capital') { this.wrecks.push({ rec: r, t: 0, vy: 0, len: r.u.def.len, h: r.u.h, yaw: e.yaw, boomT: 0 }); this.fx.explosion(e.pos, 60); this.camera.shake(0.8); }
+        else this.scene.units.remove(r.m.root);
+      }
+    }
+    updateDead(dt) {
+      for (let i = this.corpses.length - 1; i >= 0; i--) {
+        const c = this.corpses[i]; c.t += dt;
+        c.body.rotation.x = -Math.min(1, c.t * 3.2) * (Math.PI / 2 - 0.08) * c.dir; c.body.position.y = Math.min(1, c.t * 3.2) * 0.25;
+        if (c.t > 9) c.root.position.y -= dt * 0.5;
+        if (c.t > 12) { this.scene.units.remove(c.root); this.corpses.splice(i, 1); }
+      }
+      for (let i = this.wrecks.length - 1; i >= 0; i--) {
+        const w = this.wrecks[i], g = w.rec.m.root, rg = this.fx.rng; w.t += dt;
+        w.vy += dt * 5; g.position.y -= w.vy * dt; g.rotation.x += dt * 0.035; g.rotation.z += dt * 0.022;
+        g.position.x += Math.sin(w.yaw) * 6 * dt; g.position.z += Math.cos(w.yaw) * 6 * dt;
+        w.boomT -= dt;
+        if (w.boomT <= 0) { w.boomT = rg.f(0.12, 0.4); const lz = rg.f(-0.45, 0.45) * w.len; const p = { x: g.position.x + Math.sin(w.yaw) * lz + rg.f(-20, 20), y: g.position.y + rg.f(-w.h, w.h) * 0.6, z: g.position.z + Math.cos(w.yaw) * lz + rg.f(-20, 20) }; this.fx.explosion(p, rg.f(14, 34)); }
+        const gy = this.terrain.height(g.position.x, g.position.z);
+        if (g.position.y < gy + w.h * 0.3 || w.t > 40) {
+          for (let k = 0; k < 7; k++) this.fx.explosion({ x: g.position.x + rg.f(-1, 1) * w.len * 0.4, y: gy + 8, z: g.position.z + rg.f(-1, 1) * w.len * 0.4 }, rg.f(40, 80));
+          this.camera.shake(1); this.fx.emitter({ pos: { x: g.position.x, y: gy + 4, z: g.position.z }, life: 40, rate: 14, kind: 'burn', size: 14 });
+          this.scene.units.remove(g); this.wrecks.splice(i, 1);
         }
-        const col = o.owner === 'aegis' ? new T.Color(0xff5a2b) : o.owner === 'verdant' ? new T.Color(0x3df0b0) : new T.Color(0x8fa8cc);
-        m.base.material.color.copy(col);
-        m.pillar.material.color.copy(col);
-        m.pillar.scale.y = 0.2 + (o.progress || 0) * 0.8;
       }
-      for (const id of [...this.obj.keys()]) if (!seen.has(id)) { const m = this.obj.get(id); this.objGroup.remove(m.g); this.obj.delete(id); }
     }
 
-    // Target ring on the unit the focused capital/ship is engaging.
-    syncTarget(world) {
-      const T = E.THREE;
-      if (!this.targetRing) {
-        this.targetRing = new T.Mesh(new T.TorusGeometry(1, 0.6, 8, 28), new T.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.8, side: T.DoubleSide, depthTest: false }));
-        this.targetRing.rotation.x = Math.PI / 2; this.targetRing.renderOrder = 20;
-        this.scene.hud3d.add(this.targetRing);
+    // selection rings under commanded units
+    syncSelection(ids, world, team) {
+      const T = E.THREE, col = E.Props.TEAM_COL[team] || [1, 1, 1];
+      let n = 0;
+      for (const id of ids || []) {
+        const r = this.models.get(id); if (!r) continue;
+        let m = this.selRings[n];
+        if (!m) { m = new T.Mesh(new T.RingGeometry(0.86, 1, 32).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthTest: false, blending: T.AdditiveBlending, fog: false })); m.renderOrder = 9; this.scene.hud3d.add(m); this.selRings.push(m); }
+        m.visible = true; m.material.color.setRGB(col[0] * 2, col[1] * 2, col[2] * 2);
+        const u = r.u, s = Math.max(1.4, u.r * 1.5); m.scale.setScalar(s);
+        m.position.set(r.x, (u.kind === 'fighter' ? r.y - 2 : this.terrain.height(r.x, r.z) + 0.3), r.z); n++;
       }
-      const f = world.focusedUnit();
-      if (!f || (f.kind !== 'capital' && f.kind !== 'fighter')) { this.targetRing.visible = false; return; }
-      // nearest enemy unit
-      let best = null, bd = Infinity;
-      for (const e of world.unitList()) {
-        if (!e.alive || e.team === f.team) continue;
-        const d = E.distXZ2(f.pos, e.pos);
-        if (d < bd) { bd = d; best = e; }
-      }
-      if (!best) { this.targetRing.visible = false; this.currentTarget = null; return; }
-      this.currentTarget = best; this.currentTargetDist = Math.sqrt(bd);
-      this.targetRing.visible = true;
-      this.targetRing.position.set(best.pos.x, best.pos.y + best.viewH * 0.5, best.pos.z);
-      const s = Math.max(10, best.r * 1.6);
-      this.targetRing.scale.set(s, s, s);
-      this.targetRing.rotation.z += 0.02;
+      for (let i = n; i < this.selRings.length; i++) this.selRings[i].visible = false;
     }
 
-    // Per-frame animation + camera + render.
-    update(dt, t, world) {
+    // Per-frame: sync, animate, frame the camera, render.
+    update(dt, t, world, view) {
       this.time = t;
-      this.scene.gov(dt * 1000);
-      if (this.planetGroup && this.planetGroup.userData.water) {
-        this.planetGroup.userData.water.material.uniforms.time.value = t;
-      }
-      if (world) {
-        this.syncUnits(world.unitList(), dt);
-        this.syncObjectives(world.objectives, dt);
-        this.syncTarget(world);
-        // focus: possessed unit, else the centroid of my force
-        let focus = world.focusedUnit();
-        if (!focus && world.playerUnit && world.playerUnit.alive) {
-          let x = 0, z = 0, y = 0, n = 0;
-          for (const u of world.unitList()) if (u.alive && u.team === world.human) { x += u.pos.x; y += u.pos.y; z += u.pos.z; n++; }
-          if (n) focus = { id: 'force', pos: { x: x / n, y: y / n, z: z / n }, viewH: 10, yaw: 0 };
-        }
-        this.camera.setMode(world.mode(), focus);
-      }
-      this.fx.update(dt, t);
-      this.camera.update(dt, t);
-      // never let the camera sink below the surface
-      if (this.terrain) {
-        const cp = this.camera.cam.position;
-        const minY = this.terrain.height(cp.x, cp.z) + 4;
-        if (cp.y < minY) cp.y = minY;
-      }
-      this.scene.setCameraAltitude(this.camera.cam.position.y);
-      this.scene.render();
+      const S = this.scene;
+      S.gov(dt * 1000);
+      const pg = this.planetGroup;
+      if (pg) { if (pg.userData.water) pg.userData.water.material.uniforms.time.value = t; pg.userData.ground.userData.U.uTime.value = t; }
+      const local = view.unit ? view.unit.id : 0;
+      this.syncUnits(world, dt, t, local);
+      this.updateDead(dt);
+      for (let i = 0; i < this.posts.length; i++) E.Props.updatePost(this.posts[i], world.cps[i], t, dt);
+      if (view.unit) { const r = this.models.get(view.unit.id); view.pos = r ? r : view.unit.pos; }
+      this.camera.update(dt, t, view);
+      const cam = S.camera;
+      this.fx.update(dt, t, cam);
+      this.sky.update(t, cam.position);
+      // shadows hug the action; widen for the map view
+      const f = view.mode === 'unit' && view.unit ? view.pos : (view.mode === 'commander' ? { x: this.camera.cmd.x, y: 0, z: this.camera.cmd.z } : this.camera.orbit);
+      const ext = view.mode === 'unit' && view.unit ? (view.unit.kind === 'infantry' ? 110 : view.unit.kind === 'capital' ? 700 : 240) : 520;
+      S.focusShadows(f, ext);
+      S.atmo.uniforms.density.value = this.sky.atmosphere.density * (1 - E.smoothstep(300, 1400, cam.position.y) * 0.75);
+      S.render(t);
     }
+    dispose() { window.removeEventListener('resize', this._resize); this.clear(); this.scene.dispose(); }
   }
 
   E.Renderer = Renderer;

@@ -68,7 +68,7 @@
   function pick(r, arr) { let tot = 0; for (const [, w] of arr) tot += w; let x = r() * tot; for (const [v, w] of arr) { x -= w; if (x <= 0) return v; } return arr[0][0]; }
   function theme(factionId) { const f = E.faction(factionId); return f.music; }
 
-  const M = { on: false, faction: 'aegis', I: 0.2, victory: false };
+  const M = { on: false, faction: 'aegis', I: 0.2, won: false, vol: 0.8 };
   let c, out, master, strings, brass, timb, bass, bell, rev, dly, noiseBuf;
 
   function hall(sec) {
@@ -107,7 +107,7 @@
     noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate); const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     M.setTheme(factionId || 'aegis', true);
-    out.gain.setTargetAtTime(1, c.currentTime, 2);
+    out.gain.setTargetAtTime(M.vol, c.currentTime, 1.2);
     M._step = 0; M._nextT = c.currentTime + 0.12;
     M._timer = setInterval(tick, 25);
   };
@@ -122,7 +122,7 @@
     M.r = rng(th.motif * 7919);
     M.motif = makeMotif(rng(th.motif * 7919 + 3), 4);
     M.deg = 0; M.chord = chordOf(0); M.chordBars = 0;
-    M.section = 'drift'; M.sectBars = 0; M.victory = false;
+    M.section = 'drift'; M.sectBars = 0; M.won = false;
     M.impactT = 0;
   };
 
@@ -223,7 +223,7 @@
     // section logic (per 4 bars)
     if (step % 64 === 0) {
       M.sectBars = 0;
-      if (M.victory) M.section = 'fanfare';
+      if (M.won) M.section = 'fanfare';
       else if (I > 0.66) M.section = 'battle';
       else if (I > 0.34) M.section = 'pulse';
       else M.section = 'drift';
@@ -272,7 +272,8 @@
 
   // ── intensity + victory ──────────────────────────────────────
   M.setIntensity = function (v) { M.I = E.clamp01(v); };
-  M.victory = function (factionId) { M.victory = true; M.setTheme(factionId || M.faction, true); M.section = 'fanfare'; M.I = 1; };
+  M.victory = function (factionId) { M.setTheme(factionId || M.faction, true); M.won = true; M.section = 'fanfare'; M.I = 1; };
+  M.setVolume = function (v) { M.vol = v; if (M.on && out) out.gain.setTargetAtTime(v, c.currentTime, 0.1); };
 
   // ── SFX (synthesized) ────────────────────────────────────────
   const SFX = {
@@ -336,6 +337,21 @@
           const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(300, t); f.frequency.linearRampToValueAtTime(1200, t + 0.4);
           const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.3, t); g.gain.linearRampToValueAtTime(0.5, t + 0.3); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
           ns.start(t); ns.stop(t + 0.55); break;
+        }
+        case 'hitmark': case 'kill': {
+          const o = c.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(kind === 'kill' ? 1250 : 1900, t); o.frequency.exponentialRampToValueAtTime(kind === 'kill' ? 620 : 1500, t + 0.09);
+          const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.3, t); g.gain.exponentialRampToValueAtTime(0.001, t + (kind === 'kill' ? 0.22 : 0.06)); o.start(t); o.stop(t + 0.25); break;
+        }
+        case 'hurt': {
+          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500;
+          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.16); ns.start(t); ns.stop(t + 0.18); break;
+        }
+        case 'capture': {
+          [0, 4, 7, 12].forEach((s, i) => { const o = c.createOscillator(); o.type = 'triangle'; o.frequency.value = 440 * Math.pow(2, s / 12); const g = c.createGain(); o.connect(g); g.connect(out2); g.connect(M.revIn);
+            const a = t + i * 0.09; g.gain.setValueAtTime(0.0001, a); g.gain.linearRampToValueAtTime(0.22, a + 0.02); g.gain.exponentialRampToValueAtTime(0.001, a + 0.5); o.start(a); o.stop(a + 0.55); }); break;
+        }
+        case 'alarm': {
+          for (let i = 0; i < 3; i++) { const o = c.createOscillator(); o.type = 'square'; const a = t + i * 0.28; o.frequency.setValueAtTime(880, a); o.frequency.linearRampToValueAtTime(660, a + 0.2); const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.12, a); g.gain.exponentialRampToValueAtTime(0.001, a + 0.24); o.start(a); o.stop(a + 0.26); } break;
         }
         default: break;
       }
@@ -595,18 +611,20 @@
   // a set of modifiers (the "inherent challenge") plus dynamic weather.
   const BIOMES = {
     tundra: {
+      id: 'tundra',
       name: 'Kethara', class: 'ice', theme: 'Tundra',
       desc: 'Frozen plains under a bruised sky. Fog rolls across the ice and cuts visibility to a fraction of a screen.',
       palette: { low: rgb('#9aa8bb'), mid: rgb('#7f92ab'), high: rgb('#c3cedb'), fog: rgb('#5f7a94'), sky: rgb('#5f7488'), skyHi: rgb('#8fa9c0') },
       sun: { color: rgb('#cfe0ff'), dir: [0.4, 0.5, -0.4], strength: 0.85 },
       amp: { low: 0.25, mid: 0.5, high: 1.2, rough: 0.5, ridged: 0.2 },
-      water: { level: 0.0, color: rgb('#bcd4e6'), cover: 0.05 },
+      water: { level: 0.0, color: rgb('#bcd4e6'), cover: 0.0 },
       cover: { rocks: 0.1, ice: 0.5, trees: 0.02, buildings: 0.0 },
       challenge: { name: 'Ice Fog', desc: 'Thick fog: visibility cut, enemy sensors degraded.', fog: 2400, visDeg: 0.4 },
       weather: { kind: 'snow', density: 0.5, speed: 0.4, wind: 6 },
       sound: { wind: 0.4 },
     },
     desert: {
+      id: 'desert',
       name: 'Sarruun', class: 'dune', theme: 'Desert',
       desc: 'Endless dunes and cracked salt flats. Heat haze shimmers the horizon and long sightlines favour snipers.',
       palette: { low: rgb('#c9a066'), mid: rgb('#b9884a'), high: rgb('#dcb878'), fog: rgb('#c99a63'), sky: rgb('#6f86a0'), skyHi: rgb('#a9c0d4') },
@@ -619,18 +637,20 @@
       sound: { wind: 0.55 },
     },
     jungle: {
+      id: 'jungle',
       name: 'Veyra', class: 'jungle', theme: 'Jungle',
       desc: 'A drowned green. Dense canopy, rivers, and smoke. Everything is close and in your face.',
       palette: { low: rgb('#2c4a2e'), mid: rgb('#3a6b34'), high: rgb('#5f9a4a'), fog: rgb('#4d7a55'), sky: rgb('#7fae8a'), skyHi: rgb('#cfe8cf') },
       sun: { color: rgb('#eaffd0'), dir: [0.5, 0.5, -0.4], strength: 0.8 },
       amp: { low: 0.35, mid: 0.9, high: 1.4, rough: 0.7, ridged: 0.15 },
-      water: { level: 0.18, color: rgb('#2f5a44'), cover: 0.3 },
+      water: { level: 0.02, color: rgb('#2f5a44'), cover: 0.3 },
       cover: { rocks: 0.05, ice: 0.0, trees: 0.7, buildings: 0.0, vines: 0.3 },
       challenge: { name: 'Dense Canopy', desc: 'Trees break line of sight and slow vehicles; smoke from hits lingers.', fog: 1600, visDeg: 0.25 },
       weather: { kind: 'rain', density: 0.7, speed: 0.6, wind: 8 },
       sound: { rain: 0.35 },
     },
     urban: {
+      id: 'urban',
       name: 'Necropolis', class: 'urban', theme: 'City',
       desc: 'A ruined capital city, a vertical maze of towers and streets. Cover everywhere, fights at every floor.',
       palette: { low: rgb('#5a5f6b'), mid: rgb('#767b88'), high: rgb('#a7adbd'), fog: rgb('#8a8f9c'), sky: rgb('#9aa2b2'), skyHi: rgb('#d4dae6') },
@@ -643,6 +663,7 @@
       sound: { rumble: 0.2 },
     },
     volcanic: {
+      id: 'volcanic',
       name: 'Pyrrhus', class: 'volcanic', theme: 'Volcanic',
       desc: 'A living volcano. Gas pockets erupt, the ground breathes, and the only place to put down is the rim.',
       palette: { low: rgb('#2a2018'), mid: rgb('#4a3226'), high: rgb('#7a3a24'), fog: rgb('#6a3a2a'), sky: rgb('#7a2a1a'), skyHi: rgb('#d05a2a') },
@@ -655,18 +676,20 @@
       sound: { rumble: 0.5 },
     },
     ocean: {
+      id: 'ocean',
       name: 'Maelstrom', class: 'ocean', theme: 'Ocean',
       desc: 'A storm sea broken by reefs. Ships run the swells; land is scarce and every island is a prize.',
       palette: { low: rgb('#1f4a5a'), mid: rgb('#2a6b7a'), high: rgb('#4a9a8a'), fog: rgb('#4a8a9a'), sky: rgb('#5a9ab2'), skyHi: rgb('#cfe8f0') },
       sun: { color: rgb('#d0f0ff'), dir: [0.3, 0.7, -0.4], strength: 0.95 },
       amp: { low: 0.3, mid: 0.4, high: 0.8, rough: 0.5, ridged: 0.2 },
-      water: { level: 0.45, color: rgb('#1f4a5a'), cover: 0.6, swell: 1.0 },
+      water: { level: 0.24, color: rgb('#1f4a5a'), cover: 0.6, swell: 1.0 },
       cover: { rocks: 0.1, ice: 0.0, trees: 0.05, buildings: 0.0 },
       challenge: { name: 'Storm Swells', desc: 'Rising seas flood the low ground and slow surface vehicles; only the high ground holds.', fog: 3000, visDeg: 0.2 },
       weather: { kind: 'rain', density: 0.9, speed: 0.5, wind: 18, swell: true },
       sound: { rain: 0.3, surf: 0.4 },
     },
     cratered: {
+      id: 'cratered',
       name: 'Vesta Minor', class: 'crater', theme: 'Cratered',
       desc: 'A pocked airless world. Thin air weakens shields, gravity bounces, and the horizon is littered with craters.',
       palette: { low: rgb('#8a8f9a'), mid: rgb('#a2a7b2'), high: rgb('#c4c9d4'), fog: rgb('#b0b5c0'), sky: rgb('#c8cdd8'), skyHi: rgb('#eef0f5') },
@@ -679,15 +702,15 @@
       sound: { wind: 0.2 },
     },
     gas: {
-      name: 'Oblivion', class: 'gas', theme: 'Gas Giant',
-      desc: 'No surface. The battle runs in the bands of a gas giant, between storms and a crushing dark. Pure air-and-space.',
+      id: 'gas',
+      name: 'Oblivion', class: 'gas', theme: 'Giant\'s Moon',
+      desc: 'A shattered moon in the shadow of a ringed gas giant. Violet storms, glowing fissures, and a sky full of planet.',
       palette: { low: rgb('#3a2a4a'), mid: rgb('#5a3a6a'), high: rgb('#8a5a9a'), fog: rgb('#5a3a6a'), sky: rgb('#3a2a4a'), skyHi: rgb('#8a5a9a') },
       sun: { color: rgb('#ffd0ff'), dir: [0.4, 0.2, -0.5], strength: 0.7 },
-      amp: { low: 0.2, mid: 0.4, high: 0.6, rough: 0.6, ridged: 0.3, bands: 1.0 },
+      amp: { low: 0.5, mid: 0.9, high: 1.5, rough: 0.8, ridged: 0.3, craters: 0.5 },
       water: { level: -1, color: rgb('#5a3a6a'), cover: 0.0 },
       cover: {},
-      noSurface: true,
-      challenge: { name: 'No Ground', desc: 'There is no land; everything fights in the air and space, in the bands and storms.', fog: 2600, visDeg: 0.3 },
+      challenge: { name: 'Giant\'s Shadow', desc: 'Twilight under the giant: long sightlines, deep shadow, and static storms on the horizon.', fog: 3400, visDeg: 0.3 },
       weather: { kind: 'bands', density: 1.0, speed: 0.4, wind: 30 },
       sound: { storm: 0.4 },
     },
@@ -802,598 +825,1194 @@
 })(window.E = window.E || {});
 
 // ---- js/data/galaxy.js ----
-// The galactic campaign. A strip of star systems between the two factions:
-// the player holds the left, the enemy the right, and a contested "front" runs
-// down the middle. A campaign is a sequence of battles; each match's scope is
-// the current front system (its planet + biome + challenge). Capturing it flips
-// the system to you, advances the front, and grants a strategic resource that
-// scales your fleet for the next match. Capturing the enemy home wins the war.
+// The galactic campaign. Ten worlds joined by hyperlanes; each faction starts
+// with a home system and two colonies, with four unclaimed worlds between them.
+// The war is turn-based at the strategic layer and real-time on the ground:
+//   your turn    pick a world adjacent to your territory and assault it
+//   enemy turn   the AI expands into a free world or assaults one of yours
+//                (defend it in person, or auto-resolve)
+// Every world you hold pays credits each turn and grants a planetary perk to
+// all your battles. Credits buy permanent fleet upgrades. Take the enemy home
+// system to win; lose yours and the war is over. Pure + serializable.
 (function (E) {
   'use strict';
 
-  // A pool of named systems, each pinned to a biome (its inherent challenge).
-  const SYSTEM_POOL = [
-    { name: 'Kethara', biome: 'tundra' }, { name: 'Sarruun', biome: 'desert' },
-    { name: 'Veyra', biome: 'jungle' }, { name: 'Necropolis', biome: 'urban' },
-    { name: 'Pyrrhus', biome: 'volcanic' }, { name: 'Maelstrom', biome: 'ocean' },
-    { name: 'Vesta Minor', biome: 'cratered' }, { name: 'Oblivion', biome: 'gas' },
-    { name: 'Kethara II', biome: 'tundra' }, { name: 'Sarruun Prime', biome: 'desert' },
-    { name: 'Veyra Deep', biome: 'jungle' }, { name: 'Ashen Reach', biome: 'volcanic' },
-  ];
+  const PERKS = {
+    reserves: { name: 'Deep Reserves', desc: '+40 reinforcements in every battle' },
+    elite:    { name: 'Veteran Legions', desc: 'Infantry +20% health' },
+    armor:    { name: 'Foundries', desc: 'An extra hover tank and tougher armor' },
+    airwing:  { name: 'Sky Harbor', desc: '+2 starfighters in your wing' },
+    orbital:  { name: 'Orbital Batteries', desc: 'Orbital strikes recharge 40% faster' },
+    escort:   { name: 'Shipyards', desc: 'An escort cruiser joins your flagship' },
+    hull:     { name: 'Hull Plating', desc: 'Capital ships +25% hull' },
+    trade:    { name: 'Refineries', desc: '+60 credits per turn' },
+  };
+  const BIOME_PERK = { tundra: 'reserves', desert: 'armor', jungle: 'elite', urban: 'escort', volcanic: 'orbital', ocean: 'airwing', cratered: 'hull', gas: 'trade' };
+  const UPGRADES = {
+    fleet:     { name: 'Flagship Class', levels: ['Cruiser', 'Carrier', 'Dreadnought'], cost: [0, 350, 700], desc: 'A heavier flagship: more guns, more hull, more fighters.' },
+    logistics: { name: 'Logistics', levels: ['Standard', 'Extended', 'Deep', 'Total War'], cost: [0, 200, 400, 650], desc: '+12% reinforcements per level.' },
+  };
+  const NAMES = { tundra: ['Kethara', 'Hael'], desert: ['Sarruun', 'Qadim'], jungle: ['Veyra', 'Ysmae'], urban: ['Necropolis', 'Caldera Prime'], volcanic: ['Pyrrhus', 'Ashen Reach'], ocean: ['Maelstrom', 'Thalassa'], cratered: ['Vesta Minor', 'Korrin'], gas: ['Oblivion', 'Umbra'] };
+  // template: positions (0..1) and hyperlanes
+  const POS = [[0.07, 0.5], [0.24, 0.24], [0.26, 0.74], [0.41, 0.5], [0.5, 0.14], [0.55, 0.86], [0.63, 0.48], [0.76, 0.25], [0.78, 0.74], [0.93, 0.5]];
+  const LINKS = [[0, 1], [0, 2], [1, 3], [2, 3], [1, 4], [2, 5], [3, 4], [3, 5], [3, 6], [4, 7], [5, 8], [6, 7], [6, 8], [4, 6], [7, 9], [8, 9]];
 
-  // Generate a campaign for two factions and a seed.
-  // Returns a serializable state object (the "campaign").
   function newCampaign(opts) {
     opts = opts || {};
-    const seed = opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9);
+    const seed = opts.seed !== undefined ? opts.seed >>> 0 : 1;
     const r = E.RNG(seed);
-    const playerFaction = opts.playerFaction || 'aegis';
-    const enemyFaction = E.opponent(playerFaction);
-    const len = opts.length || 5; // contested systems between the two homes
-    const systems = [];
-    // player home
-    systems.push({ id: 0, name: 'Home — ' + E.faction(playerFaction).short, biome: 'cratered', owner: playerFaction, home: playerFaction, x: 0, y: 0 });
-    // contested front
-    for (let i = 1; i <= len; i++) {
-      const sp = r.pick(SYSTEM_POOL);
-      // avoid the same biome twice in a row for variety
-      let pick = sp; let tries = 0;
-      while (systems.length && pick.biome === systems[systems.length - 1].biome && tries++ < 6) pick = r.pick(SYSTEM_POOL);
-      systems.push({ id: i, name: pick.name, biome: pick.biome, owner: null, x: i, y: 0 });
+    const pf = opts.playerFaction || 'aegis', ef = E.opponent(pf);
+    const homeBiome = { aegis: 'urban', verdant: 'jungle' };
+    const pool = r.shuffle(['tundra', 'desert', 'jungle', 'urban', 'volcanic', 'ocean', 'cratered', 'gas']);
+    const used = {};
+    const mk = (i, biome, owner, home) => {
+      used[biome] = (used[biome] || 0);
+      const name = home ? (home === 'aegis' ? 'Aegis Prime' : 'Verdance') : NAMES[biome][used[biome]++ % 2];
+      return { id: i, name, biome, x: POS[i][0], y: POS[i][1] + (home ? 0 : r.f(-0.04, 0.04)), owner, home: home || null, value: home ? 120 : 50 + r.i(4) * 10, perk: home ? null : BIOME_PERK[biome], seed: r.i(1e9) };
+    };
+    const planets = [];
+    for (let i = 0; i < 10; i++) {
+      if (i === 0) planets.push(mk(0, homeBiome[pf], pf, pf));
+      else if (i === 9) planets.push(mk(9, homeBiome[ef], ef, ef));
+      else planets.push(mk(i, pool[(i - 1) % pool.length], i <= 2 ? pf : i >= 7 ? ef : null));
     }
-    // enemy home
-    systems.push({ id: len + 1, name: 'Home — ' + E.faction(enemyFaction).short, biome: 'volcanic', owner: enemyFaction, home: enemyFaction, x: len + 1, y: 0 });
+    return { v: 2, seed, playerFaction: pf, enemyFaction: ef, difficulty: opts.difficulty || 'normal', planets, links: LINKS,
+      credits: { [pf]: 150, [ef]: 150 }, upgrades: { [pf]: { fleet: 0, logistics: 0 }, [ef]: { fleet: 0, logistics: 0 } },
+      turn: 1, pending: null, victory: null, battles: 0, wins: 0, log: [] };
+  }
 
+  const neighbors = (c, id) => c.links.filter(l => l[0] === id || l[1] === id).map(l => (l[0] === id ? l[1] : l[0]));
+  function attackable(c, f) {
+    f = f || c.playerFaction; const out = [];
+    for (const p of c.planets) if (p.owner !== f && neighbors(c, p.id).some(n => c.planets[n].owner === f)) out.push(p.id);
+    return out;
+  }
+  function perks(c, f) { const o = {}; for (const p of c.planets) if (p.owner === f && p.perk) o[p.perk] = true; return o; }
+  function income(c, f) { let s = 0; for (const p of c.planets) if (p.owner === f) s += p.value + (p.perk === 'trade' ? 60 : 0); return s; }
+  function owned(c, f) { return c.planets.filter(p => p.owner === f).length; }
+  function fleetScale(c, f) { return 1 + (c.upgrades[f].fleet || 0) * 0.4; }
+  function bonusFor(c, f) { const b = perks(c, f); b.ticketMul = 1 + (c.upgrades[f].logistics || 0) * 0.12; return b; }
+
+  // Options for the battle over a planet. defending = the enemy is the attacker.
+  function matchOptions(c, id, defending) {
+    const p = c.planets[id], pf = c.playerFaction, ef = c.enemyFaction;
+    const garrison = !p.owner;                        // unclaimed worlds are held by a light enemy garrison
     return {
-      seed, playerFaction, enemyFaction, systems,
-      frontIndex: 1, resources: 100, matches: 0,
-      victory: null, // null | 'aegis' | 'verdant'
+      biome: p.biome, seed: (p.seed + c.turn * 7919) >>> 0, human: pf, difficulty: c.difficulty,
+      fleetScale: fleetScale(c, pf), enemyScale: garrison ? 0.85 : fleetScale(c, ef) + (p.home === ef ? 0.4 : 0),
+      bonus: { [pf]: bonusFor(c, pf), [ef]: garrison ? { ticketMul: 0.85 } : bonusFor(c, ef) },
+      system: p.name, planet: id, defending: !!defending,
     };
   }
 
-  // The system the current match is fought over (the front).
-  function frontSystem(c) { return c.systems[c.frontIndex]; }
-
-  // Fleet size multiplier from strategic resources (captured systems grow your fleet).
-  function fleetScale(c) { return 1 + E.clamp01(c.resources / 400) * 1.0; } // 1x .. 2x
-
-  // Begin a battle for the current front. Returns match options.
-  function matchOptions(c) {
-    const s = frontSystem(c);
-    return {
-      biome: s.biome,
-      human: c.playerFaction,
-      seed: (c.seed ^ (c.frontIndex * 2654435761)) >>> 0,
-      system: s.name, systemId: c.frontIndex,
-      fleetScale: fleetScale(c),
-    };
+  function checkVictory(c) {
+    const ph = c.planets.find(p => p.home === c.playerFaction), eh = c.planets.find(p => p.home === c.enemyFaction);
+    if (eh.owner === c.playerFaction) c.victory = c.playerFaction; else if (ph.owner === c.enemyFaction) c.victory = c.enemyFaction;
+    return c.victory;
+  }
+  // Record a battle the player fought. Returns a summary for the UI.
+  function applyBattle(c, id, won, score, defending) {
+    const p = c.planets[id], pf = c.playerFaction, ef = c.enemyFaction;
+    c.battles++; if (won) c.wins++;
+    const reward = Math.round((won ? 120 : 40) + (score || 0) / 25);
+    c.credits[pf] += reward;
+    if (defending) { if (!won) p.owner = ef; c.pending = null; } else if (won) p.owner = pf;
+    c.log.unshift({ turn: c.turn, text: defending ? (won ? `Held ${p.name}` : `Lost ${p.name}`) : (won ? `Captured ${p.name}` : `Repelled at ${p.name}`), good: won });
+    checkVictory(c);
+    return { reward, planet: p.name, won, defending: !!defending, victory: c.victory };
+  }
+  function autoResolve(c, id) {
+    const pf = c.playerFaction, ef = c.enemyFaction, r = E.RNG((c.seed ^ (c.turn * 2654435761) ^ id) >>> 0);
+    const odds = E.clamp(0.5 + (fleetScale(c, pf) - fleetScale(c, ef)) * 0.35 + (owned(c, pf) - owned(c, ef)) * 0.03, 0.15, 0.85);
+    return applyBattle(c, id, r.next() < odds, 0, true);
   }
 
-  // Report the result of a match back to the campaign.
-  // won: boolean (did the player capture the front system)
-  function applyResult(c, won) {
-    c.matches++;
-    if (c.victory) return { changed: false };
-    const s = c.systems[c.frontIndex];
-    if (won) {
-      s.owner = c.playerFaction;
-      c.resources += 120 + c.frontIndex * 20;
-      c.frontIndex++;
-      if (c.frontIndex >= c.systems.length - 1) {
-        c.victory = c.playerFaction; // reached enemy home
-      }
-    } else {
-      c.resources = Math.max(40, c.resources - 40); // loss costs resources, not the front
+  // The enemy's strategic move. Sets c.pending when it assaults one of your worlds.
+  function enemyTurn(c) {
+    if (c.victory) return { type: 'none' };
+    const pf = c.playerFaction, ef = c.enemyFaction, r = E.RNG((c.seed ^ (c.turn * 40503)) >>> 0);
+    c.credits[pf] += income(c, pf); c.credits[ef] += income(c, ef);
+    // spend
+    for (const k of ['fleet', 'logistics']) { const U = UPGRADES[k], lv = c.upgrades[ef][k]; if (lv < U.levels.length - 1 && c.credits[ef] >= U.cost[lv + 1] * (c.difficulty === 'hard' ? 0.8 : c.difficulty === 'easy' ? 1.5 : 1.1)) { c.credits[ef] -= U.cost[lv + 1]; c.upgrades[ef][k]++; } }
+    c.turn++;
+    const targets = attackable(c, ef), free = targets.filter(id => !c.planets[id].owner), mine = targets.filter(id => c.planets[id].owner === pf);
+    const aggro = c.difficulty === 'hard' ? 0.75 : c.difficulty === 'easy' ? 0.35 : 0.55;
+    if (mine.length && (r.next() < aggro || !free.length)) {
+      // prefer colonies; only strike the home system when it is the last thing in reach
+      const soft = mine.filter(id => !c.planets[id].home), id = r.pick(soft.length ? soft : mine);
+      c.pending = { planet: id };
+      c.log.unshift({ turn: c.turn, text: `${E.faction(ef).short} fleet assaults ${c.planets[id].name}`, good: false });
+      return { type: 'attack', planet: id };
     }
-    return { changed: true, won, front: c.frontIndex, victory: c.victory, resources: c.resources };
+    if (free.length) { const id = r.pick(free); c.planets[id].owner = ef; c.log.unshift({ turn: c.turn, text: `${E.faction(ef).short} occupies ${c.planets[id].name}`, good: false }); return { type: 'expand', planet: id }; }
+    return { type: 'none' };
   }
-
-  // A random "quick battle" (no campaign): just pick a biome.
+  function buy(c, key) {
+    const f = c.playerFaction, U = UPGRADES[key], lv = c.upgrades[f][key];
+    if (!U || lv >= U.levels.length - 1 || c.credits[f] < U.cost[lv + 1]) return false;
+    c.credits[f] -= U.cost[lv + 1]; c.upgrades[f][key]++; return true;
+  }
   function quickBattle(opts) {
     opts = opts || {};
-    const r = E.RNG(opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9));
-    const s = r.pick(SYSTEM_POOL);
-    return { biome: s.biome, system: s.name, human: opts.human || 'aegis', seed: r.i(1e9), fleetScale: 1 };
+    return { biome: opts.biome || 'desert', human: opts.human || 'aegis', seed: opts.seed !== undefined ? opts.seed : 1, fleetScale: opts.fleetScale || 1, enemyScale: opts.enemyScale || 1, difficulty: opts.difficulty || 'normal' };
   }
 
-  E.Campaign = { newCampaign, frontSystem, fleetScale, matchOptions, applyResult, quickBattle, SYSTEM_POOL };
+  // Career ranks from lifetime score.
+  const RANKS = [[0, 'Recruit'], [1500, 'Trooper'], [5000, 'Sergeant'], [12000, 'Lieutenant'], [25000, 'Captain'], [45000, 'Major'], [75000, 'Colonel'], [120000, 'Commodore'], [200000, 'Admiral'], [350000, 'Grand Admiral']];
+  function rank(xp) { let i = 0; while (i < RANKS.length - 1 && xp >= RANKS[i + 1][0]) i++; const next = RANKS[i + 1]; return { index: i, name: RANKS[i][1], next: next ? next[0] : null, prog: next ? (xp - RANKS[i][0]) / (next[0] - RANKS[i][0]) : 1 }; }
+
+  E.Campaign = { newCampaign, neighbors, attackable, perks, income, owned, fleetScale, bonusFor, matchOptions, applyBattle, autoResolve, enemyTurn, buy, quickBattle, rank, PERKS, UPGRADES, RANKS };
 })(window.E = window.E || {});
 
 // ---- js/data/units.js ----
-// The roster. Pure data: what each unit is, how it fights, how big it is, and
-// what it costs. Rendering and simulation both read from here so the numbers
-// and the visuals always agree. `layer` = ground | air | space.
+// The roster. Pure data: what each unit is, how it fights, how big it is.
+// Rendering and simulation both read from here so the numbers and the visuals
+// always agree. Distances are meters, speeds m/s, rates shots/s.
 (function (E) {
   'use strict';
 
-  // Infantry: on-foot, small radius, the player can be one of these.
+  // Armor classes: inf (flesh + plate), light (skiffs, fighters), heavy (tanks,
+  // turrets), cap (capital hulls). Each weapon lists a damage multiplier per
+  // class; anything unlisted is 1.
+  E.WEAPONS = {
+    // ── infantry ──
+    blaster:  { name: 'DL-7 Blaster',     kind: 'bolt', dmg: 20, rate: 5.5, speed: 300, range: 240, spread: 0.012, heat: 0.085, vs: { light: 0.5, heavy: 0.12, cap: 0.01 }, sfx: 'rifle' },
+    repeater: { name: 'Rotary Repeater',  kind: 'bolt', dmg: 13, rate: 10,  speed: 280, range: 200, spread: 0.03,  heat: 0.045, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
+    longrifle:{ name: 'Lance Rifle',      kind: 'bolt', dmg: 95, rate: 0.9, speed: 620, range: 650, spread: 0.0015, heat: 0.42, scale: 1.7, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'lance' },
+    carbine:  { name: 'Field Carbine',    kind: 'bolt', dmg: 15, rate: 7,   speed: 280, range: 170, spread: 0.022, heat: 0.06, vs: { light: 0.5, heavy: 0.12, cap: 0.01 }, sfx: 'rifle' },
+    rocket:   { name: 'HX Launcher',      kind: 'rocket', dmg: 260, rate: 0.45, speed: 95, range: 420, spread: 0.004, splash: 8, heat: 0, seek: 1.4, vs: { inf: 0.55, light: 1.3, heavy: 1.6, cap: 0.5 }, sfx: 'missile' },
+    grenade:  { name: 'Frag Charge',      kind: 'grenade', dmg: 150, speed: 27, grav: 19, fuse: 2.0, splash: 9, cd: 6, vs: { heavy: 0.6, cap: 0.05 }, sfx: 'launch' },
+    medburst: { name: 'Mender Pulse',     kind: 'heal', heal: 70, radius: 14, cd: 9, sfx: 'shield' },
+    // ── vehicles ──
+    skiffgun: { name: 'Twin Repeaters',   kind: 'bolt', dmg: 17, rate: 9,   speed: 340, range: 320, spread: 0.02, heat: 0.04, scale: 1.2, vs: { heavy: 0.3, cap: 0.02 }, sfx: 'pulse' },
+    cannon:   { name: 'Siege Cannon',     kind: 'shell', dmg: 280, rate: 0.6, speed: 210, range: 520, spread: 0.006, splash: 9, heat: 0, grav: 6, vs: { inf: 0.8, cap: 0.4 }, sfx: 'cannon' },
+    coax:     { name: 'Coaxial Repeater', kind: 'bolt', dmg: 12, rate: 9,   speed: 320, range: 260, spread: 0.025, heat: 0.03, vs: { light: 0.6, heavy: 0.15, cap: 0.01 }, sfx: 'rifle' },
+    // ── air ──
+    laser:    { name: 'Wing Lasers',      kind: 'bolt', dmg: 24, rate: 9,   speed: 560, range: 720, spread: 0.008, heat: 0.035, scale: 1.6, vs: { heavy: 0.45, cap: 0.22 }, sfx: 'lance' },
+    missile:  { name: 'Hunter Missile',   kind: 'missile', dmg: 280, speed: 210, range: 900, seek: 2.6, splash: 9, cd: 5, vs: { inf: 0.6, cap: 1.5 }, sfx: 'missile' },
+    bomb:     { name: 'Plasma Bomb',      kind: 'bomb', dmg: 420, speed: 0, grav: 32, splash: 24, cd: 1.1, vs: { cap: 1.6, heavy: 1.2 }, sfx: 'launch' },
+    // ── emplacements ──
+    turret:   { name: 'Defense Battery',  kind: 'bolt', dmg: 34, rate: 3.2, speed: 420, range: 420, spread: 0.012, heat: 0, scale: 1.5, vs: { cap: 0.1 }, sfx: 'pulse' },
+    // ── capital ──
+    turbo:    { name: 'Main Battery',     kind: 'turbo', dmg: 250, rate: 0.5, speed: 460, range: 1900, spread: 0.008, splash: 12, scale: 4, vs: { cap: 0.1 }, sfx: 'capital' },
+    broadside:{ name: 'Broadside',        kind: 'turbo', dmg: 62, rate: 2.2, speed: 460, range: 1500, spread: 0.014, splash: 5, scale: 2.4, vs: { cap: 0.05 }, sfx: 'pulse' },
+    flak:     { name: 'Point Defense',    kind: 'bolt', dmg: 11, rate: 10,  speed: 520, range: 420, spread: 0.035, scale: 1.2, vs: { cap: 0.05 }, sfx: 'pd' },
+    torpedo:  { name: 'Capital Torpedo',  kind: 'missile', dmg: 380, speed: 150, range: 2200, seek: 1.2, splash: 16, cd: 7, scale: 2.4, vs: { cap: 0.35 }, sfx: 'missile' },
+    orbital:  { name: 'Orbital Strike',   kind: 'orbital', dmg: 520, splash: 26, cd: 40, shots: 7, vs: { cap: 0 }, sfx: 'capital' },
+  };
+
+  // Infantry classes — what the player (and every bot) deploys as.
   E.INFANTRY = {
-    rifle:  { name: 'Line', hp: 100, speed: 34, viewH: 1.7, scale: 1.0, r: 0.7,
-              weapon: { dmg: 9, rate: 3.5, range: 180, spread: 0.02, auto: true, sfx: 'rifle' }, role: 'rifle', weight: 4 },
-    heavy:  { name: 'Bulwark', hp: 240, speed: 24, viewH: 1.9, scale: 1.1, r: 0.9,
-              weapon: { dmg: 22, rate: 1.4, range: 240, spread: 0.01, auto: true, sfx: 'heavy' }, role: 'heavy', weight: 2 },
-    medic:  { name: 'Mender', hp: 90, speed: 34, viewH: 1.6, scale: 1.0, r: 0.6,
-              weapon: { dmg: 5, rate: 2.5, range: 90, spread: 0.03, auto: true, sfx: 'rifle' }, heals: 14, role: 'medic', weight: 1 },
-    recon:  { name: 'Scout', hp: 80, speed: 55, viewH: 1.6, scale: 0.95, r: 0.55,
-              weapon: { dmg: 6, rate: 4.5, range: 150, spread: 0.02, auto: true, sfx: 'rifle' }, scout: 1.5, role: 'recon', weight: 2 },
+    trooper: { name: 'Trooper',  hp: 110, speed: 6.4, sprint: 10.2, r: 0.55, h: 1.85, weapon: 'blaster',   alt: 'grenade',  armor: 'inf', cost: 1,
+               desc: 'Line infantry. Accurate blaster and a frag charge. Takes ground and holds it.' },
+    heavy:   { name: 'Heavy',    hp: 170, speed: 5.4, sprint: 8.2,  r: 0.62, h: 1.95, weapon: 'repeater',  alt: 'rocket',   armor: 'inf', cost: 1,
+               desc: 'Rotary repeater and a guided launcher. The answer to armor and aircraft.' },
+    sniper:  { name: 'Marksman', hp: 85,  speed: 6.6, sprint: 10.6, r: 0.5,  h: 1.8,  weapon: 'longrifle', alt: 'grenade',  armor: 'inf', cost: 1, zoom: 3.2,
+               desc: 'Lance rifle that kills at any range. Fragile; keep distance.' },
+    medic:   { name: 'Mender',   hp: 100, speed: 6.8, sprint: 10.8, r: 0.52, h: 1.8,  weapon: 'carbine',   alt: 'medburst', armor: 'inf', cost: 1,
+               desc: 'Carbine and a healing pulse. Passive aura mends nearby allies.' },
   };
 
-  // Ground vehicles: commandeerable (board to drive) or AI-ordered.
   E.VEHICLES = {
-    skiff: { name: 'Skiff', layer: 'ground', hp: 320, speed: 180, accel: 30, turn: 2.6, r: 4.5, viewH: 3.2,
-             weapon: { dmg: 7, rate: 6, range: 320, spread: 0.03, auto: true, sfx: 'cannon' }, seats: 4, role: 'scout',
-             desc: 'Fast scout skiff. Quick and lightly armed.' },
-    gunship: { name: 'Bulwark', layer: 'ground', hp: 720, speed: 110, accel: 20, turn: 1.7, r: 7, viewH: 5,
-             weapon: { dmg: 20, rate: 2.2, range: 420, spread: 0.015, auto: true, sfx: 'cannon' }, seats: 5, role: 'gunship',
-             desc: 'Medium gunship with a heavy rotary cannon.' },
-    siege: { name: 'Juggernaut', layer: 'ground', hp: 1500, speed: 60, accel: 12, turn: 1.1, r: 10, viewH: 7,
-             weapon: { dmg: 60, rate: 0.8, range: 520, spread: 0.008, auto: false, sfx: 'siege' }, seats: 6, role: 'siege',
-             desc: 'Slow siege platform. Massive single-shot cannons.' },
-    // hover gunship (can hop to low air)
-    hornet: { name: 'Hornet', layer: 'ground', hp: 480, speed: 220, hover: 30, accel: 40, turn: 3.2, r: 5, viewH: 4,
-             weapon: { dmg: 9, rate: 8, range: 340, spread: 0.02, auto: true, sfx: 'cannon' }, seats: 3, role: 'hover',
-             desc: 'Hover gunship. Fast, can climb to low altitude.' },
+    skiff: { name: 'Skiff',     hp: 420,  shield: 160, speed: 34, accel: 26, turn: 2.4, r: 3.2, h: 2.4, hover: 1.1, weapon: 'skiffgun', alt: null,   armor: 'light', cost: 2,
+             desc: 'Fast hover scout. Twin repeaters, thin armor.' },
+    tank:  { name: 'Bulwark',   hp: 1500, shield: 400, speed: 17, accel: 10, turn: 1.3, r: 4.6, h: 3.4, hover: 0.8, weapon: 'cannon',   alt: 'coax', armor: 'heavy', cost: 3,
+             desc: 'Hover tank. Siege cannon with splash, coaxial repeater.' },
   };
 
-  // Fighters: air + space. Launched from capitals, can dogfight on the surface too.
   E.FIGHTERS = {
-    interceptor: { name: 'Lancer', layer: 'air', hp: 160, speed: 520, accel: 90, turn: 4.5, r: 3, viewH: 2.5,
-                   weapon: { dmg: 8, rate: 8, range: 260, spread: 0.02, auto: true, sfx: 'lance' }, role: 'interceptor',
-                   desc: 'Fast interceptor. Capital-killer missiles.' },
-    gunship: { name: 'Mauler', layer: 'air', hp: 260, speed: 400, accel: 60, turn: 3.0, r: 4, viewH: 3,
-               weapon: { dmg: 14, rate: 3, range: 300, spread: 0.02, auto: true, sfx: 'cannon' }, role: 'gunship',
-               desc: 'Heavy gunship fighter. Punches hard, turns slow.' },
-    strike: { name: 'Reaver', layer: 'air', hp: 120, speed: 460, accel: 75, turn: 5.0, r: 2.6, viewH: 2.2,
-              weapon: { dmg: 6, rate: 10, range: 220, spread: 0.025, auto: true, sfx: 'lance' }, role: 'strike',
-              desc: 'Strike craft. Fast, fragile, swarms in pairs.' },
+    interceptor: { name: 'Lancer', hp: 260, shield: 120, speed: 115, boost: 175, minSpeed: 55, turn: 1.9, r: 4.2, h: 2.4, weapon: 'laser', alt: 'missile', armor: 'light', cost: 2,
+                   desc: 'Air-superiority fighter. Wing lasers and hunter missiles.' },
+    bomber:      { name: 'Mauler', hp: 420, shield: 160, speed: 90,  boost: 135, minSpeed: 45, turn: 1.3, r: 5.2, h: 3.0, weapon: 'laser', alt: 'bomb',    armor: 'light', cost: 2,
+                   desc: 'Strike bomber. Plasma bombs crack armor and capital hulls.' },
   };
 
-  // Capital ships: space. The centerpiece. Stats scale with the hull genome.
   E.CAPITALS = {
-    dreadnought: { name: 'Dreadnought', role: 'flagship', layer: 'space',
-                   hp: 60000, speed: 200, r: 90, viewH: 60, bays: 24,
-                   main: { dmg: 900, rate: 0.25, range: 900, spread: 0.004, sfx: 'capital' },
-                   side: { dmg: 180, rate: 1.2, range: 500, spread: 0.01, sfx: 'pulse' },
-                   pd: { dmg: 6, rate: 14, range: 240, spread: 0.05, sfx: 'pd' },
-                   missile: { dmg: 500, rate: 0.5, range: 700, seek: 1.0, sfx: 'missile' },
-                   desc: 'The centerpiece of a fleet. Endless broadside, two fighter bays.' },
-    carrier: { name: 'Carrier', role: 'carrier', layer: 'space',
-               hp: 36000, speed: 150, r: 80, viewH: 50, bays: 48,
-               main: { dmg: 400, rate: 0.2, range: 700, spread: 0.006, sfx: 'capital' },
-               side: { dmg: 120, rate: 1.0, range: 460, spread: 0.012, sfx: 'pulse' },
-               pd: { dmg: 5, rate: 16, range: 260, spread: 0.05, sfx: 'pd' },
-               missile: { dmg: 300, rate: 0.6, range: 600, seek: 1.0, sfx: 'missile' },
-               desc: 'Fleet wing. Carries the largest fighter group in the sector.' },
-    cruiser: { name: 'Cruiser', role: 'cruiser', layer: 'space',
-               hp: 14000, speed: 180, r: 55, viewH: 35, bays: 12,
-               main: { dmg: 220, rate: 0.35, range: 600, spread: 0.008, sfx: 'capital' },
-               side: { dmg: 90, rate: 1.4, range: 420, spread: 0.014, sfx: 'pulse' },
-               pd: { dmg: 4, rate: 18, range: 220, spread: 0.05, sfx: 'pd' },
-               missile: { dmg: 200, rate: 0.8, range: 500, seek: 1.1, sfx: 'missile' },
-               desc: 'Fast escort. Hits hard and gets out before the return fire.' },
+    cruiser:     { name: 'Cruiser',     hp: 16000, shield: 5000,  speed: 16, turn: 0.07, r: 110, h: 34, len: 300, bays: 4,  main: 2, side: 3, pd: 3, armor: 'cap',
+                   desc: 'Fast escort. Hits hard and gets out before the return fire.' },
+    carrier:     { name: 'Carrier',     hp: 22000, shield: 7000,  speed: 13, turn: 0.06, r: 135, h: 40, len: 370, bays: 8,  main: 2, side: 3, pd: 4, armor: 'cap',
+                   desc: 'Fleet wing. Carries the largest fighter group in the sector.' },
+    dreadnought: { name: 'Dreadnought', hp: 32000, shield: 10000, speed: 11, turn: 0.05, r: 160, h: 48, len: 440, bays: 6,  main: 4, side: 5, pd: 5, armor: 'cap',
+                   desc: 'The centerpiece of a fleet. Endless broadside.' },
   };
 
-  // Structures & objectives: the checkpoints a battle is fought over.
-  E.STRUCTURES = {
-    // ground
-    hq: { name: 'Command HQ', layer: 'ground', hp: 20000, r: 26, role: 'hq', desc: 'Destroy the enemy HQ to win the objective.' },
-    power: { name: 'Power Core', layer: 'ground', hp: 8000, r: 16, role: 'power', hold: 20, desc: 'Hold to charge; powers the enemy fleet.' },
-    depot: { name: 'Supply Depot', layer: 'ground', hp: 5000, r: 14, role: 'depot', hold: 15, desc: 'Hold to resupply and repair your force.' },
-    // space
-    station: { name: 'Orbital Station', layer: 'space', hp: 16000, r: 60, role: 'station', hold: 25, desc: 'Hold to control the orbital lane.' },
-    gateway: { name: 'Stargate', layer: 'space', hp: 24000, r: 90, role: 'gateway', hold: 30, desc: 'Hold the gate to open the next system.' },
-    // spawn pads / hangars (defendable, hold to control local spawns)
-    pad: { name: 'Launch Pad', layer: 'ground', hp: 2600, r: 10, role: 'pad', desc: 'Fighter and vehicle launch point.' },
-  };
-  E.STRUCTURE_LIST = E.STRUCTURES;
-
-  // A player's "force" composition for a match. Action-first: a fixed squad plus
-  // whatever they commandeer. These are the units that spawn to them.
-  E.FORCE_DEFAULT = {
-    rifle: 3, recon: 2, medic: 1,
-    vehicle: { skiff: 1, gunship: 1 },
-    fighter: { interceptor: 2, strike: 2 },
-    capital: 'cruiser',   // each side starts with one cruiser they can board
+  E.TURRETS = {
+    battery: { name: 'Defense Battery', hp: 900, shield: 0, r: 2.6, h: 3.6, weapon: 'turret', armor: 'heavy', turn: 2.2 },
   };
 
-  E.unitName = (layer, key) => {
-    const T = layer === 'ground' ? E.VEHICLES : layer === 'air' ? E.FIGHTERS : layer === 'space' ? E.CAPITALS : E.INFANTRY;
-    const u = T[key]; return u ? u.name : key;
+  E.unitDef = (kind, type) => {
+    const T = kind === 'infantry' ? E.INFANTRY : kind === 'vehicle' ? E.VEHICLES : kind === 'fighter' ? E.FIGHTERS : kind === 'capital' ? E.CAPITALS : E.TURRETS;
+    return T[type] || T[Object.keys(T)[0]];
   };
+  E.unitName = (kind, type) => (E.unitDef(kind, type) || {}).name || type;
+  E.KINDS = ['infantry', 'vehicle', 'fighter', 'capital', 'turret'];
+
+  // Per-faction doctrine multipliers: the Concord is heavier, the Pact is
+  // faster and more numerous in the air.
+  E.DOCTRINE = {
+    aegis:   { infHp: 1.08, infSpeed: 0.98, vehHp: 1.15, capHp: 1.1, capDmg: 1.04, fighters: 3, fighterHp: 1.1, fighterSpeed: 0.96 },
+    verdant: { infHp: 1.0, infSpeed: 1.06, vehHp: 0.95, capHp: 1.0, capDmg: 1.0, fighters: 4, fighterHp: 0.92, fighterSpeed: 1.08 },
+  };
+
+  // A battle's order of battle for one side at fleetScale 1.
+  E.FORCE = {
+    infantry: 16,                 // bots kept alive on the field (reinforced from tickets)
+    mix: [['trooper', 5], ['heavy', 2], ['sniper', 1.5], ['medic', 1.5]],
+    vehicles: { skiff: 1, tank: 1 },
+    tickets: 260,
+    capital: 'cruiser',
+  };
+
+  E.CP_NAMES = ['Alpha', 'Bravo', 'Citadel', 'Delta', 'Echo'];
 })(window.E = window.E || {});
 
 // ---- js/sim/sim.js ----
-// The simulation rules: movement, AI, combat (projectiles + damage + shields),
-// objective capture, and win conditions. Pure and deterministic — draws only from
+// The simulation rules: movement, AI, weapons, damage, command posts,
+// reinforcements and win conditions. Pure and deterministic — draws only from
 // world.rng, reads/writes world state, and emits world.events (drained by the
-// renderer for FX). The World owns the state; this owns the rules.
+// renderer / audio / HUD / netcode). The World owns the state; this owns the rules.
+//
+// Conventions: y is up; yaw 0 faces +z and forward = (sin yaw, 0, cos yaw);
+// "right" (screen-right when looking forward) = (-cos yaw, 0, sin yaw).
 (function (E) {
   'use strict';
+  const V = E.V3;
+  const GRAV = 22, RESPAWN = 4, CAP_ALT = 640, ORBIT_R = 700;
+  const DEATH_COST = { infantry: 1, vehicle: 3, fighter: 1, turret: 0, capital: 25 };
+  const KILL_SCORE = { infantry: 100, vehicle: 300, fighter: 250, turret: 150, capital: 2500 };
+  const PREF = {
+    trooper: { infantry: 1, vehicle: 0.22, turret: 0.2 },
+    sniper:  { infantry: 1, vehicle: 0.1, turret: 0.15 },
+    medic:   { infantry: 1, vehicle: 0.15, turret: 0.15 },
+    heavy:   { infantry: 0.8, vehicle: 1.7, turret: 1.2, fighter: 0.35 },
+    skiff:   { infantry: 1, vehicle: 0.7, turret: 0.5, fighter: 0.15 },
+    tank:    { infantry: 0.9, vehicle: 1.6, turret: 1.3 },
+    battery: { infantry: 1, vehicle: 1.2, fighter: 1.1 },
+    interceptor: { fighter: 2.2, vehicle: 0.5, infantry: 0.2, turret: 0.35, capital: 0.3 },
+    bomber:  { capital: 1.1, vehicle: 1.5, turret: 1.3, infantry: 0.45, fighter: 0.3 },
+  };
 
-  function weaponOf(u) {
-    const T = u.kind === 'infantry' ? E.INFANTRY : u.kind === 'vehicle' ? E.VEHICLES : u.kind === 'fighter' ? E.FIGHTERS : E.CAPITALS;
-    const def = (T[u.type] || T.rifle || {});
-    return def.weapon || { dmg: 5, rate: 2, range: 100, spread: 0.02, sfx: 'rifle' };
-  }
-  function detectRange(u) {
-    return u.kind === 'capital' ? 1200 : u.kind === 'fighter' ? 340 : u.kind === 'vehicle' ? 300 : (u.role === 'recon' ? 220 : 140);
-  }
-  function airAlt(u) { return u.kind === 'capital' ? 200 : 130; }
-  function isAir(u) { return u.kind === 'fighter' || u.kind === 'capital'; }
+  const tmpA = V.make(), tmpB = V.make(), tmpC = V.make(), tmpD = V.make(), tmpM = V.make();
+  function dirOf(yaw, pitch, o) { const c = Math.cos(pitch); o = o || {}; o.x = Math.sin(yaw) * c; o.y = Math.sin(pitch); o.z = Math.cos(yaw) * c; return o; }
+  function angDiff(a, b) { let d = (a - b) % E.TAU; if (d > Math.PI) d -= E.TAU; if (d < -Math.PI) d += E.TAU; return d; }
+  function turnTo(cur, want, max) { const d = angDiff(want, cur); return cur + E.clamp(d, -max, max); }
+  function isGroundKind(u) { return u.kind === 'infantry' || u.kind === 'vehicle' || u.kind === 'turret'; }
+  function centerOf(u, o) { o = o || {}; o.x = u.pos.x; o.z = u.pos.z; o.y = u.pos.y + (isGroundKind(u) ? u.h * 0.55 : 0); return o; }
+  function eyeOf(u, o) { o = o || {}; o.x = u.pos.x; o.z = u.pos.z; o.y = u.pos.y + (u.kind === 'infantry' ? u.h * 0.86 : isGroundKind(u) ? u.h * 0.8 : 0); return o; }
+  function enemyOf(t) { return t === 'aegis' ? 'verdant' : 'aegis'; }
+  function nameOf(w, u) { return u.pid && w.players[u.pid] ? w.players[u.pid].name : E.unitName(u.kind, u.type); }
 
-  function nearestEnemy(w, u, range) {
-    let best = null, bd = range * range;
-    for (const e of w.units) {
-      if (!e.alive || e.team === u.team) continue;
-      const d = E.distXZ2(u.pos, e.pos);
-      if (d < bd) { bd = d; best = e; }
+  // ── setup ────────────────────────────────────────────────────
+  function spawnUnit(w, kind, type, team, pos, extra) {
+    const def = E.unitDef(kind, type), D = E.DOCTRINE[team], B = w.teams[team].bonus || {};
+    let hpM = 1, spM = 1;
+    if (kind === 'infantry') { hpM = D.infHp * (B.elite ? 1.2 : 1); spM = D.infSpeed; }
+    else if (kind === 'vehicle') hpM = D.vehHp * (B.armor ? 1.15 : 1);
+    else if (kind === 'fighter') { hpM = D.fighterHp; spM = D.fighterSpeed; }
+    else if (kind === 'capital') hpM = D.capHp * (B.hull ? 1.25 : 1);
+    const hp = Math.round(def.hp * hpM);
+    const u = {
+      id: w.nextId++, kind, type, team, def, armor: def.armor,
+      pos: { x: pos.x, y: pos.y !== undefined ? pos.y : w.groundY(pos.x, pos.z), z: pos.z }, vel: { x: 0, y: 0, z: 0 },
+      yaw: team === 'aegis' ? Math.PI / 2 : -Math.PI / 2, pitch: 0, roll: 0, aimYaw: 0, aimPitch: 0,
+      hp, maxHp: hp, shield: Math.round((def.shield || 0) * (kind === 'capital' ? hpM : 1)), maxShield: 0, hitT: 99,
+      alive: true, r: def.r, h: def.h, speed: def.speed * spM, spM, spd: 0, vy: 0, onGround: true,
+      heat: 0, hot: false, fireT: 0, altT: 2, lastFire: -9, gunSide: 1,
+      pid: null, kills: 0, order: null, bornT: w.t,
+      ai: { thinkT: w.rng.next() * 0.5, tid: 0, los: false, goal: -1, goalT: 0, off: { x: 0, z: 0 }, offT: 0,
+            strafe: w.rng.sign(), strafeT: 1, burstT: 0, pauseT: 0, errY: 0, errP: 0, state: '', stateT: 0, bYaw: 0, bPitch: 0 },
+    };
+    u.maxShield = u.shield; u.aimYaw = u.yaw;
+    if (extra) Object.assign(u, extra);
+    if (kind === 'capital') buildGuns(u);
+    w.units.push(u); w.umap.set(u.id, u);
+    w.events.push({ type: 'spawn', uid: u.id });
+    return u;
+  }
+
+  function buildGuns(u) {
+    const d = u.def, L = d.len, g = [];
+    for (let i = 0; i < d.main; i++) g.push({ wk: 'turbo', t: 1 + i * 0.7, lx: 0, ly: d.h * 0.55, lz: E.lerp(-0.12, 0.34, d.main > 1 ? i / (d.main - 1) : 0.5) * L, slot: 'main' });
+    for (let s = -1; s <= 1; s += 2) for (let i = 0; i < d.side; i++)
+      g.push({ wk: 'broadside', t: 0.5 + i * 0.3, lx: s * d.r * 0.36, ly: 0, lz: E.lerp(-0.3, 0.3, d.side > 1 ? i / (d.side - 1) : 0.5) * L, slot: 'side', s });
+    for (let i = 0; i < d.pd; i++) g.push({ wk: 'flak', t: i * 0.1, lx: (i % 2 ? 1 : -1) * d.r * 0.3, ly: (i % 3 - 1) * d.h * 0.4, lz: E.lerp(-0.4, 0.4, i / Math.max(1, d.pd - 1)) * L, slot: 'pd' });
+    g.push({ wk: 'torpedo', t: 5, lx: 0, ly: -d.h * 0.3, lz: L * 0.4, slot: 'torp' });
+    u.guns = g;
+  }
+
+  function ring(w, c, a, b) { const an = w.rng.angle(), d = w.rng.f(a, b); return { x: c.x + Math.cos(an) * d, z: c.z + Math.sin(an) * d }; }
+  function pickClass(w) { return w.rng.pickW(E.FORCE.mix); }
+
+  function setup(w) {
+    for (const f of E.TEAMS) {
+      const T = w.teams[f], home = w.cps.find(c => c.home === f), sgn = f === 'aegis' ? 1 : -1;
+      for (let i = 0; i < T.infCap; i++) spawnUnit(w, 'infantry', pickClass(w), f, ring(w, home.pos, 6, home.r * 0.9));
+      const vs = Object.assign({}, E.FORCE.vehicles); if (T.bonus.armor) vs.tank++;
+      T.vehCap = vs;
+      for (const [type, n] of Object.entries(vs)) for (let i = 0; i < n; i++) spawnUnit(w, 'vehicle', type, f, { x: home.pos.x - sgn * 20, z: home.pos.z + (i * 2 - 1) * 16 + (type === 'tank' ? 34 : -34) });
+      for (const s of [-1, 1]) spawnUnit(w, 'turret', 'battery', f, { x: home.pos.x + sgn * 22, z: home.pos.z + s * 26 });
+      T.fleet.forEach((type, i) => {
+        const a = (f === 'aegis' ? Math.PI : 0) + i * 0.42, R = ORBIT_R + i * 190;
+        spawnUnit(w, 'capital', type, f, { x: Math.cos(a) * R, y: CAP_ALT + i * 90, z: Math.sin(a) * R }, { yaw: Math.atan2(-Math.sin(a), Math.cos(a)), orbitR: R, alt: CAP_ALT + i * 90, flag: i === 0 });
+      });
+      T.airCap = E.DOCTRINE[f].fighters + (T.bonus.airwing ? 2 : 0);
+      const cap = w.units.find(u => u.kind === 'capital' && u.team === f);
+      for (let i = 0; i < T.airCap; i++) launchFighter(w, f, cap, i);
     }
-    return best;
-  }
-  function nearestObjective(w, u, team) {
-    let best = null, bd = Infinity;
-    for (const o of w.objectives) {
-      if (o.owner === team) continue; // capture enemy or neutral
-      const d = E.distXZ2(u.pos, o.pos);
-      if (d < bd) { bd = d; best = o; }
-    }
-    return best;
+    for (const u of w.units) u.bornT = -10;
+    w.events.length = 0;
   }
 
-  // ── control ──────────────────────────────────────────────────
-  function control(u, w, dt) {
-    if (!u.alive) return;
-    if (w.possessedId === u.id) { possessed(u, w, dt); return; }
-    if (u.order && u.order.type === 'hold') { // hold position
-      u.fireT = Math.max(0, u.fireT - dt);
-      const e = nearestEnemy(w, u, detectRange(u));
-      if (e) fireAt(u, w, e);
-      return;
+  function launchFighter(w, f, cap, i) {
+    const type = (i % 3 === 2) ? 'bomber' : 'interceptor';
+    let pos, yaw;
+    if (cap && cap.alive) {
+      const fx = Math.sin(cap.yaw), fz = Math.cos(cap.yaw);
+      pos = { x: cap.pos.x + fx * 40 - fz * (i % 2 ? 60 : -60), y: cap.pos.y - cap.h - 12 - (i % 3) * 8, z: cap.pos.z + fz * 40 + fx * (i % 2 ? 60 : -60) }; yaw = cap.yaw;
+    } else {
+      const home = w.cps.find(c => c.home === f) || w.cps[0];
+      pos = { x: home.pos.x * 2.2, y: home.pos.y + 420, z: home.pos.z + w.rng.f(-200, 200) }; yaw = f === 'aegis' ? Math.PI / 2 : -Math.PI / 2;
     }
-    ai(u, w, dt);
+    const u = spawnUnit(w, 'fighter', type, f, pos, { yaw });
+    u.spd = u.speed; u.aimYaw = yaw;
+    return u;
   }
 
-  function possessed(u, w, dt) {
-    const inp = w.playerInput;
-    const sp = u.speed;
+  // ── movement integrators ─────────────────────────────────────
+  function clampArena(w, u) {
+    const A = w.layout.arena, mx = A.x * 1.22, mz = A.z * 1.22;
+    if (u.pos.x > mx) u.pos.x = mx; else if (u.pos.x < -mx) u.pos.x = -mx;
+    if (u.pos.z > mz) u.pos.z = mz; else if (u.pos.z < -mz) u.pos.z = -mz;
+  }
+  function stepInfantry(w, u, dt, wx, wz, speed, jump) {
+    const T = w.terrain, g = T.ground(u.pos.x, u.pos.z);
+    if (T.height(u.pos.x, u.pos.z) < T.waterLevel - 0.5) speed *= 0.62;
+    if (wx || wz) {
+      const grade = (T.ground(u.pos.x + wx * 1.6, u.pos.z + wz * 1.6) - g) / 1.6;
+      if (grade > 0.15) speed *= E.clamp(1.12 - grade * 0.8, 0.3, 1);
+    }
+    const k = Math.min(1, dt * (u.onGround ? 11 : 2.5));
+    u.vel.x += (wx * speed - u.vel.x) * k; u.vel.z += (wz * speed - u.vel.z) * k;
+    u.pos.x += u.vel.x * dt; u.pos.z += u.vel.z * dt;
+    clampArena(w, u);
+    if (jump && u.onGround) { u.vy = 7.6; u.onGround = false; }
+    u.vy -= GRAV * dt; u.pos.y += u.vy * dt;
+    const g2 = T.ground(u.pos.x, u.pos.z);
+    if (u.pos.y <= g2 || (u.vy <= 0 && u.pos.y - g2 < 0.45 && u.onGround)) { u.pos.y = g2; u.vy = 0; u.onGround = true; }
+    else if (u.pos.y - g2 > 0.45) u.onGround = false;
+    u.vel.y = u.vy;
+  }
+  function stepVehicle(w, u, dt, throttle, turn) {
+    const d = u.def, T = w.terrain;
+    u.spd += (throttle * u.speed - u.spd) * Math.min(1, dt * d.accel / u.speed * 1.6);
+    u.yaw += turn * d.turn * dt * (0.35 + 0.65 * Math.min(1, Math.abs(u.spd) / (u.speed * 0.4) + 0.4));
     const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
-    // forward/back + strafe
-    let dx = (fx * inp.x) + (-fz * inp.y * -1);
-    let dz = (fz * inp.x) + (fx * inp.y * -1);
-    // normalize-ish strafe: right = +y
-    const rx = Math.cos(u.yaw), rz = -Math.sin(u.yaw);
-    dx = fx * inp.x + rx * inp.y;
-    dz = fz * inp.x + rz * inp.y;
-    const l = Math.hypot(dx, dz) || 1;
-    if (l > 0.001) {
-      u.pos.x += (dx / l) * sp * dt;
-      u.pos.z += (dz / l) * sp * dt;
-    }
-    // face
-    u.yaw = w.playerLookYaw !== undefined ? w.playerLookYaw : u.yaw;
-    // altitude
-    const targetY = isAir(u) ? w.groundY(u.pos.x, u.pos.z) + airAlt(u) : w.groundY(u.pos.x, u.pos.z);
-    u.pos.y += (targetY - u.pos.y) * Math.min(1, dt * (isAir(u) ? 2 : 6));
-    // fire: auto at nearest enemy in range, or at crosshair
-    u.fireT = Math.max(0, u.fireT - dt);
-    const e = nearestEnemy(w, u, detectRange(u));
-    if (e && inp.fire !== false) fireAt(u, w, e);
+    const grade = (T.height(u.pos.x + fx * 5, u.pos.z + fz * 5) - T.height(u.pos.x, u.pos.z)) / 5;
+    const sl = u.spd > 0 && grade > 0.25 ? E.clamp(1.2 - grade * 0.8, 0.25, 1) : 1;
+    u.vel.x = fx * u.spd * sl; u.vel.z = fz * u.spd * sl;
+    u.pos.x += u.vel.x * dt; u.pos.z += u.vel.z * dt;
+    clampArena(w, u);
+    const ty = Math.max(T.height(u.pos.x, u.pos.z), T.waterLevel) + d.hover;
+    u.vel.y = (ty - u.pos.y) * Math.min(1, dt * 9) / dt; u.pos.y += (ty - u.pos.y) * Math.min(1, dt * 9);
   }
-
-  function ai(u, w, dt) {
-    const isCap = u.kind === 'capital';
-    const range = weaponOf(u).range || 100;
-    const det = isCap ? 1500 : detectRange(u);
-    // capitals seek the enemy flagship (long-range arrays sense it even beyond
-    // gun range); everyone else seeks the nearest enemy in sight
-    const enemy = isCap ? nearestEnemyIn(w, u, 1e9, e => e.kind === 'capital') : nearestEnemy(w, u, det);
-    const obj = isCap ? null : nearestObjective(w, u, u.team);
-    // target point
-    let tx, tz;
-    if (enemy) { tx = enemy.pos.x; tz = enemy.pos.z; }
-    else if (obj) { tx = obj.pos.x; tz = obj.pos.z; }
-    else { // advance to enemy HQ / stay in formation
-      if (isCap) return; // hold position
-      const hq = w.objectives.find(o => o.role === 'hq' && o.owner !== u.team);
-      if (!hq) return;
-      tx = hq.pos.x; tz = hq.pos.z;
-    }
-    const dx = tx - u.pos.x, dz = tz - u.pos.z;
-    const dist = Math.hypot(dx, dz);
-    const stopR = isCap ? (enemy ? 480 : 0) : (obj && (Math.abs(tx - obj.pos.x) < 2 && Math.abs(tz - obj.pos.z) < 2) ? obj.radius * 0.7 : 0);
-    // move toward target
-    if (dist > (stopR + 2)) {
-      const desired = Math.atan2(dx, dz);
-      u.yaw = E.lerpAngle(u.yaw, desired, Math.min(1, u.turn * dt));
-      const sp = u.speed * (enemy && dist < (isCap ? 600 : range * 0.6) ? 0.5 : 1);
-      u.pos.x += Math.sin(u.yaw) * sp * dt;
-      u.pos.z += Math.cos(u.yaw) * sp * dt;
-    }
-    // altitude
-    const targetY = isAir(u) ? w.groundY(u.pos.x, u.pos.z) + airAlt(u) + Math.sin(w.t + u.id) * 20 : w.groundY(u.pos.x, u.pos.z);
-    u.pos.y += (targetY - u.pos.y) * Math.min(1, dt * (isAir(u) ? 1.5 : 6));
-    // fire (capitals fire via capitalWeapons; others use their own gun)
-    if (isCap) return;
-    u.fireT = Math.max(0, u.fireT - dt);
-    if (enemy && dist < range) fireAt(u, w, enemy);
-    else if (obj && dist < obj.radius) fireAt(u, w, null, obj); // shoot the objective
+  function stepFighter(w, u, dt, desYaw, desPitch, speed) {
+    const d = u.def, mt = d.turn * dt;
+    const dy = angDiff(desYaw, u.yaw);
+    u.yaw += E.clamp(dy, -mt, mt);
+    u.roll += (E.clamp(dy * 1.8, -1.25, 1.25) - u.roll) * Math.min(1, dt * 3.5);
+    u.pitch += E.clamp(E.clamp(desPitch, -1.2, 1.2) - u.pitch, -mt, mt);
+    u.spd += (speed - u.spd) * Math.min(1, dt * 1.4);
+    dirOf(u.yaw, u.pitch, tmpA);
+    u.vel.x = tmpA.x * u.spd; u.vel.y = tmpA.y * u.spd; u.vel.z = tmpA.z * u.spd;
+    u.pos.x += u.vel.x * dt; u.pos.y += u.vel.y * dt; u.pos.z += u.vel.z * dt;
+    u.aimYaw = u.yaw; u.aimPitch = u.pitch;
+    const g = Math.max(w.terrain.height(u.pos.x, u.pos.z), w.terrain.waterLevel);
+    if (u.pos.y < g + 1.5) { u.pos.y = g + 1.5; kill(w, u, { team: null, uid: 0, owner: null, wk: 'crash' }); }
+  }
+  function stepCapital(w, u, dt, turn, throttle) {
+    const d = u.def;
+    u.spd += (throttle * u.speed - u.spd) * Math.min(1, dt * 0.4);
+    u.yaw += turn * d.turn * dt;
+    u.roll += (turn * 0.12 - u.roll) * Math.min(1, dt * 0.5);
+    u.vel.x = Math.sin(u.yaw) * u.spd; u.vel.z = Math.cos(u.yaw) * u.spd;
+    u.pos.x += u.vel.x * dt; u.pos.z += u.vel.z * dt;
+    const ty = (u.alt || CAP_ALT) + Math.sin(w.t * 0.13 + u.id) * 8;
+    u.pos.y += (ty - u.pos.y) * Math.min(1, dt * 0.3);
+    const B = w.layout.bound * 0.8, hd = Math.hypot(u.pos.x, u.pos.z);
+    if (hd > B) { u.pos.x *= B / hd; u.pos.z *= B / hd; }
   }
 
   // ── weapons ──────────────────────────────────────────────────
-  function fireAt(u, w, enemy, obj) {
-    if (u.fireT > 0) return;
-    const wp = weaponOf(u);
-    u.fireT = 1 / (wp.rate || 2);
-    u.aim = u.yaw;
-    const muzzle = E.V3.make(u.pos.x + Math.sin(u.yaw) * u.r * 1.5, u.pos.y + u.viewH * 0.7, u.pos.z + Math.cos(u.yaw) * u.r * 1.5);
-    let dir;
-    if (obj) dir = E.V3.normalize(E.V3.sub(obj.pos, muzzle));
-    else if (enemy) dir = E.V3.normalize(E.V3.sub(enemy.pos, muzzle));
-    else dir = E.V3.normalize(E.V3.make(Math.sin(u.yaw), 0, Math.cos(u.yaw)));
-    const sp = wp.spread || 0.02;
-    dir.x += (w.rng.next() - 0.5) * sp * 2; dir.y += (w.rng.next() - 0.5) * sp; dir.z += (w.rng.next() - 0.5) * sp * 2;
-    E.V3.normalize(dir);
-    const spd = (wp.speed || 150) * (u.kind === 'fighter' ? 1.3 : 1);
-    w.projectiles.push({
-      pos: muzzle, dir, speed: spd, dmg: wp.dmg, team: u.team, life: (wp.range || 120) / spd + 1.5,
-      color: E.faction(u.faction).palette.engine, faction: u.faction, kind: wp.kind || 'bullet', r: 1.2,
-    });
-    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: u.faction, kind: wp.kind });
+  function muzzle(u, dir, o) {
+    o = o || {};
+    if (u.kind === 'infantry') { o.x = u.pos.x + dir.x * 0.6; o.y = u.pos.y + u.h * 0.84 + dir.y * 0.6; o.z = u.pos.z + dir.z * 0.6; }
+    else if (u.kind === 'fighter') {
+      const s = u.gunSide * u.r * 0.55; u.gunSide = -u.gunSide;
+      o.x = u.pos.x + dir.x * u.r - Math.cos(u.yaw) * s; o.y = u.pos.y + dir.y * u.r - 0.3; o.z = u.pos.z + dir.z * u.r + Math.sin(u.yaw) * s;
+    } else { const k = u.kind === 'vehicle' ? u.r * 1.05 : 2.4; o.x = u.pos.x + dir.x * k; o.y = u.pos.y + u.h * 0.8 + dir.y * k; o.z = u.pos.z + dir.z * k; }
+    return o;
   }
 
-  // ── capital ship weapons: main (long), side (medium), point-defense (close) ──
-  function capitalWeapons(w, dt) {
-    for (const cap of w.units) {
-      if (!cap.alive || cap.kind !== 'capital') continue;
-      const C = E.CAPITALS[cap.type] || E.CAPITALS.cruiser;
-      cap._cwT = cap._cwT || { main: 0, side: 0, pd: 0, mis: 0 };
-      cap._cwT.main -= dt; cap._cwT.side -= dt; cap._cwT.pd -= dt; cap._cwT.mis -= dt;
-      // main battery: far, slow, heavy
-      if (cap._cwT.main <= 0) {
-        const e = nearestEnemyIn(w, cap, C.main.range, u => u.kind !== 'infantry');
-        if (e) { capitalShot(w, cap, e, C.main, 'main'); cap._cwT.main = 1 / C.main.rate; }
-      }
-      // side guns: medium
-      if (cap._cwT.side <= 0) {
-        const e = nearestEnemyIn(w, cap, C.side.range, u => true);
-        if (e) { capitalShot(w, cap, e, C.side, 'side'); cap._cwT.side = 1 / C.side.rate; }
-      }
-      // point defense: intercept nearby fighters
-      if (cap._cwT.pd <= 0) {
-        const e = nearestEnemyIn(w, cap, C.pd.range, u => u.kind === 'fighter');
-        if (e) { capitalShot(w, cap, e, C.pd, 'pd'); cap._cwT.pd = 1 / C.pd.rate; }
-      }
-      // occasional missile vs capitals
-      if (cap._cwT.mis <= 0) {
-        const e = nearestEnemyIn(w, cap, (C.missile || {}).range || 0, u => u.kind === 'capital');
-        if (e) { fireMissile(w, cap, e, C.missile); cap._cwT.mis = 1 / (C.missile.rate || 0.5); }
-      }
+  function shoot(w, u, wk, origin, dir, tid, dmgMul) {
+    const W = E.WEAPONS[wk], R = w.rng;
+    const sp = (W.spread || 0) * (u.pid ? 1 : 3);
+    let dx = dir.x + (R.next() - 0.5) * 2 * sp, dy = dir.y + (R.next() - 0.5) * 2 * sp, dz = dir.z + (R.next() - 0.5) * 2 * sp;
+    const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l;
+    const speed = W.speed || 0;
+    const p = {
+      id: w.nextProj++, wk, kind: W.kind, pos: { x: origin.x, y: origin.y, z: origin.z },
+      vel: { x: dx * speed, y: dy * speed, z: dz * speed }, team: u.team, uid: u.id, owner: u.pid || null,
+      dmg: W.dmg * (dmgMul || 1), life: W.fuse || ((W.range || 300) / Math.max(1, speed) * 1.12), splash: W.splash || 0,
+      grav: W.grav || 0, seek: W.seek || 0, tid: tid || 0, r: W.kind === 'bolt' ? 0.15 : 0.5, scale: W.scale || 1,
+    };
+    if (W.kind === 'grenade') p.vel.y += 5.5;
+    if (W.kind === 'bomb') { p.vel.x = u.vel.x; p.vel.y = u.vel.y - 4; p.vel.z = u.vel.z; p.life = 14; }
+    w.projectiles.push(p);
+    w.events.push({ type: 'fire', pid: p.id, wk, pos: V.clone(p.pos), vel: V.clone(p.vel), team: u.team, uid: u.id, life: p.life });
+    u.lastFire = w.t;
+    return p;
+  }
+
+  function firePrimary(w, u, dir, tid) {
+    const W = E.WEAPONS[u.def.weapon];
+    if (u.fireT > 0 || u.hot) return false;
+    u.fireT += 1 / W.rate;
+    if (W.heat) { u.heat += W.heat; if (u.heat >= 1) { u.hot = true; if (u.pid) w.events.push({ type: 'overheat', uid: u.id, to: u.pid }); } }
+    shoot(w, u, u.def.weapon, muzzle(u, dir, tmpM), dir, tid);
+    return true;
+  }
+  function fireAlt(w, u, dir, tid) {
+    const wk = u.def.alt; if (!wk || u.altT > 0) return false;
+    const W = E.WEAPONS[wk];
+    u.altT = W.cd || 1 / W.rate;
+    if (W.kind === 'heal') {
+      for (const a of w.units) if (a.alive && a.team === u.team && a.kind === 'infantry' && V.distance2(a.pos, u.pos) < W.radius * W.radius) a.hp = Math.min(a.maxHp, a.hp + W.heal);
+      w.events.push({ type: 'heal', pos: V.clone(u.pos), team: u.team, r: W.radius });
+      if (u.pid) score(w, u.pid, 25, 'HEAL');
+      return true;
     }
+    shoot(w, u, wk, muzzle(u, dir, tmpM), dir, tid);
+    return true;
   }
 
-  function capitalShot(w, cap, target, wp, which) {
-    const muzzle = E.V3.make(cap.pos.x + Math.sin(cap.yaw) * cap.r * 0.8, cap.pos.y + cap.viewH * 0.5, cap.pos.z + Math.cos(cap.yaw) * cap.r * 0.8);
-    const dir = E.V3.normalize(E.V3.sub(target.pos, muzzle));
-    const sp = wp.spread || 0.01;
-    dir.x += (w.rng.next() - 0.5) * sp; dir.y += (w.rng.next() - 0.5) * sp; dir.z += (w.rng.next() - 0.5) * sp;
-    E.V3.normalize(dir);
-    const spd = wp.speed || 200;
-    w.projectiles.push({ pos: muzzle, dir, speed: spd, dmg: wp.dmg, team: cap.team, life: (wp.range || 600) / spd + 1, color: E.faction(cap.faction).palette.engine, faction: cap.faction, kind: which === 'main' ? 'railgun' : 'pulse', r: which === 'main' ? 3 : 1.5 });
-    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: cap.faction, kind: which === 'main' ? 'capital' : 'pulse' });
-  }
-
-  function fireMissile(w, cap, target, wp) {
-    const muzzle = E.V3.make(cap.pos.x, cap.pos.y, cap.pos.z);
-    const dir = E.V3.normalize(E.V3.sub(target.pos, muzzle));
-    w.projectiles.push({ pos: muzzle, dir, speed: wp.speed || 90, dmg: wp.dmg, team: cap.team, life: (wp.range || 600) / (wp.speed || 90) + 2, color: E.faction(cap.faction).palette.accent, faction: cap.faction, kind: 'missile', r: 2.5, seek: wp.seek || 1, target });
-    w.events.push({ type: 'muzzle', pos: muzzle, dir, faction: cap.faction, kind: 'missile' });
-  }
-
-  // capital ships launch fighters into the air when their bays have slots
-  function launchFighters(w, dt) {
-    for (const cap of w.units) {
-      if (!cap.alive || cap.kind !== 'capital') continue;
-      const C = E.CAPITALS[cap.type] || E.CAPITALS.cruiser;
-      cap.bays = cap.bays == null ? C.bays : cap.bays;
-      const myFighters = w.units.filter(u => u.alive && u.kind === 'fighter' && u.team === cap.team && (u.pos.y - cap.pos.y) < 300).length;
-      cap.bayT = (cap.bayT || 0) - dt;
-      if (cap.bays > 0 && myFighters < C.bays && cap.bayT <= 0) {
-        cap.bayT = 2.5;
-        cap.bays--;
-        const ftype = cap.faction === 'aegis' ? 'interceptor' : 'strike';
-        const f = w.unit('fighter', cap.team, ftype, ftype, { x: cap.pos.x, z: cap.pos.z });
-        f.pos.y = cap.pos.y - 10;
-        w.events.push({ type: 'launch', pos: { x: f.pos.x, y: f.pos.y, z: f.pos.z }, faction: cap.faction });
-      }
-      // if the fighter group is low, recharge bays slowly
-      if (myFighters < C.bays) cap.bays = Math.min(C.bays, cap.bays + dt * 0.2);
-    }
-  }
-
-  function nearestEnemyIn(w, u, range, pred) {
-    let best = null, bd = range * range;
+  // the enemy closest to an aim ray (for lock-ons and designating targets)
+  function aimTarget(w, u, o, d, maxAng, range, pred) {
+    let best = null, bs = maxAng;
     for (const e of w.units) {
-      if (!e.alive || e.team === u.team) continue;
-      if (pred && !pred(e)) continue;
-      const d = E.distXZ2(u.pos, e.pos);
-      if (d < bd) { bd = d; best = e; }
+      if (!e.alive || e.team === u.team || (pred && !pred(e))) continue;
+      const dx = e.pos.x - o.x, dy = e.pos.y - o.y, dz = e.pos.z - o.z, l = Math.hypot(dx, dy, dz);
+      if (l > range || l < 1) continue;
+      const a = Math.acos(E.clamp((dx * d.x + dy * d.y + dz * d.z) / l, -1, 1)) - Math.atan2(e.r, l);
+      if (a < bs) { bs = a; best = e; }
     }
     return best;
   }
+  const lockable = (e) => e.kind !== 'infantry';
 
-  // ── combat ───────────────────────────────────────────────────
-  function applyDamage(w, target, dmg, source) {
-    if (!target.alive) return;
-    // shield first
-    if (target.maxShield > 0 && target.shield > 0) {
-      const s = Math.min(target.shield, dmg);
-      target.shield -= s; dmg -= s;
-      if (s > 0.5) w.events.push({ type: 'shieldhit', pos: target.pos, team: target.team });
+  function leadPoint(u, e, W, o) {
+    centerOf(e, o);
+    const d = V.distance(u.pos, o), t = W.speed ? d / W.speed : 0;
+    o.x += e.vel.x * t; o.y += e.vel.y * t * 0.6; o.z += e.vel.z * t;
+    if (W.grav) o.y += 0.5 * W.grav * t * t;
+    return o;
+  }
+
+  // ── damage ───────────────────────────────────────────────────
+  function score(w, pid, pts, why) {
+    const p = w.players[pid]; if (!p) return;
+    p.score += pts; w.events.push({ type: 'score', to: pid, pts, why });
+  }
+  function applyDamage(w, e, amount, src, at, head) {
+    if (!e.alive || w.winner) return;
+    const W = E.WEAPONS[src.wk] || {};
+    let d = amount * ((W.vs && W.vs[e.armor] !== undefined) ? W.vs[e.armor] : 1);
+    if (head) d *= 1.8;
+    if (e.pid && !src.owner) d *= w.cfg.enemyDmg;
+    if (d <= 0) return;
+    e.hitT = 0;
+    let sh = 0;
+    if (e.shield > 0) { sh = Math.min(e.shield, d); e.shield -= sh; d -= sh; }
+    e.hp -= d;
+    const dead = e.hp <= 0;
+    if (src.owner || e.pid) {
+      const su = src.uid ? w.umap.get(src.uid) : null;
+      w.events.push({ type: 'hit', uid: e.id, by: src.owner, to: e.pid, dmg: Math.round(d + sh), kill: dead, head: !!head, sh: sh > 0 && d <= 0,
+        pos: at ? V.clone(at) : centerOf(e), from: su ? { x: su.pos.x, z: su.pos.z } : null });
     }
-    target.hp -= dmg;
-    if (dmg > 0.5) w.events.push({ type: 'hit', pos: { x: target.pos.x, y: target.pos.y + target.viewH * 0.5, z: target.pos.z }, dmg: Math.round(dmg), team: target.team, faction: source ? source.team : 'neutral' });
-    if (target.hp <= 0) {
-      target.alive = false;
-      target.hp = 0;
-      w.events.push({ type: 'death', pos: { x: target.pos.x, y: target.pos.y, z: target.pos.z }, kind: target.kind, faction: target.faction });
-      if (w.possessedId === target.id) { w.possessedId = null; w.events.push({ type: 'possessedDead' }); }
-      if (source && source.team) { source.kills = (source.kills || 0) + 1; w.stats.kills[source.team] = (w.stats.kills[source.team] || 0) + 1; }
+    if (dead) kill(w, e, src);
+  }
+
+  function kill(w, e, src) {
+    if (!e.alive) return;
+    e.alive = false; e.hp = 0;
+    const T = w.teams[e.team];
+    T.deaths++;
+    if (!w.winner) T.tickets = Math.max(0, T.tickets - DEATH_COST[e.kind]);
+    const ku = src.uid ? w.umap.get(src.uid) : null;
+    if (src.team && src.team !== e.team) { w.teams[src.team].kills++; if (ku) ku.kills++; }
+    const ev = { type: 'death', uid: e.id, kind: e.kind, utype: e.type, team: e.team, pos: V.clone(e.pos), vel: V.clone(e.vel), yaw: e.yaw,
+      by: src.uid || 0, byPid: src.owner || null, pid: e.pid, wk: src.wk, victim: nameOf(w, e), killer: ku ? nameOf(w, ku) : (src.wk === 'crash' ? 'Crashed' : 'Bombardment'), kteam: src.team };
+    w.events.push(ev);
+    if (src.owner && w.players[src.owner] && src.team !== e.team) {
+      const p = w.players[src.owner];
+      p.kills++; p.streak++; if (p.streak > p.best) p.best = p.streak;
+      score(w, p.id, KILL_SCORE[e.kind], e.kind === 'infantry' ? 'KILL' : E.unitName(e.kind, e.type).toUpperCase() + ' DESTROYED');
+      if (p.streak > 0 && p.streak % 5 === 0) score(w, p.id, 50 * p.streak / 5, p.streak + ' KILL STREAK');
+    }
+    if (e.pid && w.players[e.pid]) { const p = w.players[e.pid]; p.deaths++; p.streak = 0; p.unitId = 0; p.deadT = w.t; e.pid = null; }
+    if (e.kind === 'capital') w.events.push({ type: 'announce', key: 'capitalDown', team: e.team });
+  }
+
+  function explode(w, p, pos, direct) {
+    if (p.splash > 0) {
+      const R = p.splash;
+      for (const e of w.units) {
+        if (!e.alive || e.team === p.team || e === direct || e.kind === 'capital') continue;
+        centerOf(e, tmpC);
+        const d = V.distance(tmpC, pos) - e.r;
+        if (d < R) applyDamage(w, e, p.dmg * E.clamp01(1 - Math.max(0, d) / R) * 0.85, p, tmpC);
+      }
     }
   }
 
   function updateProjectiles(w, dt) {
-    for (let i = w.projectiles.length - 1; i >= 0; i--) {
-      const p = w.projectiles[i];
-      // missiles steer toward their target
-      if (p.seek && p.target && p.target.alive) {
-        const want = E.V3.normalize(E.V3.sub(p.target.pos, p.pos));
-        p.dir.x += (want.x - p.dir.x) * Math.min(1, p.seek * dt * 3);
-        p.dir.y += (want.y - p.dir.y) * Math.min(1, p.seek * dt * 3);
-        p.dir.z += (want.z - p.dir.z) * Math.min(1, p.seek * dt * 3);
-        E.V3.normalize(p.dir);
+    const T = w.terrain, P = w.projectiles;
+    for (let i = P.length - 1; i >= 0; i--) {
+      const p = P[i];
+      if (p.seek && p.tid) {
+        const t = w.umap.get(p.tid);
+        if (t && t.alive) {
+          centerOf(t, tmpA);
+          const sp = Math.hypot(p.vel.x, p.vel.y, p.vel.z) || 1;
+          let wx = tmpA.x - p.pos.x, wy = tmpA.y - p.pos.y, wz = tmpA.z - p.pos.z; const l = Math.hypot(wx, wy, wz) || 1;
+          const k = Math.min(1, p.seek * dt);
+          let nx = p.vel.x / sp + (wx / l - p.vel.x / sp) * k, ny = p.vel.y / sp + (wy / l - p.vel.y / sp) * k, nz = p.vel.z / sp + (wz / l - p.vel.z / sp) * k;
+          const nl = Math.hypot(nx, ny, nz) || 1; p.vel.x = nx / nl * sp; p.vel.y = ny / nl * sp; p.vel.z = nz / nl * sp;
+        }
       }
-      p.pos.x += p.dir.x * p.speed * dt; p.pos.y += p.dir.y * p.speed * dt; p.pos.z += p.dir.z * p.speed * dt;
+      if (p.grav) p.vel.y -= p.grav * dt;
+      const ax = p.pos.x, ay = p.pos.y, az = p.pos.z;
+      const sx = p.vel.x * dt, sy = p.vel.y * dt, sz = p.vel.z * dt;
+      const seg2 = sx * sx + sy * sy + sz * sz;
+      p.pos.x += sx; p.pos.y += sy; p.pos.z += sz;
       p.life -= dt;
-      let dead = p.life <= 0;
-      // hit test vs enemy units
-      if (!dead) {
-        for (const e of w.units) {
-          if (!e.alive || e.team === p.team) continue;
-          const dx = e.pos.x - p.pos.x, dy = (e.pos.y + e.viewH * 0.5) - p.pos.y, dz = e.pos.z - p.pos.z;
-          if (dx * dx + dy * dy + dz * dz < (e.r + p.r) * (e.r + p.r)) {
-            applyDamage(w, e, p.dmg, { team: p.team }); dead = true; break;
-          }
+      let hit = null, surf = null, head = false, ht = 1;
+      for (let j = 0; j < w.units.length; j++) {
+        const e = w.units[j];
+        if (!e.alive || e.team === p.team) continue;
+        if (e.kind === 'capital') {
+          // capsule along the hull axis
+          const fx = Math.sin(e.yaw), fz = Math.cos(e.yaw), hl = e.def.len * 0.5 - e.h, rc = e.h * 1.25 + p.r;
+          const rx = p.pos.x - e.pos.x, ry = p.pos.y - e.pos.y, rz = p.pos.z - e.pos.z;
+          const a = E.clamp(rx * fx + rz * fz, -hl, hl);
+          const qx = rx - fx * a, qz = rz - fz * a;
+          if (qx * qx + ry * ry * 1.6 + qz * qz < rc * rc) { hit = e; ht = 1; break; }
+          continue;
         }
-        // hit enemy objectives
-        if (!dead) {
-          for (const o of w.objectives) {
-            if (o.owner === p.team) continue;
-            const dx = o.pos.x - p.pos.x, dz = o.pos.z - p.pos.z, dy = (o.pos.y) - p.pos.y;
-            if (dx * dx + dy * dy + dz * dz < (o.radius + p.r) * (o.radius + p.r)) {
-              o.hp -= p.dmg; if (o.hp <= 0) { o.hp = 0; o.owner = p.team; w.events.push({ type: 'objectiveDestroyed', pos: o.pos, role: o.role }); }
-              dead = true; break;
-            }
-          }
+        const cx = e.pos.x - ax, cz = e.pos.z - az;
+        const ey0 = e.kind === 'infantry' ? e.pos.y + 0.25 : e.kind === 'vehicle' || e.kind === 'turret' ? e.pos.y + e.h * 0.5 : e.pos.y;
+        const cy = ey0 - ay;
+        const rad = e.r + p.r + (e.kind === 'infantry' ? 0.1 : 0);
+        if (cx * cx + cz * cz > (rad + 20) * (rad + 20) && seg2 < 400) continue;
+        let t = seg2 > 0 ? (cx * sx + cy * sy + cz * sz) / seg2 : 0;
+        if (e.kind === 'infantry') t = seg2 > 0 ? (cx * sx + cz * sz + (cy + e.h * 0.5) * sy) / seg2 : 0;
+        t = E.clamp01(t);
+        const qx = sx * t - cx, qz = sz * t - cz;
+        let qy = sy * t - cy;
+        if (e.kind === 'infantry') { const top = e.h - 0.25; qy = qy < 0 ? qy : qy > top ? qy - top : 0; }
+        if (qx * qx + qy * qy + qz * qz < rad * rad && t < ht) {
+          hit = e; ht = t;
+          head = e.kind === 'infantry' && p.kind === 'bolt' && (ay + sy * t) > e.pos.y + e.h * 0.8;
         }
       }
-      if (dead) { w.events.push({ type: 'impact', pos: { x: p.pos.x, y: p.pos.y, z: p.pos.z }, faction: p.faction, kind: p.kind }); w.projectiles.splice(i, 1); }
+      let dead = false;
+      if (hit) {
+        tmpD.x = ax + sx * ht; tmpD.y = ay + sy * ht; tmpD.z = az + sz * ht;
+        surf = hit.shield > 0 ? 'shield' : 'unit';
+        applyDamage(w, hit, p.dmg, p, tmpD, head);
+        explode(w, p, tmpD, hit);
+        V.copy(p.pos, tmpD); dead = true;
+      } else {
+        const g = T.height(p.pos.x, p.pos.z), wl = T.waterLevel;
+        if (p.pos.y <= g || p.pos.y <= wl) {
+          if (p.kind === 'grenade' && p.pos.y <= g && p.life > 0) {
+            p.pos.y = g + 0.05; p.vel.y = Math.abs(p.vel.y) * 0.32; p.vel.x *= 0.55; p.vel.z *= 0.55;
+            if (Math.abs(p.vel.y) < 1.2) { p.vel.y = 0; p.grav = 0; p.vel.x *= 0.4; p.vel.z *= 0.4; }
+          } else { p.pos.y = Math.max(g, wl); surf = p.pos.y <= wl && g < wl ? 'water' : 'ground'; explode(w, p, p.pos, null); dead = true; }
+        } else if (p.life <= 0) {
+          dead = true; surf = 'air';
+          if (p.kind === 'grenade' || p.kind === 'rocket' || p.kind === 'missile') explode(w, p, p.pos, null); else surf = null;
+        }
+      }
+      if (dead) {
+        if (surf) w.events.push({ type: 'impact', pid: p.id, wk: p.wk, pos: V.clone(p.pos), surf, splash: p.splash, team: p.team, big: hit ? hit.kind === 'capital' : false });
+        else w.events.push({ type: 'fizzle', pid: p.id });
+        P[i] = P[P.length - 1]; P.pop();
+      }
     }
   }
 
-  // shield regen
-  function regen(w, dt) {
-    const thin = w.planet.biomeDef.challenge && w.planet.biomeDef.challenge.thinAir ? 0.6 : 1;
+  // ── orbital strikes ──────────────────────────────────────────
+  function strike(w, team, pos, pid) {
+    w.strikes.push({ team, pos: { x: pos.x, y: w.terrain.height(pos.x, pos.z), z: pos.z }, t: 3.2, shots: E.WEAPONS.orbital.shots, iv: 0, pid: pid || null });
+    w.events.push({ type: 'strikeWarn', pos: V.clone(pos), team, r: E.WEAPONS.orbital.splash });
+  }
+  function updateStrikes(w, dt) {
+    for (let i = w.strikes.length - 1; i >= 0; i--) {
+      const s = w.strikes[i];
+      s.t -= dt; if (s.t > 0) continue;
+      s.iv -= dt;
+      if (s.iv <= 0 && s.shots > 0) {
+        s.iv = 0.32; s.shots--;
+        const cap = w.units.find(u => u.alive && u.kind === 'capital' && u.team === s.team);
+        const o = cap ? { x: cap.pos.x, y: cap.pos.y - cap.h, z: cap.pos.z } : { x: s.pos.x + (s.team === 'aegis' ? -500 : 500), y: s.pos.y + 1100, z: s.pos.z };
+        const a = w.rng.angle(), r = w.rng.f(0, 15);
+        const tx = s.pos.x + Math.cos(a) * r - o.x, ty = s.pos.y - o.y, tz = s.pos.z + Math.sin(a) * r - o.z, l = Math.hypot(tx, ty, tz);
+        const W = E.WEAPONS.orbital, speed = 520;
+        const p = { id: w.nextProj++, wk: 'orbital', kind: 'turbo', pos: V.clone(o), vel: { x: tx / l * speed, y: ty / l * speed, z: tz / l * speed },
+          team: s.team, uid: cap ? cap.id : 0, owner: s.pid, dmg: W.dmg, life: l / speed + 1, splash: W.splash, grav: 0, seek: 0, tid: 0, r: 1, scale: 5 };
+        w.projectiles.push(p);
+        w.events.push({ type: 'fire', pid: p.id, wk: 'orbital', pos: V.clone(p.pos), vel: V.clone(p.vel), team: s.team, uid: p.uid, life: p.life });
+      }
+      if (s.shots <= 0) w.strikes.splice(i, 1);
+    }
+  }
+
+  // ── AI: perception ───────────────────────────────────────────
+  function pickTarget(w, u) {
+    const W = E.WEAPONS[u.def.weapon], pref = PREF[u.type] || PREF.trooper;
+    const sense = u.kind === 'infantry' ? Math.min(W.range, u.type === 'sniper' ? 520 : 230) : u.kind === 'fighter' ? 1500 : W.range;
+    let best = null, bs = 0; eyeOf(u, tmpA);
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      const pf = pref[e.kind]; if (!pf) continue;
+      const d = V.distance(u.pos, e.pos);
+      if (d > sense && e.kind !== 'capital') continue;
+      let s = pf * 1000 / (d + 60);
+      if (e.id === u.ai.tid) s *= 1.3;
+      if (s <= bs) continue;
+      if (u.kind !== 'fighter' && e.kind !== 'fighter' && !w.terrain.los(tmpA, centerOf(e, tmpB))) continue;
+      bs = s; best = e;
+    }
+    return best;
+  }
+
+  function chooseGoal(w, u) {
+    let best = -1, bs = 0; const en = enemyOf(u.team), R = w.rng;
+    for (const c of w.cps) {
+      let s;
+      const d = E.distXZ(u.pos, c.pos);
+      if (c.owner !== u.team) s = (c.owner ? 1 : 1.25) * (c.n[u.team] > 0 ? 1.3 : 1) / (d + 160);
+      else if (c.n[en] > 0 || (c.owner === u.team && Math.abs(c.cap) < 0.99)) s = 1.7 / (d + 160);
+      else continue;
+      s *= 0.55 + R.next() * 0.9;
+      if (s > bs) { bs = s; best = c.id; }
+    }
+    if (best < 0) best = R.i(w.cps.length);
+    return best;
+  }
+  function goalPos(w, u, o) {
+    const ai = u.ai, ord = u.order;
+    if (ord) {
+      if (ord.type === 'follow') { const l = w.unitOf(ord.pid); if (l) { o.x = l.pos.x + ai.off.x * 0.4; o.z = l.pos.z + ai.off.z * 0.4; o.r = 6; return o; } u.order = null; }
+      else { o.x = ord.pos.x + ai.off.x * 0.3; o.z = ord.pos.z + ai.off.z * 0.3; o.r = 8; if (ord.type !== 'hold' && w.t - ord.t > 75) u.order = null; return o; }
+    }
+    if (ai.goal < 0 || w.t > ai.goalT) { ai.goal = chooseGoal(w, u); ai.goalT = w.t + 9 + w.rng.next() * 9; }
+    const c = w.cps[ai.goal];
+    o.x = c.pos.x + ai.off.x; o.z = c.pos.z + ai.off.z; o.r = 2.5;
+    return o;
+  }
+  function think(w, u, dt) {
+    const ai = u.ai;
+    ai.thinkT -= dt;
+    if (ai.thinkT > 0) return false;
+    ai.thinkT = 0.32 + w.rng.next() * 0.22;
+    const t = pickTarget(w, u);
+    ai.tid = t ? t.id : 0;
+    const k = w.cfg.aiErr * (t && (t.kind === 'fighter') ? 0.6 : 1) * (u.kind === 'infantry' ? 1 : 0.5);
+    ai.errY = w.rng.gauss() * k; ai.errP = w.rng.gauss() * k * 0.6;
+    if (w.t > ai.offT) {
+      ai.offT = w.t + 5 + w.rng.next() * 7;
+      const c = w.cps[ai.goal >= 0 ? ai.goal : 0], rr = (c ? c.r : 20) * (u.kind === 'vehicle' ? 1.5 : 0.8);
+      const a = w.rng.angle(), d = Math.sqrt(w.rng.next()) * rr;
+      ai.off.x = Math.cos(a) * d; ai.off.z = Math.sin(a) * d;
+    }
+    ai.strafeT -= 0.4; if (ai.strafeT <= 0) { ai.strafe = -ai.strafe; ai.strafeT = 1 + w.rng.next() * 2.2; }
+    return true;
+  }
+  function target(w, u) { const t = u.ai.tid ? w.umap.get(u.ai.tid) : null; return t && t.alive ? t : null; }
+
+  // ── AI: infantry ─────────────────────────────────────────────
+  function aiInfantry(w, u, dt) {
+    const ai = u.ai, W = E.WEAPONS[u.def.weapon];
+    think(w, u, dt);
+    const tg = target(w, u), gp = goalPos(w, u, tmpC);
+    const gx = gp.x - u.pos.x, gz = gp.z - u.pos.z, dg = Math.hypot(gx, gz);
+    let wx = 0, wz = 0, speed = u.speed;
+    if (tg) {
+      const tx = tg.pos.x - u.pos.x, tz = tg.pos.z - u.pos.z, d = Math.hypot(tx, tz) || 1;
+      leadPoint(u, tg, W, tmpA); eyeOf(u, tmpB);
+      const ax = tmpA.x - tmpB.x, ay = tmpA.y - tmpB.y, az = tmpA.z - tmpB.z;
+      const wantY = Math.atan2(ax, az) + ai.errY, wantP = Math.atan2(ay, Math.hypot(ax, az)) + ai.errP;
+      u.aimYaw = turnTo(u.aimYaw, wantY, 7 * dt); u.aimPitch = turnTo(u.aimPitch, wantP, 5 * dt);
+      u.yaw = u.aimYaw;
+      // strafe while fighting; keep pushing onto the objective
+      const sx = -tz / d * ai.strafe, sz = tx / d * ai.strafe;
+      const push = dg > 10 ? 0.75 : 0;
+      const keep = (u.type === 'sniper' && d < 120) ? -0.5 : (d > W.range * 0.7 ? 0.8 : 0);
+      wx = sx * 0.55 + (dg > 0.1 ? gx / dg * push : 0) + tx / d * keep; wz = sz * 0.55 + (dg > 0.1 ? gz / dg * push : 0) + tz / d * keep;
+      const l = Math.hypot(wx, wz); if (l > 1) { wx /= l; wz /= l; }
+      speed *= 0.8;
+      // bursts
+      if (ai.pauseT > 0) ai.pauseT -= dt;
+      else {
+        if (ai.burstT <= 0) ai.burstT = 0.5 + w.rng.next() * 0.9;
+        const al = Math.abs(angDiff(wantY, u.aimYaw)) + Math.abs(wantP - u.aimPitch);
+        if (al < 0.07 && d < W.range) { firePrimary(w, u, dirOf(u.aimYaw, u.aimPitch, tmpA), 0); }
+        ai.burstT -= dt; if (ai.burstT <= 0 || u.hot) ai.pauseT = 0.5 + w.rng.next() * 0.9;
+      }
+      if (u.altT <= 0) {
+        const alt = u.def.alt;
+        if (alt === 'grenade' && tg.kind !== 'fighter' && d > 10 && d < 34 && w.rng.next() < 0.03) fireAlt(w, u, dirOf(u.aimYaw, Math.min(0.9, u.aimPitch + 0.28 + d * 0.006), tmpA), 0);
+        else if (alt === 'rocket' && tg.kind !== 'infantry' && d < E.WEAPONS.rocket.range && w.rng.next() < 0.08) fireAlt(w, u, dirOf(u.aimYaw, u.aimPitch + 0.03, tmpA), tg.id);
+      }
+    } else if (dg > gp.r) {
+      wx = gx / dg; wz = gz / dg;
+      if (dg > 30) speed = u.def.sprint * u.spM;
+      u.yaw = turnTo(u.yaw, Math.atan2(wx, wz), 6 * dt); u.aimYaw = u.yaw; u.aimPitch *= 0.9;
+    }
+    if (u.def.alt === 'medburst' && u.altT <= 0 && (w.tickN + u.id) % 20 === 0) {
+      for (const a of w.units) if (a.alive && a.team === u.team && a.kind === 'infantry' && a.hp < a.maxHp * 0.6 && V.distance2(a.pos, u.pos) < 160) { fireAlt(w, u, tmpA, 0); break; }
+    }
+    stepInfantry(w, u, dt, wx, wz, speed, false);
+  }
+
+  // ── AI: vehicles + turrets ───────────────────────────────────
+  function aimTurret(w, u, tg, dt, rate) {
+    const W = E.WEAPONS[u.def.weapon];
+    leadPoint(u, tg, W, tmpA); eyeOf(u, tmpB);
+    const ax = tmpA.x - tmpB.x, ay = tmpA.y - tmpB.y, az = tmpA.z - tmpB.z;
+    const wantY = Math.atan2(ax, az) + u.ai.errY, wantP = Math.atan2(ay, Math.hypot(ax, az)) + u.ai.errP;
+    u.aimYaw = turnTo(u.aimYaw, wantY, rate * dt); u.aimPitch = turnTo(u.aimPitch, E.clamp(wantP, -0.35, 1.1), rate * dt);
+    return Math.abs(angDiff(wantY, u.aimYaw)) + Math.abs(wantP - u.aimPitch);
+  }
+  function aiVehicle(w, u, dt) {
+    const ai = u.ai, W = E.WEAPONS[u.def.weapon];
+    think(w, u, dt);
+    const tg = target(w, u), gp = goalPos(w, u, tmpC);
+    let gx = gp.x - u.pos.x, gz = gp.z - u.pos.z; const dg = Math.hypot(gx, gz);
+    let throttle = dg > 14 ? 1 : 0, des = dg > 1 ? Math.atan2(gx, gz) : u.yaw;
+    if (tg) {
+      const tx = tg.pos.x - u.pos.x, tz = tg.pos.z - u.pos.z, d = Math.hypot(tx, tz);
+      const al = aimTurret(w, u, tg, dt, 2.6);
+      if (al < 0.06 && d < W.range) firePrimary(w, u, dirOf(u.aimYaw, u.aimPitch, tmpA), 0);
+      if (u.def.alt === 'coax' && tg.kind === 'infantry' && d < E.WEAPONS.coax.range && al < 0.12) fireAlt(w, u, dirOf(u.aimYaw, u.aimPitch, tmpA), 0);
+      if (d < W.range * 0.7) {
+        if (u.type === 'tank') { throttle = dg > 40 ? 0.35 : 0; }
+        else { des = Math.atan2(tx, tz) + ai.strafe * 1.35; throttle = 0.8; }
+      }
+    } else { u.aimYaw = turnTo(u.aimYaw, u.yaw, 1.5 * dt); u.aimPitch *= 0.95; }
+    const dy = angDiff(des, u.yaw);
+    if (Math.abs(dy) > 1.1) throttle *= 0.3;
+    stepVehicle(w, u, dt, throttle, E.clamp(dy * 2.2, -1, 1));
+  }
+  function aiTurret(w, u, dt) {
+    think(w, u, dt);
+    const tg = target(w, u);
+    if (tg) { if (aimTurret(w, u, tg, dt, u.def.turn) < 0.07) firePrimary(w, u, dirOf(u.aimYaw, u.aimPitch, tmpA), 0); }
+    u.yaw = u.aimYaw;
+  }
+
+  // ── AI: fighters ─────────────────────────────────────────────
+  function aiFighter(w, u, dt) {
+    const ai = u.ai, d = u.def, W = E.WEAPONS[d.weapon], T = w.terrain;
+    think(w, u, dt);
+    const tg = target(w, u);
+    let desYaw = u.yaw, desPitch = 0, speed = u.speed;
+    if (ai.state === 'break') {
+      ai.stateT -= dt; desYaw = ai.bYaw; desPitch = ai.bPitch; speed = d.boost * u.spM;
+      if (ai.stateT <= 0) ai.state = '';
+    } else if (tg) {
+      const bombRun = d.alt === 'bomb' && tg.kind !== 'fighter';
+      leadPoint(u, tg, W, tmpA);
+      if (bombRun) { centerOf(tg, tmpA); tmpA.y += tg.kind === 'capital' ? tg.h + 90 : 150; }
+      const dx = tmpA.x - u.pos.x, dy = tmpA.y - u.pos.y, dz = tmpA.z - u.pos.z, hd = Math.hypot(dx, dz), dist = Math.hypot(hd, dy);
+      desYaw = Math.atan2(dx, dz) + ai.errY; desPitch = Math.atan2(dy, hd) + ai.errP;
+      dirOf(u.yaw, u.pitch, tmpB);
+      const ang = Math.acos(E.clamp((dx * tmpB.x + dy * tmpB.y + dz * tmpB.z) / (dist || 1), -1, 1));
+      if (bombRun) {
+        const dh = u.pos.y - (tg.pos.y + (tg.kind === 'capital' ? tg.h : 0)), tf = Math.sqrt(Math.max(0.1, 2 * dh / E.WEAPONS.bomb.grav)), lead = u.spd * tf;
+        if (u.altT <= 0 && dh > 20 && Math.abs(hd - lead) < (tg.kind === 'capital' ? 70 : 16) && Math.abs(angDiff(Math.atan2(dx, dz), u.yaw)) < 0.3) fireAlt(w, u, tmpB, 0);
+        if (hd < 30) { ai.state = 'break'; ai.stateT = 3.5; ai.bYaw = u.yaw + ai.strafe * 0.5; ai.bPitch = 0.25; }
+      } else {
+        if (ang < 0.06 && dist < W.range) firePrimary(w, u, tmpB, 0);
+        if (d.alt === 'missile' && u.altT <= 0 && ang < 0.16 && dist > 140 && dist < E.WEAPONS.missile.range && tg.kind !== 'infantry') fireAlt(w, u, tmpB, tg.id);
+        const brk = tg.kind === 'capital' ? 430 : tg.kind === 'fighter' ? 60 : 170;
+        if (dist < brk) { ai.state = 'break'; ai.stateT = 2 + w.rng.next() * 1.6; ai.bYaw = u.yaw + ai.strafe * (1.1 + w.rng.next()); ai.bPitch = tg.kind === 'fighter' ? (w.rng.next() - 0.3) * 0.7 : 0.5; }
+      }
+      if (dist > 500) speed = d.boost * u.spM;
+    } else {
+      // patrol a lazy circle over the front
+      const a = w.t * 0.12 + u.id, px = Math.cos(a) * 520 + (u.team === 'aegis' ? -200 : 200), pz = Math.sin(a) * 520;
+      desYaw = Math.atan2(px - u.pos.x, pz - u.pos.z);
+      desPitch = E.clamp((T.height(u.pos.x, u.pos.z) + 300 - u.pos.y) * 0.004, -0.4, 0.4);
+    }
+    // safety
+    const g = Math.max(T.height(u.pos.x, u.pos.z), T.waterLevel), g2 = Math.max(T.height(u.pos.x + u.vel.x * 1.6, u.pos.z + u.vel.z * 1.6), T.waterLevel);
+    const agl = u.pos.y - g, ahead = u.pos.y + u.vel.y * 1.6 - g2;
+    if (agl < 55 || ahead < 45) desPitch = Math.max(desPitch, agl < 28 || ahead < 20 ? 1.0 : 0.6);
+    if (u.pos.y > 1250) desPitch = Math.min(desPitch, -0.25);
+    if (Math.hypot(u.pos.x, u.pos.z) > w.layout.bound) desYaw = Math.atan2(-u.pos.x, -u.pos.z);
+    // steer clear of capital hulls
+    for (const c of w.units) if (c.kind === 'capital' && c.alive && V.distance2(c.pos, u.pos) < (c.def.len * 0.62) * (c.def.len * 0.62) && ai.state !== 'break') {
+      ai.state = 'break'; ai.stateT = 1.6; ai.bYaw = Math.atan2(u.pos.x - c.pos.x, u.pos.z - c.pos.z); ai.bPitch = u.pos.y > c.pos.y ? 0.5 : -0.4;
+    }
+    stepFighter(w, u, dt, desYaw, desPitch, speed);
+  }
+
+  // ── capital ships ────────────────────────────────────────────
+  function gunPos(u, g, o) {
+    const fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
+    o.x = u.pos.x + fx * g.lz - fz * g.lx; o.y = u.pos.y + g.ly; o.z = u.pos.z + fz * g.lz + fx * g.lx;
+    return o;
+  }
+  function capitalGuns(w, u, dt, focus, boost) {
+    const dm = E.DOCTRINE[u.team].capDmg;
+    let ecap = null, ed = 1e12, efi = null, fd = 1e12;
+    for (const e of w.units) {
+      if (!e.alive || e.team === u.team) continue;
+      const d2 = V.distance2(e.pos, u.pos);
+      if (e.kind === 'capital' && d2 < ed) { ed = d2; ecap = e; }
+      if (e.kind === 'fighter' && d2 < fd) { fd = d2; efi = e; }
+    }
+    for (const g of u.guns) {
+      g.t -= dt * (boost && g.slot === 'main' ? 1.6 : 1);
+      if (g.t > 0) continue;
+      const W = E.WEAPONS[g.wk];
+      let tg = null;
+      if (g.slot === 'pd') tg = efi && fd < W.range * W.range ? efi : null;
+      else tg = focus || ecap;
+      if (!tg) { g.t = 0.25; continue; }
+      gunPos(u, g, tmpA);
+      if (V.distance(tmpA, tg.pos) > W.range) { g.t = 0.4; continue; }
+      if (g.slot === 'side') { // only the flank facing the target bears
+        const side = (tg.pos.x - u.pos.x) * -Math.cos(u.yaw) + (tg.pos.z - u.pos.z) * Math.sin(u.yaw);
+        if (side * g.s < 0) { g.t = 0.3; continue; }
+      }
+      g.t = (W.cd || 1 / W.rate) * (0.85 + w.rng.next() * 0.3);
+      leadPoint(u, tg, W, tmpB);
+      if (tg.kind === 'capital') { // rake the hull, not just the center
+        const k = (w.rng.next() - 0.5) * tg.def.len * 0.6; tmpB.x += Math.sin(tg.yaw) * k; tmpB.z += Math.cos(tg.yaw) * k; tmpB.y += (w.rng.next() - 0.5) * tg.h * 0.6;
+      }
+      const dir = V.normalize(V.sub(tmpB, tmpA, tmpC));
+      shoot(w, u, g.wk, tmpA, dir, g.slot === 'torp' ? tg.id : 0, dm);
+    }
+  }
+  function aiCapital(w, u, dt) {
+    // hold a slow orbit over the battlefield, broadside to the enemy line
+    const a = Math.atan2(u.pos.z, u.pos.x) + 0.45, R = u.orbitR || ORBIT_R;
+    const des = Math.atan2(Math.cos(a) * R - u.pos.x, Math.sin(a) * R - u.pos.z);
+    stepCapital(w, u, dt, E.clamp(angDiff(des, u.yaw) * 3, -1, 1), 1);
+    capitalGuns(w, u, dt, null, false);
+  }
+
+  // ── player control ───────────────────────────────────────────
+  function playerControl(w, u, p, dt) {
+    const inp = p.input;
+    const mx = E.clamp(inp.mx || 0, -1, 1), mz = E.clamp(inp.mz || 0, -1, 1);
+    if (u.kind === 'infantry') {
+      const my = inp.moveYaw, fx = Math.sin(my), fz = Math.cos(my);
+      let wx = fx * mz - fz * mx, wz = fz * mz + fx * mx; const l = Math.hypot(wx, wz);
+      if (l > 1) { wx /= l; wz /= l; }
+      u.yaw = inp.yaw; u.aimYaw = inp.yaw; u.aimPitch = inp.pitch;
+      const sprint = inp.sprint && mz > 0 && !inp.fire;
+      stepInfantry(w, u, dt, wx, wz, sprint ? u.def.sprint * u.spM : u.speed, inp.jump);
+      dirOf(inp.yaw, inp.pitch, tmpA);
+      if (inp.fire && !sprint) firePrimary(w, u, tmpA, 0);
+      if (inp.abil) {
+        if (u.def.alt === 'grenade') dirOf(inp.yaw, Math.min(1.2, inp.pitch + 0.16), tmpA);
+        const lk = u.def.alt === 'rocket' ? aimTarget(w, u, eyeOf(u, tmpB), tmpA, 0.12, 500, lockable) : null;
+        fireAlt(w, u, tmpA, lk ? lk.id : 0);
+      }
+    } else if (u.kind === 'vehicle') {
+      stepVehicle(w, u, dt, mz, -mx);
+      u.aimYaw = turnTo(u.aimYaw, inp.yaw, 3.2 * dt); u.aimPitch = turnTo(u.aimPitch, E.clamp(inp.pitch, -0.3, 1.0), 3.2 * dt);
+      dirOf(u.aimYaw, u.aimPitch, tmpA);
+      if (inp.fire) firePrimary(w, u, tmpA, 0);
+      if (inp.abil) fireAlt(w, u, tmpA, 0);
+    } else if (u.kind === 'fighter') {
+      const d = u.def, sp = (inp.sprint || mz > 0) ? d.boost : mz < 0 ? d.minSpeed : d.speed;
+      let dy = inp.yaw, dp = inp.pitch;
+      if (Math.hypot(u.pos.x, u.pos.z) > w.layout.bound * 1.12) dy = Math.atan2(-u.pos.x, -u.pos.z);
+      if (u.pos.y > 1600) dp = Math.min(dp, -0.2);
+      stepFighter(w, u, dt, dy, dp, sp * u.spM);
+      if (!u.alive) return;
+      dirOf(u.yaw, u.pitch, tmpA); dirOf(inp.yaw, inp.pitch, tmpC);
+      const conv = (tmpA.x * tmpC.x + tmpA.y * tmpC.y + tmpA.z * tmpC.z) > 0.985 ? tmpC : tmpA; // slight gimbal
+      if (inp.fire) firePrimary(w, u, conv, 0);
+      if (inp.abil) {
+        const lk = d.alt === 'missile' ? aimTarget(w, u, u.pos, tmpA, 0.3, E.WEAPONS.missile.range, lockable) : null;
+        if (d.alt !== 'missile' || lk) fireAlt(w, u, tmpA, lk ? lk.id : 0);
+      }
+    } else if (u.kind === 'capital') {
+      stepCapital(w, u, dt, -mx, 0.35 + Math.max(0, mz) * 0.65 - Math.max(0, -mz) * 0.35);
+      dirOf(inp.yaw, inp.pitch, tmpD);
+      let focus = null;
+      if (inp.fire) focus = aimTarget(w, u, u.pos, tmpD, 0.22, 2400, null);
+      capitalGuns(w, u, dt, focus, !!focus);
+      const T = w.teams[u.team];
+      if (inp.abil && T.strikeT <= 0) {
+        const o = { x: u.pos.x, y: u.pos.y - u.h, z: u.pos.z }, t = w.terrain.raycast(o, tmpD, 4000);
+        if (t > 0) { strike(w, u.team, { x: o.x + tmpD.x * t, y: 0, z: o.z + tmpD.z * t }, p.id); T.strikeT = E.WEAPONS.orbital.cd * (T.bonus.orbital ? 0.6 : 1); }
+      }
+    } else if (u.kind === 'turret') {
+      u.aimYaw = turnTo(u.aimYaw, inp.yaw, 3 * dt); u.aimPitch = turnTo(u.aimPitch, E.clamp(inp.pitch, -0.3, 1.2), 3 * dt); u.yaw = u.aimYaw;
+      if (inp.fire) firePrimary(w, u, dirOf(u.aimYaw, u.aimPitch, tmpA), 0);
+    }
+  }
+
+  function control(w, u, dt) {
+    u.fireT = Math.max(0, u.fireT - dt); u.altT -= dt; u.hitT += dt;
+    if (u.heat > 0) { u.heat = Math.max(0, u.heat - (u.hot ? 0.5 : 0.36) * dt); if (u.hot && u.heat < 0.2) u.hot = false; }
+    const p = u.pid ? w.players[u.pid] : null;
+    if (p) { playerControl(w, u, p, dt); return; }
+    if (u.pid) u.pid = null;
+    if (u.kind === 'infantry') aiInfantry(w, u, dt);
+    else if (u.kind === 'vehicle') aiVehicle(w, u, dt);
+    else if (u.kind === 'fighter') aiFighter(w, u, dt);
+    else if (u.kind === 'capital') aiCapital(w, u, dt);
+    else aiTurret(w, u, dt);
+  }
+
+  // ── sustain: shields, regen, medic aura ──────────────────────
+  function sustain(w, dt) {
     for (const u of w.units) {
-      if (!u.alive || u.maxShield <= 0) continue;
-      // only regen out of combat (no recent hit)
-      u.regenT = (u.regenT || 0) + dt;
-      if (u.regenT > 3) u.shield = Math.min(u.maxShield, u.shield + u.maxShield * 0.15 * thin * dt);
+      if (!u.alive) continue;
+      if (u.maxShield > 0 && u.hitT > 5 && u.shield < u.maxShield) u.shield = Math.min(u.maxShield, u.shield + u.maxShield * 0.07 * dt);
+      if (u.kind === 'infantry') {
+        if (u.pid && u.hitT > 6 && u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + 10 * dt);
+        if (u.type === 'medic' && (w.tickN + u.id) % 15 === 0) {
+          for (const a of w.units) if (a !== u && a.alive && a.team === u.team && a.kind === 'infantry' && a.hp < a.maxHp && V.distance2(a.pos, u.pos) < 110) a.hp = Math.min(a.maxHp, a.hp + 5);
+        }
+      }
     }
   }
 
-  // ── objectives ───────────────────────────────────────────────
-  function updateObjectives(w, dt) {
-    for (const o of w.objectives) {
-      let a = 0, b = 0;
+  // ── command posts ────────────────────────────────────────────
+  function updateCPs(w, dt) {
+    let a = 0, v = 0;
+    for (const c of w.cps) {
+      c.n.aegis = 0; c.n.verdant = 0;
       for (const u of w.units) {
-        if (!u.alive) continue;
-        const d = E.distXZ2(u.pos, o.pos);
-        if (d < o.radius * o.radius) { if (u.team === 'aegis') a++; else if (u.team === 'verdant') b++; }
+        if (!u.alive || (u.kind !== 'infantry' && u.kind !== 'vehicle')) continue;
+        if (E.distXZ2(u.pos, c.pos) < c.r * c.r && Math.abs(u.pos.y - c.pos.y) < 14) c.n[u.team]++;
       }
-      if (a > 0 && b > 0) continue; // contested
-      const team = a > 0 ? 'aegis' : b > 0 ? 'verdant' : null;
-      if (!team) { // decay to owner
-        if (o.owner) { o.progress += ((o.owner === 'aegis' ? 1 : 0) - o.progress) * Math.min(1, dt * 0.2); }
-        continue;
+      const na = c.n.aegis, nv = c.n.verdant;
+      c.contested = na > 0 && nv > 0;
+      if (!c.contested && (na || nv)) {
+        const dir = na ? 1 : -1, n = Math.min(6, na || nv);
+        const before = c.cap;
+        c.cap = E.clamp(c.cap + dir * (0.05 + 0.02 * n) * dt, -1, 1);
+        const team = dir > 0 ? 'aegis' : 'verdant';
+        if (c.owner && c.owner !== team && ((before > 0) !== (c.cap > 0) || c.cap === 0)) {
+          const prev = c.owner; c.owner = null;
+          w.events.push({ type: 'neutral', cp: c.id, prev, team });
+        }
+        if (c.owner !== team && Math.abs(c.cap) >= 1) {
+          c.owner = team; w.teams[team].captures++;
+          w.events.push({ type: 'capture', cp: c.id, team, pos: V.clone(c.pos) });
+          for (const u of w.units) if (u.alive && u.pid && u.team === team && E.distXZ2(u.pos, c.pos) < c.r * c.r) { const p = w.players[u.pid]; if (p) { p.captures++; score(w, p.id, 250, 'COMMAND POST CAPTURED'); } }
+        }
+      } else if (!na && !nv) {
+        const rest = c.owner === 'aegis' ? 1 : c.owner === 'verdant' ? -1 : 0;
+        c.cap = E.approach(c.cap, rest, 0.03 * dt);
       }
-      if (team === o.owner) { o.progress = 1; continue; }
-      const before = o.owner;
-      o.progress += dt / (o.hold || 15);
-      if (o.progress >= 1) {
-        o.progress = 1; o.owner = team; o.hp = o.maxHp;
-        w.events.push({ type: 'objectiveCaptured', pos: o.pos, team, role: o.role, prev: before });
+      if (c.owner === 'aegis') a++; else if (c.owner === 'verdant') v++;
+    }
+    w.teams.aegis.cps = a; w.teams.verdant.cps = v;
+  }
+
+  // ── reinforcements ───────────────────────────────────────────
+  function spawnCP(w, f) {
+    const en = enemyOf(f); let best = null, bs = -1;
+    for (const c of w.cps) {
+      if (c.owner !== f || c.n[en] > c.n[f] + 2) continue;
+      let nd = 1e9;
+      for (const o of w.cps) if (o.owner !== f) nd = Math.min(nd, E.distXZ(c.pos, o.pos));
+      const s = (1 / (nd + 120)) * (0.5 + w.rng.next());
+      if (s > bs) { bs = s; best = c; }
+    }
+    return best;
+  }
+  function reinforce(w, dt) {
+    for (const f of E.TEAMS) {
+      const T = w.teams[f];
+      let inf = 0, air = 0; const veh = { skiff: 0, tank: 0 }; let cap = null;
+      for (const u of w.units) {
+        if (!u.alive || u.team !== f) continue;
+        if (u.kind === 'infantry') inf++; else if (u.kind === 'fighter') air++; else if (u.kind === 'vehicle') veh[u.type]++; else if (u.kind === 'capital' && !cap) cap = u;
+      }
+      T.alive = inf; T.capital = cap ? cap.id : 0;
+      T.strikeT -= dt;
+      if (T.tickets <= 0) continue;
+      T.waveT -= dt;
+      if (T.waveT <= 0) {
+        T.waveT = 5.5;
+        const n = Math.min(5, T.infCap - inf, T.tickets - inf);
+        for (let i = 0; i < n; i++) { const c = spawnCP(w, f); if (!c) break; spawnUnit(w, 'infantry', pickClass(w), f, ring(w, c.pos, 5, c.r * 0.85)); }
+      }
+      for (const type of ['skiff', 'tank']) {
+        if (veh[type] >= (T.vehCap[type] || 0)) { continue; }
+        T.vehT[type] -= dt;
+        if (T.vehT[type] <= 0) {
+          T.vehT[type] = type === 'tank' ? 45 : 28;
+          const home = w.cps.find(c => c.home === f), c = home.owner === f ? home : spawnCP(w, f);
+          if (c) spawnUnit(w, 'vehicle', type, f, ring(w, c.pos, c.r * 0.6, c.r * 1.1));
+        }
+      }
+      if (air < T.airCap) {
+        T.airT -= dt;
+        if (T.airT <= 0) { T.airT = cap ? 11 : 24; const u = launchFighter(w, f, cap, w.rng.i(6)); w.events.push({ type: 'launch', pos: V.clone(u.pos), team: f }); }
+      }
+      // AI fleet calls an orbital strike on a massed enemy
+      if (T.strikeT <= 0 && cap && !cap.pid) {
+        T.strikeT = E.WEAPONS.orbital.cd * (T.bonus.orbital ? 0.7 : 1.15) + w.rng.next() * 20;
+        const en = enemyOf(f); let best = null, bn = 2;
+        for (const c of w.cps) if (c.n[en] > bn && c.n[f] === 0) { bn = c.n[en]; best = c; }
+        if (!best) { const tk = w.units.find(u => u.alive && u.team === en && (u.type === 'tank' || u.kind === 'turret')); if (tk && w.rng.next() < 0.6) best = tk; }
+        if (best) strike(w, f, best.pos, null);
       }
     }
   }
 
-  function checkWin(w) {
+  function bleedAndWin(w, dt) {
     if (w.winner) return;
-    const hqs = w.objectives.filter(o => o.role === 'hq');
-    const aegisHQ = hqs.find(o => o.x < 0) || hqs[0];
-    const verdantHQ = hqs.find(o => o.x >= 0) || hqs[1];
-    if (verdantHQ && verdantHQ.owner === 'aegis') w.winner = 'aegis';
-    else if (aegisHQ && aegisHQ.owner === 'verdant') w.winner = 'verdant';
-    if (w.winner) w.events.push({ type: 'gameOver', winner: w.winner });
+    const A = w.teams.aegis, Vd = w.teams.verdant;
+    for (const [T, O] of [[A, Vd], [Vd, A]]) {
+      const diff = O.cps - T.cps;
+      if (diff > 0 && O.cps >= 3) {
+        T.bleedT += dt;
+        const iv = diff >= 4 ? 1.2 : diff === 3 ? 2.2 : diff === 2 ? 4 : 7;
+        if (T.bleedT >= iv) { T.bleedT = 0; T.tickets = Math.max(0, T.tickets - 1); }
+      } else T.bleedT = 0;
+    }
+    let win = null;
+    const wiped = (T) => T.cps === 0 && !w.units.some(u => u.alive && u.team === T.id && (u.kind === 'infantry' || u.kind === 'vehicle'));
+    const la = A.tickets <= 0 || wiped(A), lv = Vd.tickets <= 0 || wiped(Vd);
+    if (la && lv) win = A.kills >= Vd.kills ? 'aegis' : 'verdant';
+    else if (la) win = 'verdant'; else if (lv) win = 'aegis';
+    if (win) { w.winner = win; w.endT = w.t; w.events.push({ type: 'gameOver', winner: win }); }
+    // low-ticket warnings
+    for (const T of [A, Vd]) { const q = T.tickets <= 25 ? 2 : T.tickets <= T.startTickets * 0.5 ? 1 : 0; if (q > (T.warned || 0)) { T.warned = q; w.events.push({ type: 'announce', key: q === 2 ? 'ticketsLow' : 'ticketsHalf', team: T.id }); } }
+  }
+
+  // ── player verbs ─────────────────────────────────────────────
+  function release(w, pid) {
+    const p = w.players[pid]; if (!p) return;
+    const u = p.unitId ? w.umap.get(p.unitId) : null;
+    if (u) { u.pid = null; u.ai.thinkT = 0; u.aimYaw = u.yaw; if (u.kind === 'fighter') u.ai.state = ''; }
+    p.unitId = 0;
+  }
+  function possess(w, pid, uid) {
+    const p = w.players[pid], u = w.umap.get(uid);
+    if (!p || !u || !u.alive || u.team !== p.team || (u.pid && u.pid !== pid)) return false;
+    release(w, pid);
+    u.pid = pid; p.unitId = uid; u.order = null;
+    p.input.yaw = p.input.moveYaw = u.aimYaw; p.input.pitch = u.kind === 'fighter' ? u.pitch : 0;
+    w.events.push({ type: 'possess', to: pid, uid });
+    return true;
+  }
+  function deploy(w, pid, type, cpId) {
+    const p = w.players[pid]; if (!p || w.winner) return null;
+    const T = w.teams[p.team], c = w.cps[cpId];
+    if (!c || c.owner !== p.team || T.tickets <= 0 || !E.INFANTRY[type]) return null;
+    if (p.unitId && w.umap.get(p.unitId)) return null;
+    if (w.t - p.deadT < RESPAWN) return null;
+    const u = spawnUnit(w, 'infantry', type, p.team, ring(w, c.pos, 4, c.r * 0.6));
+    u.yaw = u.aimYaw = Math.atan2(-u.pos.x, -u.pos.z);
+    possess(w, pid, u.id);
+    return u;
+  }
+  function order(w, pid, ids, type, pos) {
+    const p = w.players[pid]; if (!p) return;
+    let n = 0;
+    for (const id of ids || []) {
+      const u = w.umap.get(id);
+      if (!u || !u.alive || u.team !== p.team || u.pid || u.kind === 'capital' || u.kind === 'turret') continue;
+      u.order = type === 'free' ? null : { type, pos: pos ? { x: pos.x, y: 0, z: pos.z } : V.clone(u.pos), t: w.t, pid };
+      u.ai.offT = 0; n++;
+    }
+    w.events.push({ type: 'order', to: pid, n, order: type, pos: pos ? V.clone(pos) : null });
   }
 
   // ── intensity (drives music) ─────────────────────────────────
   function intensity(w) {
-    let engaged = 0, total = 0;
-    for (const u of w.units) { if (u.alive) { total++; if (u._engaged) engaged++; } }
-    const near = (w.projectiles.length / 60) * 0.5;
-    const obj = 0.2;
-    return E.clamp01((engaged / Math.max(1, total)) * 0.7 + near + obj * 0.3);
+    let firing = 0, total = 0;
+    for (const u of w.units) { if (u.kind === 'capital' || u.kind === 'turret') continue; total++; if (w.t - u.lastFire < 1.5) firing++; }
+    return E.clamp01((firing / Math.max(1, total)) * 1.6 + Math.min(0.3, w.projectiles.length / 200));
   }
 
   // ── main step ────────────────────────────────────────────────
   function update(w, dt) {
-    if (w.winner) { // keep FX going but freeze the battle
-      updateProjectiles(w, dt); w.intensity = 0; return;
-    }
     w.t += dt; w.tickN++;
-    // control + movement
-    for (const u of w.units) {
-      if (!u.alive) continue;
-      u._engaged = false;
-      control(u, w, dt);
-    }
-    // mark engaged (has a recent target) for intensity
-    for (const u of w.units) if (u.alive && nearestEnemy(w, u, detectRange(u))) u._engaged = true;
-    capitalWeapons(w, dt);
-    launchFighters(w, dt);
+    if (w.winner) { updateProjectiles(w, dt); w.intensity *= 0.98; return; }
+    const U = w.units;
+    for (let i = 0; i < U.length; i++) if (U[i].alive) control(w, U[i], dt);
     updateProjectiles(w, dt);
-    regen(w, dt);
-    updateObjectives(w, dt);
-    checkWin(w);
-    w.intensity = intensity(w);
+    updateStrikes(w, dt);
+    sustain(w, dt);
+    if (w.tickN % 3 === 0) updateCPs(w, dt * 3);
+    if (w.tickN % 6 === 0) { reinforce(w, dt * 6); bleedAndWin(w, dt * 6); }
+    w.intensity += (intensity(w) - w.intensity) * 0.05;
+    // drop the dead
+    let k = 0;
+    for (let i = 0; i < U.length; i++) { const u = U[i]; if (u.alive) U[k++] = u; else w.umap.delete(u.id); }
+    U.length = k;
   }
 
-  // ── player commands (the "light command" surface) ────────────
-  function myUnits(w, kind) {
-    return w.units.filter(u => u.alive && u.team === w.human && (!kind || u.kind === kind));
-  }
-  function selectNearest(w, pos, maxD) {
+  // ── commander helpers (selection) ────────────────────────────
+  function myUnits(w, f, kind) { return w.units.filter(u => u.alive && u.team === f && u.kind !== 'capital' && u.kind !== 'turret' && (!kind || u.kind === kind)); }
+  function selectNearest(w, pos, maxD, f) {
     let best = null, bd = maxD * maxD;
-    for (const u of myUnits(w)) { const d = E.distXZ2(pos, u.pos); if (d < bd) { bd = d; best = u; } }
+    for (const u of myUnits(w, f)) { const d = E.distXZ2(pos, u.pos); if (d < bd) { bd = d; best = u; } }
     return best;
   }
-  function selectBox(w, a, b) {
-    const set = new Set();
-    const minx = Math.min(a.x, b.x), maxx = Math.max(a.x, b.x), minz = Math.min(a.z, b.z), maxz = Math.max(a.z, b.z);
-    for (const u of myUnits(w)) if (u.pos.x >= minx && u.pos.x <= maxx && u.pos.z >= minz && u.pos.z <= maxz) set.add(u);
-    return [...set];
-  }
-  function command(w, sel, type, arg) {
-    for (const u of (sel || myUnits(w))) { u.order = { type, pos: arg && arg.pos ? E.V3.clone(arg.pos) : null, unit: arg && arg.unit ? arg.unit : null }; }
-    w.events.push({ type: 'command', n: (sel || myUnits(w)).length, type });
-  }
 
-  E.SIM = Object.assign(E.SIM || {}, {
-    update, weaponOf, nearestEnemy, intensity,
-    myUnits, selectNearest, selectBox, command,
-    applyDamage, fireAt,
-  });
+  E.SIM = { setup, update, spawnUnit, possess, release, deploy, order, strike, applyDamage, kill, myUnits, selectNearest,
+    dirOf, angDiff, centerOf, eyeOf, aimTarget, RESPAWN, CAP_ALT };
 })(window.E = window.E || {});
 
 // ---- js/sim/terrain.js ----
-// Pure terrain height field. Both the sim (ground units stand here) and the
-// renderer (builds the mesh here) read from this, so ground height is always
-// consistent and deterministic for a given (biome, seed). No three.js.
+// Pure terrain height field + battle layout. Both the sim (ground units stand
+// here) and the renderer (builds the mesh here) read from this, so ground height
+// is always consistent and deterministic for a given (biome, seed). No three.js.
+//
+// The battle is fought in a shallow basin around the origin (rolling ground,
+// flattened pads under each command post) ringed by the biome's full-height
+// mountains, which makes every map a natural arena with a dramatic skyline.
 (function (E) {
   'use strict';
 
-  // Build a height sampler for a planet (from E.makePlanet).
-  // Returns { height(x,z), slope(x,z), biome, planet, craters }.
+  const ARENA = { x: 1050, z: 760 };   // half-extents of the playable basin
+  const BOUND = 2300;                  // soft world bound for aircraft
+
+  // Command-post layout: two home bases and three contested posts, placed
+  // point-symmetric through the origin so neither side is favoured.
+  function battleLayout(planet) {
+    const r = E.RNG((planet.seed ^ 0x5bd1e995) >>> 0);
+    const fz = r.f(190, 300) * r.sign(), fx = r.f(250, 340);
+    const cps = [
+      { x: -660, z: r.f(-60, 60), home: 'aegis' },
+      { x: -fx, z: fz },
+      { x: 0, z: 0 },
+      { x: fx, z: -fz },
+      { x: 660, z: 0, home: 'verdant' },
+    ];
+    cps[4].z = -cps[0].z;
+    cps.forEach((c, i) => { c.name = E.CP_NAMES ? E.CP_NAMES[i] : 'CP' + i; c.r = c.home ? 34 : 28; });
+    return { cps, arena: ARENA, bound: BOUND };
+  }
+
   function makeTerrain(planet) {
     const b = planet.biomeDef;
     const amp = b.amp || {};
@@ -1401,347 +2020,726 @@
     const r = E.RNG(seed);
     const n = E.Noise(seed);
     const n2 = E.Noise(seed ^ 0x9e3779b9);
-    const H = 90; // base feature height in meters
-    const s = 4 / (planet.radius); // world->noise scale, features scale with planet
+    const H = 90;
+    const s = 4 / planet.radius;
+    const water = b.water || {};
+    const waterLevel = (water.cover > 0.02) ? (water.level || 0) * 40 - 6 : -1e9;
+    const layout = battleLayout(planet);
 
-    // Craters / vents (deterministic). Depth and size per crater.
     const craters = [];
-    const nc = (b.cover && b.cover.rocks ? 1 : 0) + ((amp.craters || 0) > 0 ? Math.round(6 + (amp.craters || 0) * 20) : 0) + ((b.cover && b.cover.vents) ? Math.round(8 * b.cover.vents) : 0);
+    const nc = ((amp.craters || 0) > 0 ? Math.round(10 + amp.craters * 26) : 0) + ((b.cover && b.cover.vents) ? Math.round(10 * b.cover.vents) : 0);
     for (let i = 0; i < nc; i++) {
-      const a = r.angle(), d = r.f(80, planet.radius * 0.4);
-      craters.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, rad: r.f(18, 90), depth: r.f(6, 40) * (amp.craters || 0.5 + 0.5) });
+      const a = r.angle(), d = r.f(120, 2600);
+      craters.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, rad: r.f(24, 110), depth: r.f(5, 22) });
     }
 
-    // Gas-giant banding (a slow sinusoid for the band backdrop).
-    const bands = b.amp && b.amp.bands ? b.amp.bands : 0;
-
-    function height(x, z) {
+    function raw(x, z) {
       const u = x * s, v = z * s;
       let h = 0;
       h += n.fbm(u, v, 5) * (amp.low || 0.4) * H;
       h += n2.fbm(u * 2.6 + 11, v * 2.6 + 7, 4) * (amp.mid || 0.5) * H * 0.6;
-      h += n.ridge(u * 5.5 + 3, v * 5.5 + 3, 4) * (amp.high || 0.8) * H * 0.35;
-      h += (n.warp(u * 1.3, v * 1.3, 3) - 0.5) * (amp.rough || 0.4) * H * 0.3;
-      // craters carve down (rim up is implicit from the gaussian edge)
-      for (let i = 0; i < craters.length; i++) {
-        const c = craters[i];
-        const dx = x - c.x, dz = z - c.z, d = Math.hypot(dx, dz);
-        if (d < c.rad * 2.2) h -= c.depth * Math.exp(-(d * d) / (c.rad * c.rad * 1.6));
-      }
-      // gas bands: slow horizontal stripes
-      if (bands) h += Math.sin(v * 0.18 + Math.sin(u * 0.05) * 1.5) * bands * H * 0.5;
+      h += n.ridge(u * 5.5 + 3, v * 5.5 + 3, 3) * (amp.high || 0.8) * H * 0.35;
+      h += n2.fbm(u * 1.3 - 5, v * 1.3 + 2, 3) * (amp.rough || 0.4) * H * 0.3;
       return h;
     }
+    // small-scale relief that survives the basin flattening (dunes, hummocks)
+    function detail(x, z) {
+      return n2.fbm(x * 0.012 + 3.1, z * 0.012 - 1.7, 3) * 5.5 * (0.5 + (amp.rough || 0.4)) +
+             n.fbm(x * 0.03, z * 0.03, 2) * 0.9;
+    }
+    function basin(x, z) {
+      const d = Math.hypot(x / ARENA.x, z / ARENA.z);
+      return E.smoothstep(0.82, 2.3, d);
+    }
+    function unpadded(x, z) {
+      const m = basin(x, z);
+      let h = raw(x, z) * (0.22 + 1.5 * m) + m * m * 150 * (0.5 + (amp.high || 0.8) * 0.6) + detail(x, z);
+      for (let i = 0; i < craters.length; i++) {
+        const c = craters[i];
+        const dx = x - c.x, dz = z - c.z, d2 = dx * dx + dz * dz, R2 = c.rad * c.rad;
+        if (d2 < R2 * 5) {
+          const q = d2 / R2;
+          h += -c.depth * Math.exp(-q * 1.6) + c.depth * 0.35 * Math.exp(-(q - 1.15) * (q - 1.15) * 6);
+        }
+      }
+      return h;
+    }
+    // pads: flatten the ground under each command post (and keep it dry)
+    const pads = layout.cps.map(c => ({ x: c.x, z: c.z, r: c.r * 2.4, h: Math.max(unpadded(c.x, c.z), waterLevel + 3.5) }));
+    layout.cps.forEach((c, i) => { c.y = pads[i].h; });
 
+    function exact(x, z) {
+      let h = unpadded(x, z);
+      for (let i = 0; i < pads.length; i++) {
+        const p = pads[i];
+        const dx = x - p.x, dz = z - p.z, d2 = dx * dx + dz * dz;
+        if (d2 < p.r * p.r) {
+          const k = 1 - E.smoothstep(0.42, 1, Math.sqrt(d2) / p.r);
+          h += (p.h - h) * k;
+        }
+      }
+      return h;
+    }
+    // The arena is served from a lazily filled grid (bilinear), so the sim's
+    // many height queries are cheap and the renderer's mesh (built on the same
+    // grid) matches what units stand on exactly.
+    const CS = 8, GX0 = -1504, GZ0 = -1200, GW = 377, GH = 301;
+    const grid = new Float32Array(GW * GH).fill(NaN);
+    function cell(ix, iz) {
+      const i = iz * GW + ix; let v = grid[i];
+      if (v !== v) { v = exact(GX0 + ix * CS, GZ0 + iz * CS); grid[i] = v; }
+      return v;
+    }
+    function height(x, z) {
+      const fx = (x - GX0) / CS, fz = (z - GZ0) / CS;
+      if (!(fx >= 0 && fz >= 0 && fx < GW - 1 && fz < GH - 1)) return exact(x, z);
+      const ix = fx | 0, iz = fz | 0, u = fx - ix, v = fz - iz;
+      const a = cell(ix, iz), b = cell(ix + 1, iz), c = cell(ix, iz + 1), d = cell(ix + 1, iz + 1);
+      return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+    }
+    // where units stand: the sea floor is capped just under the surface (wading)
+    function ground(x, z) { const h = height(x, z); return h < waterLevel - 1.1 ? waterLevel - 1.1 : h; }
     function slope(x, z) {
-      const e = 6;
-      const hx = (height(x + e, z) - height(x - e, z)) / (2 * e);
-      const hz = (height(x, z + e) - height(x, z - e)) / (2 * e);
-      return Math.hypot(hx, hz);
+      const e = 4;
+      return Math.hypot((height(x + e, z) - height(x - e, z)) / (2 * e), (height(x, z + e) - height(x, z - e)) / (2 * e));
+    }
+    function normal(x, z, o) {
+      const e = 3;
+      o = o || {};
+      o.x = -(height(x + e, z) - height(x - e, z)) / (2 * e); o.y = 1; o.z = -(height(x, z + e) - height(x, z - e)) / (2 * e);
+      return E.V3.normalize(o);
+    }
+    // segment line-of-sight against the height field (coarse march)
+    function los(a, b) {
+      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+      const d = Math.hypot(dx, dz), n = Math.min(12, Math.max(2, (d / 22) | 0));
+      for (let i = 1; i < n; i++) {
+        const t = i / n;
+        if (height(a.x + dx * t, a.z + dz * t) > a.y + dy * t + 0.3) return false;
+      }
+      return true;
+    }
+    // ray vs ground (march); returns distance or -1
+    function raycast(o, d, maxD) {
+      let t = 0, step = 3;
+      for (let i = 0; i < 400 && t < maxD; i++) {
+        const y = o.y + d.y * t, g = ground(o.x + d.x * t, o.z + d.z * t);
+        if (y < g) { // refine
+          let lo = Math.max(0, t - step), hi = t;
+          for (let k = 0; k < 6; k++) { const m = (lo + hi) / 2; if (o.y + d.y * m < ground(o.x + d.x * m, o.z + d.z * m)) hi = m; else lo = m; }
+          return hi;
+        }
+        step = Math.max(2, (y - g) * 0.4); t += step;
+      }
+      return -1;
     }
 
-    return {
-      planet, biome: planet.biome, height, slope, craters,
-      // sample the surface normal-ish up vector (approx from two partials)
-      up: (x, z) => {
-        const e = 8;
-        const hx = (height(x + e, z) - height(x - e, z)) / (2 * e);
-        const hz = (height(x, z + e) - height(x, z - e)) / (2 * e);
-        const v = E.V3.make(-hx, 1, -hz);
-        return E.V3.normalize(v, E.V3.make(0, 1, 0));
-      },
-    };
+    return { planet, biome: planet.biome, height, exact, cell, grid: { CS, GX0, GZ0, GW, GH }, ground, slope, normal, up: normal, los, raycast, craters, layout, waterLevel, basin };
   }
 
   E.makeTerrain = makeTerrain;
+  E.battleLayout = battleLayout;
+  E.ARENA = ARENA;
 })(window.E = window.E || {});
 
 // ---- js/sim/world.js ----
-// The World: owns the match state and serializes it. Pure and deterministic —
-// it draws only from this.rng and never touches THREE or the DOM. Rendering,
-// audio and networking read its state and submit commands (focus, command,
-// input) which it applies. M1: surface battle with infantry, vehicles, fighters,
-// objectives, combat and bots; M2 adds capitals + orbital space.
+// The World: owns the match state. Pure and deterministic — it draws only from
+// this.rng and never touches THREE or the DOM. Rendering, audio and networking
+// read its state and submit player commands (input, possess, deploy, order).
+//
+// A match is a conquest battle: two factions fight over five command posts on
+// the ground while their capital ships duel overhead. Every death costs the
+// side a reinforcement ticket, holding the majority of posts bleeds the enemy,
+// and the side that runs out of tickets (or loses every post and soldier) loses.
 (function (E) {
   'use strict';
+  const TEAMS = ['aegis', 'verdant'];
+  const DIFF = {
+    easy:   { aiErr: 0.075, enemyDmg: 0.55, enemyTickets: 0.85 },
+    normal: { aiErr: 0.06, enemyDmg: 0.8,  enemyTickets: 1 },
+    hard:   { aiErr: 0.045, enemyDmg: 1.0,  enemyTickets: 1.2 },
+  };
 
   class World {
     constructor(opts) {
       opts = opts || {};
       this.human = opts.human || 'aegis';
-      this.fleetScale = opts.fleetScale || 1;
-      this.planet = E.makePlanet(opts.biome || 'tundra', opts.seed !== undefined ? opts.seed : E.RNG(1).i(1e9), opts.scale || 1);
+      this.planet = E.makePlanet(opts.biome || 'desert', opts.seed !== undefined ? opts.seed : 1, opts.scale || 1);
       this.terrain = E.makeTerrain(this.planet);
+      this.layout = this.terrain.layout;
       this.rng = E.RNG((this.planet.seed * 7919 + 17) | 0);
-      this.units = [];
-      this.projectiles = [];
-      this.objectives = [];
-      this.nextId = 1;
+      this.units = []; this.umap = new Map();
+      this.projectiles = []; this.strikes = [];
+      this.nextId = 1; this.nextProj = 1;
       this.t = 0; this.tickN = 0;
-      this.possessedId = null;
-      this.winner = null;
-      this.intensity = 0;
-      this.stats = { kills: { aegis: 0, verdant: 0 }, captures: { aegis: 0, verdant: 0 } };
+      this.winner = null; this.intensity = 0;
       this.events = [];
-      this.playerInput = { x: 0, y: 0, fire: false };
-      this.playerLookYaw = 0;
-      this.selected = [];
-      this.buildObjectives();
-      this.spawnForce("aegis", { x: -1500, z: 0 });;
-      this.spawnForce("verdant", { x: 1500, z: 0 });;
-      this.playerUnit = this.units.find(u => u.team === this.human) || this.units[0];
-    }
-
-    groundY(x, z) { return this.terrain.height(x, z); }
-
-    unit(kind, faction, type, role, pos) {
-      const T = kind === 'infantry' ? E.INFANTRY : kind === 'vehicle' ? E.VEHICLES : kind === 'fighter' ? E.FIGHTERS : E.CAPITALS;
-      const def = (T[type] || T.rifle) || {};
-      const u = {
-        id: this.nextId++, kind, faction, type, role: role || (def.role || type),
-        pos: { x: pos.x, y: this.groundY(pos.x, pos.z), z: pos.z },
-        yaw: 0, aim: 0,
-        hp: def.hp || 100, maxHp: def.hp || 100,
-        shield: 0, maxShield: (kind === 'capital' ? 12000 : kind === 'vehicle' ? 200 : 0) * (this.planet.biomeDef.challenge && this.planet.biomeDef.challenge.thinAir ? 0.6 : 1),
-        speed: def.speed || 8, turn: def.turn || 3,
-        viewH: def.viewH || 1.7, r: def.r || 1,
-        alive: true, team: faction, kills: 0,
-        fireT: 0, regenT: 99, _engaged: false, order: null,
-      };
-      this.units.push(u);
-      return u;
-    }
-
-    spawnForce(faction, base) {
-      const F = E.FORCE_DEFAULT;
-      const sc = (faction === this.human && this.fleetScale) ? this.fleetScale : 1;
-      const rr = (n) => { const a = this.rng.angle(), d = this.rng.f(10, 70); return { x: base.x + Math.cos(a) * d, z: base.z + Math.sin(a) * d }; };
-      const ni = (n) => Math.max(1, Math.round(n * sc));
-      for (const [role, n] of Object.entries({ rifle: F.rifle, recon: F.recon, medic: F.medic }))
-        for (let i = 0; i < ni(n); i++) this.unit('infantry', faction, role, role, rr());
-      for (const [type, n] of Object.entries(F.vehicle))
-        for (let i = 0; i < ni(n); i++) this.unit('vehicle', faction, type, 'gunship', rr());
-      for (const [type, n] of Object.entries(F.fighter))
-        for (let i = 0; i < ni(n); i++) { const u = this.unit('fighter', faction, type, type, rr()); u.pos.y = this.groundY(u.pos.x, u.pos.z) + 130; }
-      // A bot "capital" in the air for each side (the player's can be boarded).
-      // A bigger fleet gets a bigger flagship.
-      const capType = sc > 1.4 ? 'dreadnought' : (sc > 1.15 ? 'carrier' : F.capital);
-      const cap = this.unit('capital', faction, capType, capType, { x: base.x, z: base.z });
-      cap.pos.y = this.groundY(cap.pos.x, cap.pos.z) + 200;
-      cap.genome = { r: this.rng.f(0.9, 1.15) };
-      cap.yaw = cap.aim = faction === 'aegis' ? Math.PI : 0;
-      // medic healers are assigned to the nearest own units
-      this.medics = this.units.filter(u => u.role === 'medic');
-      return cap;
-    }
-
-    buildObjectives() {
-      const R = this.rng;
-      const O = E.STRUCTURES;
-      const mk = (role, x, z, y) => {
-        const def = O[role];
-        const o = { id: this.nextId++, role, team: role === 'hq' ? (x < 0 ? 'aegis' : 'verdant') : null,
-          pos: { x, y: this.groundY(x, z), z }, radius: def.r * 1.4, hp: def.hp, maxHp: def.hp,
-          hold: def.hold || 15, owner: def.role === 'hq' ? (x < 0 ? 'aegis' : 'verdant') : null,
-          progress: def.role === 'hq' ? 1 : 0, alive: true };
-        this.objectives.push(o);
-        return o;
-      };
-      // two HQs (one per side), destroyable -> the main win condition
-      mk('hq', -2350, 0, 0);
-      mk('hq', 2350, 0, 0);
-      // neutral power + depot per side to hold
-      mk('power', -1400, R.f(-600, 600), 0);
-      mk('power', 1400, R.f(-600, 600), 0);
-      mk('depot', -800, R.f(-800, 800), 0);
-      mk('depot', 800, R.f(-800, 800), 0);
-      // a central power core both fight over
-      mk('power', R.f(-200, 200), R.f(-400, 400), 0);
-      // space objectives (stations/gateway) appear in M2; reserve the air here
-      if (this.planet.biome !== 'gas') {
-        const st = mk('station', R.f(-400, 400), R.f(-900, 900), 0);
-        st.pos.y = this.groundY(st.pos.x, st.pos.z) + 500; // an orbital station
+      this.players = {};
+      this.diff = opts.difficulty || 'normal';
+      const D = DIFF[this.diff] || DIFF.normal;
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg };
+      // per-side scale + campaign bonuses
+      const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
+      const bon = (f) => (opts.bonus && opts.bonus[f]) || {};
+      this.teams = {};
+      for (const f of TEAMS) {
+        const b = bon(f), s = sc(f);
+        const enemyT = (f !== this.human && !opts.pvp) ? D.enemyTickets : 1;
+        this.teams[f] = {
+          id: f, scale: s, bonus: b,
+          tickets: Math.round(E.FORCE.tickets * (0.75 + s * 0.25) * enemyT * (b.ticketMul || 1) + (b.reserves ? 40 : 0)), startTickets: 0,
+          infCap: Math.round(E.FORCE.infantry * (0.8 + s * 0.2)),
+          waveT: 4, vehT: { skiff: 20, tank: 35 }, airT: 10, bleedT: 0, strikeT: b.orbital ? 25 : 60,
+          kills: 0, deaths: 0, captures: 0, cps: 0,
+          fleet: opts.fleet && opts.fleet[f] ? opts.fleet[f].slice() : [s > 1.7 ? 'dreadnought' : s > 1.3 ? 'carrier' : E.FORCE.capital].concat(b.escort ? ['cruiser'] : []),
+        };
+        this.teams[f].startTickets = this.teams[f].tickets;
       }
+      this.cps = this.layout.cps.map((c, i) => ({
+        id: i, name: c.name, pos: { x: c.x, y: c.y, z: c.z }, r: c.r, home: c.home || null,
+        owner: c.home || null, cap: c.home ? (c.home === 'aegis' ? 1 : -1) : 0, // cap: +1 aegis .. -1 verdant
+        n: { aegis: 0, verdant: 0 }, contested: false,
+      }));
+      E.SIM.setup(this);
     }
 
+    // ── queries ────────────────────────────────────────────────
+    groundY(x, z) { return this.terrain.ground(x, z); }
+    byId(id) { return this.umap.get(id) || null; }
     unitList() { return this.units; }
-    byId(id) { return this.units.find(u => u.id === id); }
-    focusedUnit() { return this.possessedId != null ? this.byId(this.possessedId) : null; }
-    playerUnit() { return this.playerUnit; }
+    player(pid) { return this.players[pid] || null; }
+    unitOf(pid) { const p = this.players[pid]; return p && p.unitId ? this.byId(p.unitId) : null; }
+    team(f) { return this.teams[f]; }
 
-    // ── commands (submitted by local or remote players) ─────────
-    focus(id) {
-      const u = this.byId(id);
-      if (u && u.alive) this.possessedId = id;
-      else this.possessedId = null;
+    // ── player commands ────────────────────────────────────────
+    addPlayer(pid, team, name) {
+      const p = { id: pid, team, name: name || 'Commander', unitId: 0, deadT: -99, selected: [],
+        input: { mx: 0, mz: 0, moveYaw: 0, yaw: 0, pitch: 0, fire: false, abil: false, sprint: false, jump: false },
+        score: 0, kills: 0, deaths: 0, captures: 0, streak: 0, best: 0 };
+      this.players[pid] = p;
+      return p;
     }
-    release() { this.possessedId = null; }
-    setInput(inp) { this.playerInput = Object.assign(this.playerInput, inp); }
-    setLook(yaw) { this.playerLookYaw = yaw; }
-    select(units) { this.selected = units; }
-    // 'move'/'attack' pos; 'follow' unit; 'hold'; 'select' handled by Game
-    order(sel, type, arg) { E.SIM.command(this, sel || this.selected || E.SIM.myUnits(this, null), type, arg); }
+    removePlayer(pid) { this.release(pid); delete this.players[pid]; }
+    setInput(pid, inp) { const p = this.players[pid]; if (p) Object.assign(p.input, inp); }
+    possess(pid, uid) { return E.SIM.possess(this, pid, uid); }
+    release(pid) { E.SIM.release(this, pid); }
+    deploy(pid, type, cpId) { return E.SIM.deploy(this, pid, type, cpId); }
+    order(pid, ids, type, pos) { E.SIM.order(this, pid, ids, type, pos); }
 
-    // which view mode the player is in
-    mode() {
-      const u = this.focusedUnit();
-      if (!u) return 'commander';
-      if (u.kind === 'infantry') return 'fps';
-      if (u.kind === 'vehicle') return 'vehicle';
-      if (u.kind === 'fighter') return 'fighter';
-      if (u.kind === 'capital') return 'ship';
-      return 'commander';
-    }
-
-    // one simulation step (fixed timestep). Pure: reads opts, writes this state.
     tick(dt) { E.SIM.update(this, dt); }
     drainEvents() { const e = this.events; this.events = []; return e; }
   }
 
   E.World = World;
+  E.TEAMS = TEAMS;
+  E.DIFFICULTY = DIFF;
+})(window.E = window.E || {});
+
+// ---- js/net/net.js ----
+// Host-authoritative netcode (M3). The host runs the only World; guests send
+// commands (input / possess / release / deploy / order) and render interpolated
+// snapshots. Determinism is what makes this small:
+//
+//   • A guest rebuilds the planet, terrain and command posts locally from the
+//     host's (biome, seed, scale) — E.makePlanet / E.makeTerrain / the cp layout
+//     are pure and identical everywhere — so a snapshot only carries the
+//     dynamic state (units, cp ownership, team tickets, event ring).
+//   • Snapshots are compact arrays. The first one to a peer is FULL; the rest
+//     are DELTAS against the host's previous snapshot (moved / spawned / died).
+//     If a guest falls more than two snapshots behind (packet loss / rejoin) the
+//     host re-sends a FULL snapshot so it re-syncs without a reconnect.
+//   • Commands are the same messages Game.cmd() already builds locally, so the
+//     host routes them straight onto the World with the guest's own pid.
+//
+// Pure parts (pack / applySnapshot / applyDelta / route) run in Node for tests;
+// the Relay (WebRTC transport) is wired on in the lobby.
+(function (E) {
+  'use strict';
+
+  const SNAP_MS = 100;      // 10 Hz snapshots
+  const LAG_FULL = 3;       // full snapshot if the guest is >= this many snaps behind
+  const EV_RING = 16;       // events replayed per snapshot for guest FX
+
+  // ── snapshot format ──────────────────────────────────────────
+  // unit row: [id, kind, type, team, ax, ay, az, yaw, pitch, roll,
+  //            vx, vy, vz, hp, maxHp, shield, maxShield, heat, hot, lastFire, onGround, spd, flag]
+  // cp row:   [id, owner, cap, contested, na, nv]
+  // team:     [tickets, startTickets, cps, kills, deaths, strikesT]
+  // player:   [pid, name, kills, deaths, captures, score]
+  function urow(u) {
+    const p = u.pos, v = u.vel;
+    return [u.id, u.kind, u.type, u.team,
+      R1(p.x), R1(p.y), R1(p.z), R3(u.yaw), R2(u.pitch), R2(u.roll),
+      R1(v ? v.x : 0), R1(v ? v.y : 0), R1(v ? v.z : 0),
+      Math.round(u.hp), Math.round(u.maxHp), Math.round(u.shield || 0), Math.round(u.maxShield || 0),
+      R2(u.heat || 0), u.hot ? 1 : 0, R2(u.lastFire), u.onGround ? 1 : 0, R2(u.spd || 0), u.flag ? 1 : 0];
+  }
+  function urowOf(u) { return urow(u); }
+  function R1(x) { return Math.round(x * 10) / 10; }
+  function R2(x) { return Math.round(x * 100) / 100; }
+  function R3(x) { return Math.round(x * 1000) / 1000; }
+
+  function pack(w, ev, prev) {
+    const now = {};
+    const U = w.units.map((u) => { now[u.id] = urow(u); return now[u.id]; });
+    const CP = w.cps.map((c) => [c.id, c.owner || 0, R2(c.cap || 0), c.contested ? 1 : 0, c.n.aegis, c.n.verdant]);
+    const TEAM = {};
+    for (const f of E.TEAMS) { const T = w.teams[f]; TEAM[f] = [T.tickets, T.startTickets, T.cps, T.kills, T.deaths, R1(T.strikeT)]; }
+    const PL = Object.values(w.players).map((p) => [p.id, p.name, p.kills, p.deaths, p.captures, Math.round(p.score), p.unitId || 0, p.team]);
+    const PJ = (w.projectiles || []).map((p) => [p.kind, R1(p.pos.x), R1(p.pos.y), R1(p.pos.z), R1(p.vel.x), R1(p.vel.y), R1(p.vel.z), p.team, R1(p.scale || 1)]);
+    const STR = (w.strikes || []).map((s) => [R1(s.pos.x), R1(s.pos.y), R1(s.pos.z)]);
+    const full = !prev;
+    let delta;
+    if (!full) {
+      const spawn = [], del = [];
+      for (const id in now) if (!prev.U || prev.U[id] === undefined) spawn.push(now[id]);
+      for (const id in (prev.U || {})) if (now[id] === undefined) del.push(id);
+      delta = { s: spawn, u: U.filter((r) => spawn.indexOf(r) === -1 && prev.U && prev.U[r[0]] !== undefined), d: del };
+    }
+    const s = {
+      t: R2(w.t), n: w.tickN, full: full ? 1 : 0,
+      u: full ? U : delta.u, s: full ? U : delta.s, d: full ? [] : delta.d,
+      cp: CP, team: TEAM, pl: PL,
+      ev: (ev || []).slice(-EV_RING),
+      win: w.winner, I: R2(w.intensity || 0),
+      pj: PJ, str: STR,
+    };
+    s._U = now; // host-side: the full unit map this snapshot represents
+    return s;
+  }
+
+  // Rebuild a guest unit from a snapshot row. def/vel/etc. come from the row so
+  // the renderer (which reads u.def, u.vel, u.lastFire, …) never sees undefined.
+  function unitFrom(r) {
+    const def = E.unitDef(r[1], r[2]) || {};
+    return {
+      id: r[0], kind: r[1], type: r[2], team: r[3], def, armor: def.armor,
+      pos: { x: r[4], y: r[5], z: r[6] }, vel: { x: r[10], y: r[11], z: r[12] },
+      yaw: r[7], pitch: r[8], roll: r[9], aimYaw: r[7], aimPitch: r[8],
+      hp: r[13], maxHp: r[14] || r[13], shield: r[15], maxShield: r[16],
+      heat: r[17], hot: !!r[18], lastFire: r[19], onGround: !!r[20], spd: r[21],
+      r: def.r || 2, h: def.h || 2, flag: !!r[22], alive: true, pid: null,
+    };
+  }
+
+  // A guest-side world. Same read interface the Renderer + Game + HUD use as the
+  // host World, backed by a locally-built real World for static geometry, with
+  // the dynamic state overlaid from snapshots.
+  class RemoteWorld {
+    constructor(opts) {
+      opts = opts || {};
+      this.faction = opts.faction || 'verdant';
+      this.name = opts.name || 'Commander';
+      this._base = new E.World({ biome: opts.biome || 'desert', seed: opts.seed || 1, scale: opts.scale || 1, human: this.faction });
+      this.terrain = this._base.terrain;
+      this.planet = this._base.planet;
+      this.cps = this._base.cps;                 // positions/names are static; ownership/cap are overlaid
+      this.units = []; this.umap = new Map();
+      this.projectiles = []; this.strikes = [];
+      this.teams = { aegis: this._base.teams.aegis, verdant: this._base.teams.verdant };
+      this.players = {};
+      this.winner = null; this.intensity = 0; this.t = 0; this.tickN = 0;
+      this.human = this.faction;                  // the guest plays their assigned faction
+      this._ev = []; this._ready = false;
+    }
+    // static + derived reads
+    unitList() { return this.units; }
+    byId(id) { return this.umap.get(id) || null; }
+    unitOf(pid) { const p = this.players[pid]; return p && p.unitId ? this.umap.get(p.unitId) || null : null; }
+    player(pid) { return this.players[pid] || null; }
+    team(f) { return this.teams[f]; }
+    groundY(x, z) { return this.terrain.ground(x, z); }
+    drainEvents() { const e = this._ev; this._ev = []; return e; }
+    ready() { return this._ready; }
+    isRemote() { return true; }
+
+    // host -> guest
+    apply(s) {
+      this.t = s.t; this.tickN = s.n; this.winner = s.win; this.intensity = s.I;
+      this._ev = this._ev.concat(s.ev || []);
+      this._applyCps(s.cp);
+      this._applyTeams(s.team);
+      this._applyPlayers(s.pl);
+      this._applyUnits(s);
+      this._applyProjectiles(s);
+      if (!this._ready) { this._ready = true; }
+    }
+    _applyCps(cp) {
+      for (const r of cp) { const c = this.cps[r[0]]; if (!c) continue; c.owner = r[1] || null; c.cap = r[2]; c.contested = !!r[3]; c.n = { aegis: r[4], verdant: r[5] }; }
+    }
+    _applyTeams(team) {
+      for (const f of E.TEAMS) { const r = team[f]; if (!r) continue; const T = this.teams[f]; T.tickets = r[0]; T.startTickets = r[1]; T.cps = r[2]; T.kills = r[3]; T.deaths = r[4]; T.strikeT = r[5]; }
+    }
+    _applyPlayers(pl) {
+      for (const r of pl) this.players[r[0]] = { id: r[0], name: r[1], kills: r[2], deaths: r[3], captures: r[4], score: r[5], unitId: r[6] || 0, team: r[7] || this.faction, input: {} };
+    }
+    _applyUnits(s) {
+      const um = new Map();
+      const set = (row) => { const u = unitFrom(row); this.units = this.units.filter((x) => x.id !== u.id); this.units.push(u); um.set(u.id, u); };
+      if (s.full) { for (const r of s.u) set(r); }
+      else {
+        for (const u of this.units) um.set(u.id, u);
+        for (const id of (s.d || [])) um.delete(id);
+        for (const r of (s.s || [])) set(r);
+        for (const r of (s.u || [])) set(r);
+      }
+      this.units = [...um.values()];
+      this.umap = um;
+    }
+    _applyProjectiles(s) {
+      this.projectiles = (s.pj || []).map((r) => ({ kind: r[0], pos: { x: r[1], y: r[2], z: r[3] }, vel: { x: r[4], y: r[5], z: r[6] }, team: r[7], scale: r[8] }));
+      this.strikes = (s.str || []).map((r) => ({ pos: { x: r[0], y: r[1], z: r[2] } }));
+    }
+  }
+
+  // Route a guest command (the exact shape Game.cmd sends) onto the host World.
+  function route(w, c) {
+    if (!c || !c.pid) return;
+    const { pid } = c;
+    if (c.t === 'input') w.setInput(pid, c.a);
+    else if (c.t === 'possess') w.possess(pid, c.a);
+    else if (c.t === 'release') w.release(pid);
+    else if (c.t === 'deploy') w.deploy(pid, c.a, c.b);
+    else if (c.t === 'order') w.order(pid, c.a, c.b, c.c);
+  }
+
+  // The per-match session: host runs the sim and broadcasts snapshots; a guest
+  // forwards commands to the host and applies snapshots to its RemoteWorld.
+  //
+  // Events are a single queue on the World, so the host's Game.frame drains them
+  // once (for FX / audio / HUD) and hands them to the session; the session folds
+  // them into the next snapshot's ring. This avoids the drain race where two
+  // consumers would each eat half the events.
+  class NetSession {
+    constructor() { this.role = null; this.game = null; this.relay = null; this._last = 0; this._prev = null; this._guests = new Map(); this._evBuf = []; this._nextPid = 2; }
+
+    // host(role='host') — attach after the game has a world + relay
+    host(game) {
+      this.role = 'host'; this.game = game; this.relay = game.relay;
+      this.relay.on('msg', (m) => this.onCmd(m));
+      this.relay.on('peer', (m) => { if (m.open) this.onPeer(m); });
+      this.relay.on('left', (m) => this.onLeft(m));
+      this._last = 0;
+    }
+
+    guest(game) {
+      this.role = 'guest'; this.game = game; this.relay = game.relay;
+      this.relay.on('msg', (m) => {
+        if (m.from !== 0) return;
+        let s; try { s = JSON.parse(m.data); } catch { return; }
+        if (s.t === 'meta') return; // the lobby boots the game from this
+        game.world.apply(s);
+      });
+    }
+
+    // called once per frame by Game.frame with the freshly drained events
+    frame(w, events, now) {
+      if (this.role !== 'host' || !w) return;
+      this._evBuf = this._evBuf.concat(events).slice(-EV_RING);
+      if (now - this._last < SNAP_MS) return;
+      this._last = now;
+      const s = pack(w, this._evBuf, this._prev);
+      const fullStr = JSON.stringify(strip(pack(w, this._evBuf, null)));
+      const str = JSON.stringify(strip(s));
+      for (const [id, info] of this._guests) {
+        const behind = s.full || (s.n - (info.lastN || 0)) >= LAG_FULL;
+        this.relay.send(id, behind ? fullStr : str);
+        info.lastN = s.n;
+      }
+      this._evBuf = [];
+      this._prev = s._U;
+    }
+
+    onPeer(m) {
+      const w = this.game.world;
+      const f = E.opponent(w.human);   // 2-player slice: guest takes the opposing faction
+      const pid = 'p' + (this._nextPid++);
+      w.addPlayer(pid, f, m.name || 'Commander');
+      this._guests.set(m.id, { pid, faction: f, lastN: 0 });
+      this.relay.send(m.id, JSON.stringify({ t: 'meta', biome: w.planet.biome, seed: w.planet.seed, scale: w.planet.scale || 1, faction: f, name: m.name || 'Commander', pid }));
+      E.bus.emit('net:peer', { id: m.id, faction: f });
+    }
+    onLeft(m) {
+      const g = this._guests.get(m.id); if (!g) return;
+      const w = this.game.world; if (w.removePlayer) w.removePlayer(g.pid);
+      this._guests.delete(m.id);
+      E.bus.emit('net:left', { id: m.id });
+    }
+    onCmd(m) {
+      const g = this._guests.get(m.from); if (!g) return;
+      let c; try { c = JSON.parse(m.data); } catch { return; }
+      c.pid = g.pid;
+      route(this.game.world, c);
+    }
+
+    stop() { this._guests.clear(); this._evBuf = []; this._prev = null; }
+  }
+
+  function strip(s) { const { _U, ...rest } = s; return rest; }
+
+  E.Net = { SNAP_MS, LAG_FULL, pack, unitFrom, route, RemoteWorld, NetSession };
+})(window.E = window.E || {});
+
+// ---- js/net/relay.js ----
+// Peer-to-peer transport. A signaling server (the LAN host or the online
+// service) introduces the players; every game message then travels over WebRTC
+// DataChannels between host and guest, encrypted end to end (DTLS): directly on
+// a LAN, through a TURN relay online. The server never sees game traffic, and a
+// match survives the signaling server going away.
+//
+// API: host(name), join(room, name), send(to, data), toHost(data), kick(id),
+// close(); events: hosted, joined, peer, left, msg, closed, sigclose, error.
+(function (E) {
+  'use strict';
+
+  const CHUNK = 15000, HELLO_WAIT = 6000, RECOVER_MS = 15000, SOFT_WAIT = 2500;
+  E.PROTOCOL = 1; // bump when snapshots/commands/game data change incompatibly
+
+  class Relay {
+    constructor(opts) {
+      this.opts = opts || {};
+      this.ws = null;
+      this.handlers = {};
+      this.id = -1; this.room = ''; this.role = null;
+      this.peers = new Map();
+      this.ice = [];
+      this.seq = 0;
+    }
+    static defaultUrl() {
+      if (location.protocol === 'http:' || location.protocol === 'https:')
+        return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+      return 'ws://localhost:8080/ws';
+    }
+    static fromInput(raw) {
+      const s = (raw || '').trim();
+      if (!s) return '';
+      if (/^wss?:\/\//i.test(s)) return s;
+      return 'ws://' + s.replace(/\/+$/, '') + '/ws';
+    }
+    on(op, fn) { this.handlers[op] = fn; return this; }
+    emit(op, m) { const h = this.handlers[op]; if (h) try { h(m); } catch (e) { console.error(e); } }
+    raw(o) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(o)); }
+
+    connect(url) {
+      return new Promise((res, rej) => {
+        let ws;
+        try { ws = new WebSocket(url); } catch (e) { return rej(new Error('bad url')); }
+        this.ws = ws;
+        const to = setTimeout(() => { rej(new Error('timeout')); try { ws.close(); } catch {} }, 8000);
+        ws.onopen = () => { clearTimeout(to); res(this); };
+        ws.onerror = () => { clearTimeout(to); rej(new Error('could not reach ' + url)); };
+        ws.onclose = () => { this.ws = null; this.emit('sigclose'); if (this.role !== 'host') { if (!this.peers.size || !this.hostOpen()) this.emit('close'); } };
+        ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } this.onSignal(m); };
+      });
+    }
+    host(name, extra) { this.raw(Object.assign({ op: 'host', name }, extra || {})); }
+    join(room, name, extra) { this.raw(Object.assign({ op: 'join', room, name }, extra || {})); }
+    hostOpen() { const p = this.peers.get(0); return !!(p && p.dc && p.dc.readyState === 'open'); }
+
+    onSignal(m) {
+      switch (m.op) {
+        case 'hosted': this.role = 'host'; this.id = 0; this.room = m.room; this.ice = m.ice || []; this.emit('hosted', m); break;
+        case 'joined': this.role = 'guest'; this.id = m.id; this.room = m.room; this.ice = m.ice || []; this.makePeer(0, m.hostName || 'Host', false); this.emit('joined', m); break;
+        case 'peer': if (this.role === 'host') this.makePeer(m.id, m.name, true); break;
+        case 'signal': this.onPeerSignal(m.from, m.data); break;
+        case 'left': this.dropPeer(m.id); break;
+        case 'closed': this.emit('closed', m); break;
+        case 'error': this.emit('error', m); break;
+      }
+    }
+    makePeer(id, name, isGuest) {
+      const pc = new RTCPeerConnection({ iceServers: this.ice });
+      const p = { id, name, isGuest, pc, dc: null, hello: false };
+      this.peers.set(id, p);
+      const sendCand = (e) => { if (e.candidate) this.raw({ op: 'signal', to: isGuest ? id : 0, data: { sdp: { type: 'cand', c: e.candidate } } }); };
+      pc.onicecandidate = sendCand;
+      pc.onconnectionstatechange = () => { if (['failed', 'disconnected'].includes(pc.connectionState)) this.recover(p); };
+      if (isGuest) {
+        // Host side: create the DataChannel and the offer.
+        const dc = pc.createDataChannel('gc', { ordered: true });
+        p.dc = dc;
+        dc.onopen = () => { this._sendHello(p); this.emit('peer', { id, name, open: true }); };
+        dc.onmessage = (ev) => { this.onMsg(p, ev.data); };
+        dc.onclose = () => { p.dc = null; this.maybeClosed(); };
+        pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => {
+          this.raw({ op: 'signal', to: id, data: { sdp: { type: 'offer', sdp: pc.localDescription } } });
+        }).catch(e => console.error('offer', e));
+      } else {
+        // Guest side: await the incoming DataChannel from the host.
+        pc.ondatachannel = (e) => {
+          const dc = e.channel; p.dc = dc;
+          dc.onopen = () => { this._sendHello(p); this.emit('peer', { id, name, open: true }); };
+          dc.onmessage = (ev) => { this.onMsg(p, ev.data); };
+          dc.onclose = () => { p.dc = null; this.maybeClosed(); };
+        };
+      }
+    }
+    _sendHello(p) { p.helloAt = Date.now(); this.sendRaw(p, JSON.stringify({ k: 'hi', p: E.PROTOCOL })); }
+    onPeerSignal(from, data) {
+      const p = this.peers.get(from);
+      if (!p || !p.pc) return;
+      if (data.sdp) {
+        const s = data.sdp;
+        if (s.type === 'offer') {
+          p.pc.setRemoteDescription(s.sdp).then(() => p.pc.createAnswer()).then(a => p.pc.setLocalDescription(a))
+            .then(() => this.raw({ op: 'signal', to: from, data: { sdp: { type: 'answer', sdp: p.pc.localDescription } } }))
+            .catch(e => console.error('answer', e));
+        } else if (s.type === 'answer') { p.pc.setRemoteDescription(s.sdp).catch(e => console.error('set answer', e)); }
+        else if (s.type === 'cand') { try { p.pc.addIceCandidate(s.c); } catch (e) {} }
+      } else if (data.msg) { this.onMsg(p, data.msg); }
+    }
+    sendRaw(p, str) {
+      if (!p.dc || p.dc.readyState !== 'open') return;
+      if (str.length <= CHUNK) { p.dc.send(str); return; }
+      for (let i = 0; i < str.length; i += CHUNK) p.dc.send(str.slice(i, i + CHUNK));
+    }
+    // host -> all, host -> one, guest -> host
+    send(to, data) {
+      const p = this.peers.get(to);
+      if (p) this.sendRaw(p, typeof data === 'string' ? data : JSON.stringify(data));
+    }
+    toHost(data) { this.send(0, data); }
+    toAll(data) { for (const p of this.peers.values()) this.send(p.id, data); }
+    kick(id) { this.raw({ op: 'kick', id }); }
+    // onMsg: the first message each way must be the hello; protocol mismatch -> refuse
+    onMsg(p, data) {
+      if (!p.hello && data && data.startsWith && data.startsWith('{"k":"hi"')) {
+        let h; try { h = JSON.parse(data); } catch { return; }
+        if (h.k === 'hi') { p.hello = true; if (h.p !== E.PROTOCOL) { this.dropPeer(p.id); this.emit('error', { msg: 'version mismatch' }); return; } this.emit('hello', { id: p.id, open: true }); return; }
+      }
+      this.emit('msg', { from: p.id, data });
+    }
+    recover(p) {
+      if (p._rec) return; p._rec = true;
+      this.emit('recover', { id: p.id });
+      // ICE restart after a moment
+      setTimeout(() => { p.pc.restartIce(); p._rec = false; }, RECOVER_MS);
+    }
+    maybeClosed() { if (!this.peers.size && this.role !== 'host') this.emit('close'); }
+    dropPeer(id) { const p = this.peers.get(id); if (p) { try { p.pc.close(); } catch {} this.peers.delete(id); } this.emit('left', { id }); }
+    close() { for (const p of this.peers.values()) { try { p.pc.close(); } catch {} } this.peers.clear(); if (this.ws) this.ws.close(); }
+  }
+
+  E.Relay = Relay;
 })(window.E = window.E || {});
 
 // ---- js/render/camera.js ----
-// Camera manager: drives the camera from the possessed unit across all modes.
-// Modes:
-//   fps        on-foot first person (mouse-look, WASD in the controller)
-//   vehicle    chase cam behind a ground/air vehicle (mouse steers the vehicle)
-//   ship       capital-ship bridge: a high chase view showing the hull + space
-//   commander  free overhead / orbiting view for commanding the force
-// The camera is a pure function of (mode, unit, lookYaw/Pitch, distance, t).
+// Camera rig. One look direction (yaw/pitch, driven by the mouse) and a set of
+// framings chosen by what the player controls:
+//   infantry   over-the-shoulder third person (ADS / scope zoom)
+//   vehicle    orbiting chase camera; the turret follows the look direction
+//   fighter    chase camera behind the look direction; the craft banks to catch up
+//   capital    wide orbit around the hull
+//   commander  tilted overhead map view (pan / rotate / zoom)
+//   orbit      cinematic drift around a point (menus, deploy screen, death)
+// Also resolves the crosshair into a world aim point, and applies trauma shake.
 (function (E) {
   'use strict';
 
   class Camera {
     constructor(scene) {
-      this.scene = scene;
-      this.cam = scene.camera;
-      this.mode = 'commander';
-      this.unit = null;
-      this.lookYaw = 0;
-      this.lookPitch = 0;
-      this.dist = 18;
-      this.roll = 0;
-      this.cmdYaw = 0.8;      // orbit angle
-      this.cmdPitch = 1.0;    // elevation; + = above, looking down
-      this.cmdDist = 520;
-      this._sm = { p: E.V3.make(), r: 0, d: 18 };
-      this._tmp = E.V3.make();
-      this._look = E.V3.make(0, 0, -1);
+      this.scene = scene; this.cam = scene.camera;
+      this.yaw = 0; this.pitch = 0; this.zoom = 0;        // zoom 0..1 (ADS)
+      this.mode = 'orbit';
+      this.cmd = { x: 0, z: 0, yaw: 0.35, dist: 420, pitch: 0.95 };
+      this.orbit = { x: 0, y: 30, z: 0, r: 520, h: 150, a: 0, speed: 0.03 };
+      this.trauma = 0; this.fov = 60; this._p = new E.THREE.Vector3(0, 80, 200); this._l = new E.THREE.Vector3(); this._snap = true;
+      this.aimPoint = { x: 0, y: 0, z: 0 }; this.aimTarget = null; this.terrain = null;
+    }
+    look(dx, dy, sens) {
+      const k = sens * (1 - this.zoom * 0.6);
+      this.yaw -= dx * k; this.pitch = E.clamp(this.pitch - dy * k, -1.35, 1.35);
+    }
+    shake(p) { this.trauma = Math.min(1, this.trauma + p); }
+    snap() { this._snap = true; }
+
+    // view: { mode, pos {x,y,z} (smoothed unit position), unit, zoomFov }
+    update(dt, t, view) {
+      const cam = this.cam, T = E.THREE;
+      let px, py, pz, lx, ly, lz, fov = 62, stiff = 14;
+      const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+      const dx = sy * cp, dy = sp, dz = cy * cp;       // look direction
+      this.mode = view.mode;
+      if (view.mode === 'unit' && view.unit) {
+        const u = view.unit, p = view.pos, z = this.zoom;
+        if (u.kind === 'infantry') {
+          const D = E.lerp(3.5, 1.5, z), side = E.lerp(0.72, 0.5, z), hy = p.y + u.h * 0.9 + 0.2;
+          px = p.x - cy * side - dx * D; py = hy - dy * D + 0.1; pz = p.z + sy * side - dz * D;
+          fov = E.lerp(66, view.zoomFov || 44, z); stiff = 40;
+        } else if (u.kind === 'vehicle' || u.kind === 'turret') {
+          const D = u.r * 2.4 + 5.5; px = p.x - dx * D; py = p.y + u.h + 2.2 - dy * D; pz = p.z - dz * D; fov = E.lerp(64, 40, z); stiff = 12;
+        } else if (u.kind === 'fighter') {
+          const D = u.r * 3.2 + 3; px = p.x - dx * D; py = p.y - dy * D + 2.6; pz = p.z - dz * D;
+          fov = E.lerp(70 + Math.min(14, (u.spd || 0) * 0.07), 42, z); stiff = 9;
+        } else {
+          const D = u.def.len * 1.15; px = p.x - dx * D; py = p.y + u.h * 1.3 - dy * D; pz = p.z - dz * D; fov = E.lerp(58, 26, z); stiff = 5;
+        }
+        lx = px + dx * 200; ly = py + dy * 200; lz = pz + dz * 200;
+      } else if (view.mode === 'commander') {
+        const c = this.cmd, cpz = Math.cos(c.pitch), gy = this.terrain ? this.terrain.height(c.x, c.z) : 0;
+        px = c.x - Math.sin(c.yaw) * cpz * c.dist; py = gy + Math.sin(c.pitch) * c.dist; pz = c.z - Math.cos(c.yaw) * cpz * c.dist;
+        lx = c.x; ly = gy; lz = c.z; fov = 50; stiff = 9;
+      } else {
+        const o = this.orbit; o.a += dt * o.speed;
+        px = o.x + Math.cos(o.a) * o.r; py = o.y + o.h; pz = o.z + Math.sin(o.a) * o.r;
+        lx = o.x; ly = o.y; lz = o.z; fov = view.fov || 52; stiff = 2.5;
+      }
+      // keep above the ground
+      if (this.terrain) { const g = Math.max(this.terrain.height(px, pz), this.terrain.waterLevel) + 0.45; if (py < g) py = g; }
+      const k = this._snap ? 1 : 1 - Math.exp(-dt * stiff);
+      this._snap = false;
+      this._p.x += (px - this._p.x) * k; this._p.y += (py - this._p.y) * k; this._p.z += (pz - this._p.z) * k;
+      if (view.mode === 'unit') this._l.set(this._p.x + dx * 200, this._p.y + dy * 200, this._p.z + dz * 200);
+      else { this._l.x += (lx - this._l.x) * k; this._l.y += (ly - this._l.y) * k; this._l.z += (lz - this._l.z) * k; }
+      cam.position.copy(this._p);
+      cam.up.set(0, 1, 0);
+      cam.lookAt(this._l);
+      // trauma shake
+      if (this.trauma > 0.001) {
+        const s = this.trauma * this.trauma;
+        cam.rotation.x += (Math.sin(t * 71) + Math.sin(t * 113)) * 0.012 * s; cam.rotation.y += (Math.sin(t * 83) + Math.cos(t * 97)) * 0.012 * s; cam.rotation.z += Math.sin(t * 59) * 0.02 * s;
+        this.trauma = Math.max(0, this.trauma - dt * 1.4);
+      }
+      this.fov += (fov - this.fov) * Math.min(1, dt * 10);
+      if (Math.abs(cam.fov - this.fov) > 0.01) { cam.fov = this.fov; cam.updateProjectionMatrix(); }
+      cam.updateMatrixWorld();
     }
 
-    setMode(mode, unit) {
-      const id = unit ? unit.id : null;
-      if (id !== this._focusId) { this._snap = true; this._focusId = id; }
-      this.mode = mode;
-      this.unit = unit;
-      if (unit) {
-        this.lookYaw = unit.yaw || 0;
-        this.lookPitch = mode === 'fps' ? 0 : 0;
-        this.dist = mode === 'fps' ? 0 : mode === 'vehicle' ? 16 : mode === 'ship' ? 55 : 120;
+    // Resolve the screen-centre ray into a world aim point + the yaw/pitch the
+    // unit must fire along to hit it.
+    aim(world, u, range) {
+      const o = this._p, cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+      const d = { x: sy * cp, y: sp, z: cy * cp };
+      const minT = Math.hypot(u.pos.x - o.x, u.pos.y + u.h - o.y, u.pos.z - o.z) + 2.5;
+      let best = range || 500, tgt = null;
+      const tg = world.terrain.raycast(o, d, best);
+      if (tg > minT && tg < best) best = tg;
+      for (const e of world.units) {
+        if (!e.alive || e === u || e.team === u.team) continue;
+        const cx = e.pos.x - o.x, cyy = e.pos.y + (e.kind === 'infantry' || e.kind === 'vehicle' || e.kind === 'turret' ? e.h * 0.5 : 0) - o.y, cz = e.pos.z - o.z;
+        const tc = cx * d.x + cyy * d.y + cz * d.z; if (tc < minT || tc > best + e.r) continue;
+        const r = e.kind === 'capital' ? e.h * 1.3 : e.kind === 'infantry' ? 1.1 : e.r * 1.15;
+        const d2 = cx * cx + cyy * cyy + cz * cz - tc * tc;
+        if (d2 < r * r) { const th = tc - Math.sqrt(r * r - d2) * 0.5; if (th < best) { best = Math.max(minT, th); tgt = e; } }
       }
+      const ap = this.aimPoint; ap.x = o.x + d.x * best; ap.y = o.y + d.y * best; ap.z = o.z + d.z * best;
+      this.aimTarget = tgt;
+      const ex = u.pos.x, ey = u.pos.y + (u.kind === 'infantry' ? u.h * 0.84 : u.h * 0.8), ez = u.pos.z;
+      const ax = ap.x - ex, ay = ap.y - ey, az = ap.z - ez;
+      return { yaw: Math.atan2(ax, az), pitch: Math.atan2(ay, Math.hypot(ax, az)), target: tgt, dist: best };
     }
 
-    // controller calls this when the player turns (mouse / strafe)
-    look(dYaw, dPitch) {
-      this.lookYaw += dYaw;
-      this.lookPitch = E.clamp(this.lookPitch + dPitch, -1.35, 1.35);
+    // ground point under a screen pixel (commander picking)
+    pick(sx, sy, world) {
+      const T = E.THREE, v = new T.Vector3((sx / window.innerWidth) * 2 - 1, -(sy / window.innerHeight) * 2 + 1, 0.5).unproject(this.cam);
+      const o = this.cam.position, d = v.sub(o).normalize();
+      const t = world.terrain.raycast(o, d, 6000);
+      return t > 0 ? { x: o.x + d.x * t, y: o.y + d.y * t, z: o.z + d.z * t } : null;
     }
-
-    // update the camera to follow the unit at time t (render frame)
-    update(dt, t) {
-      const cam = this.cam, u = this.unit;
-      if (!u) { this.commander(dt, t); return; }
-
-      const pos = u.pos || E.V3.make(0, 0, 0);
-      const yaw = u.yaw || 0;
-      const up = E.V3.make(0, 1, 0);
-      const fwd = E.V3.make(Math.sin(yaw), 0, Math.cos(yaw));
-
-      if (this.mode === 'fps') {
-        // camera at eye height, oriented by yaw/pitch
-        cam.position.set(pos.x, pos.y + (u.viewH || 1.7), pos.z);
-        const dir = E.V3.make(
-          Math.sin(yaw) * Math.cos(this.lookPitch),
-          Math.sin(this.lookPitch),
-          Math.cos(yaw) * Math.cos(this.lookPitch),
-        );
-        cam.up.set(0, 1, 0);
-        cam.lookAt(E.V3.add(cam.position, dir, E.V3.make()));
-        cam.fov = 72; cam.updateProjectionMatrix();
-        return;
-      }
-
-      if (this.mode === 'vehicle') {
-        const d = this.dist;
-        const back = E.V3.scale(fwd, -d, E.V3.make());
-        const eye = E.V3.add(pos, back, E.V3.make());
-        eye.y += 5 + Math.abs(this.lookPitch) * 6;
-        // smooth (snap on re-focus)
-        let k = 1 - Math.exp(-dt * 8);
-        if (this._snap) { this._sm.p = E.V3.clone(eye); this._snap = false; k = 1; }
-        this._sm.p = E.V3.lerp(this._sm.p, eye, k, this._sm.p);
-        cam.position.set(this._sm.p.x, this._sm.p.y, this._sm.p.z);
-        cam.up.set(0, 1, 0);
-        const target = E.V3.add(pos, E.V3.make(0, 3, 0), E.V3.make());
-        target.x += Math.sin(yaw + this.lookYaw * 0.3) * 4;
-        cam.lookAt(target);
-        cam.fov = 68; cam.updateProjectionMatrix();
-        return;
-      }
-
-      if (this.mode === 'ship') {
-        // close third-person from the flight deck: the massive hull fills the
-        // lower frame, looking out toward the horizon / enemy ahead
-        const d = Math.min(this.dist, 70);
-        const back = E.V3.scale(fwd, -d, E.V3.make());
-        const eye = E.V3.add(pos, back, E.V3.make());
-        eye.y += 22;
-        let k = 1 - Math.exp(-dt * 5);
-        if (this._snap) { this._sm.p = E.V3.clone(eye); this._snap = false; k = 1; }
-        this._sm.p = E.V3.lerp(this._sm.p, eye, k, this._sm.p);
-        cam.position.set(this._sm.p.x, this._sm.p.y, this._sm.p.z);
-        cam.up.set(0, 1, 0);
-        const target = E.V3.make(pos.x + fwd.x * 300, pos.y - 14, pos.z + fwd.z * 300);
-        cam.lookAt(target);
-        cam.fov = 66; cam.updateProjectionMatrix();
-        return;
-      }
-
-      this.commander(dt, t);
-    }
-
-    // Free orbiting view for the commander. The controller steers this with
-    // arrow keys / Q,E (orbit), R,F (height). The camera orbits a focus point.
-    commander(dt, t) {
-      const u = this.unit;
-      const cx = u ? (u.pos ? u.pos.x : u.x) : 0;
-      const cy = u ? (u.pos ? u.pos.y : u.y) : 0;
-      const cz = u ? (u.pos ? u.pos.z : u.z) : 0;
-      this.cmdYaw = (this.cmdYaw === undefined) ? t * 0.05 : this.cmdYaw;
-      this.cmdPitch = this.cmdPitch === undefined ? 1.0 : this.cmdPitch;   // elevation; + = above, looking down
-      this.cmdDist = this.cmdDist === undefined ? 520 : this.cmdDist;
-      const cp = Math.cos(this.cmdPitch), sp = Math.sin(this.cmdPitch);
-      const eye = E.V3.make(
-        cx + Math.sin(this.cmdYaw) * cp * this.cmdDist,
-        cy + sp * this.cmdDist,
-        cz + Math.cos(this.cmdYaw) * cp * this.cmdDist,
-      );
-      const k = 1 - Math.exp(-dt * 5);
-      this._sm.p = E.V3.lerp(this._sm.p, eye, k, this._sm.p);
-      this.cam.position.set(this._sm.p.x, this._sm.p.y, this._sm.p.z);
-      this.cam.up.set(0, 1, 0);
-      this.cam.lookAt(cx, cy, cz);
-      this.cam.fov = 58; this.cam.updateProjectionMatrix();
-    }
-
-    // aim a world-space reticle from the current view (for targeting/selecting)
-    aimRay(origin, dir) {
-      if (this.mode === 'fps' || this.mode === 'vehicle') {
-        this.cam.getWorldDirection(dir);
-        origin.copy ? origin.set(this.cam.position.x, this.cam.position.y, this.cam.position.z) : 0;
-      }
-      return { origin, dir };
+    project(p, out) {
+      const v = (this._pv || (this._pv = new E.THREE.Vector3())).set(p.x, p.y, p.z).project(this.cam);
+      out.x = (v.x * 0.5 + 0.5) * window.innerWidth; out.y = (-v.y * 0.5 + 0.5) * window.innerHeight; out.vis = v.z < 1 && v.z > -1;
+      return out;
     }
   }
 
@@ -1749,1355 +2747,2665 @@
 })(window.E = window.E || {});
 
 // ---- js/render/fx.js ----
-// Visual effects: projectile tracers (a single Points cloud), and a pool of
-// expanding billboard "flashes" (muzzle, impact, explosion, shield) that expand
-// and fade. Driven by world.projectiles and world.drainEvents(). Browser-only.
+// Visual effects: instanced energy bolts, two CPU particle systems (additive
+// fire/sparks/glow and alpha-blended smoke/dust), shockwave rings, pooled
+// explosion lights, strike markers and biome weather. Driven by
+// world.projectiles and the sim's drained events. Browser-only.
 (function (E) {
   'use strict';
 
-  function radialTexture() {
+  const TEAM_BOLT = { aegis: [1.0, 0.2, 0.06], verdant: [0.15, 1.0, 0.32] };
+  const HOT = [1.0, 0.82, 0.5];
+
+  function softTex(kind) {
     const T = E.THREE, c = document.createElement('canvas'); c.width = c.height = 64;
-    const x = c.getContext('2d');
-    const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
-    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.35, 'rgba(255,255,255,0.7)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    const x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    if (kind === 'smoke') { g.addColorStop(0, 'rgba(255,255,255,0.9)'); g.addColorStop(0.5, 'rgba(255,255,255,0.45)'); g.addColorStop(1, 'rgba(255,255,255,0)'); }
+    else { g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,255,255,0.75)'); g.addColorStop(0.6, 'rgba(255,255,255,0.18)'); g.addColorStop(1, 'rgba(255,255,255,0)'); }
     x.fillStyle = g; x.fillRect(0, 0, 64, 64);
-    const t = new T.CanvasTexture(c); t.needsUpdate = true; return t;
+    if (kind === 'smoke') { // break up the disc so smoke reads as billows
+      const id = x.getImageData(0, 0, 64, 64), d = id.data; let s = 7;
+      for (let i = 0; i < d.length; i += 4) { s = (s * 16807) % 2147483647; const px = (i / 4) % 64, py = (i / 4 / 64) | 0; d[i + 3] *= 0.72 + 0.28 * Math.sin(px * 0.5 + (s % 7)) * Math.cos(py * 0.45); }
+      x.putImageData(id, 0, 0);
+    }
+    const t = new T.CanvasTexture(c); t.colorSpace = T.NoColorSpace; return t;
+  }
+  function boltTex() {
+    const T = E.THREE, c = document.createElement('canvas'); c.width = 16; c.height = 128;
+    const x = c.getContext('2d'), id = x.createImageData(16, 128), d = id.data;
+    for (let y = 0; y < 128; y++) for (let px = 0; px < 16; px++) {
+      const u = (px + 0.5) / 16 * 2 - 1, v = 1 - (y + 0.5) / 128;                 // v: 0 tail .. 1 head
+      const w = Math.exp(-u * u * 5.5), l = Math.pow(Math.sin(Math.min(1, v * 1.02) * Math.PI), 0.6) * (0.35 + 0.65 * v);
+      const core = Math.exp(-u * u * 40) * l, a = w * l, i = (y * 16 + px) * 4;
+      d[i] = d[i + 1] = d[i + 2] = Math.min(255, (a * 0.75 + core * 1.2) * 255); d[i + 3] = 255;
+    }
+    x.putImageData(id, 0, 0);
+    const t = new T.CanvasTexture(c); t.colorSpace = T.NoColorSpace; return t;
   }
 
-  class FX {
-    constructor(scene) {
+  class Particles {
+    constructor(scene, n, additive, tex) {
       const T = E.THREE;
-      this.scene = scene;
-      this.tex = radialTexture();
-      this.flashes = [];
-      this.pool = [];
-      // projectile Points cloud
-      const N = 1024;
-      this.capN = N;
-      this.pPos = new Float32Array(N * 3);
-      this.pCol = new Float32Array(N * 3);
-      this.pGeo = new T.BufferGeometry();
-      this.pGeo.setAttribute('position', new T.BufferAttribute(this.pPos, 3).setUsage(T.DynamicDrawUsage));
-      this.pGeo.setAttribute('color', new T.BufferAttribute(this.pCol, 3).setUsage(T.DynamicDrawUsage));
-      this.pMat = new T.PointsMaterial({ size: 6, map: this.tex, transparent: true, depthWrite: false, blending: T.AdditiveBlending, vertexColors: true, sizeAttenuation: true });
-      this.points = new T.Points(this.pGeo, this.pMat);
-      this.points.frustumCulled = false;
-      this.points.visible = false;
-      scene.fx.add(this.points);
+      this.n = n; this.i = 0; this.live = 0;
+      this.p = new Float32Array(n * 3); this.v = new Float32Array(n * 3); this.c = new Float32Array(n * 4); this.s = new Float32Array(n);
+      this.life = new Float32Array(n); this.max = new Float32Array(n); this.s0 = new Float32Array(n); this.s1 = new Float32Array(n);
+      this.c0 = new Float32Array(n * 4); this.drag = new Float32Array(n); this.grav = new Float32Array(n);
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.BufferAttribute(this.p, 3).setUsage(T.DynamicDrawUsage));
+      g.setAttribute('aColor', new T.BufferAttribute(this.c, 4).setUsage(T.DynamicDrawUsage));
+      g.setAttribute('aSize', new T.BufferAttribute(this.s, 1).setUsage(T.DynamicDrawUsage));
+      this.mat = new T.ShaderMaterial({
+        transparent: true, depthWrite: false, blending: additive ? T.AdditiveBlending : T.NormalBlending,
+        uniforms: { map: { value: tex }, uScale: { value: 600 } },
+        vertexShader: 'attribute vec4 aColor; attribute float aSize; varying vec4 vC; uniform float uScale; void main(){ vC = aColor; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = min(aSize * uScale / max(-mv.z, 0.1), 900.0); gl_Position = projectionMatrix * mv; }',
+        fragmentShader: 'varying vec4 vC; uniform sampler2D map; void main(){ float a = texture2D(map, gl_PointCoord).r; gl_FragColor = vec4(vC.rgb' + (additive ? ' * a * vC.a, 1.0' : ', a * vC.a') + '); }',
+      });
+      this.pts = new T.Points(g, this.mat); this.pts.frustumCulled = false; this.pts.renderOrder = additive ? 6 : 5;
+      this.geo = g; scene.fx.add(this.pts);
     }
-
-    // spawn a billboard flash
-    flash(pos, opts) {
-      opts = opts || {};
-      let f = this.pool.pop();
-      if (!f) {
-        const T = E.THREE;
-        const m = new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ map: this.tex, transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide }));
-        f = { mesh: m, life: 0, max: 0.3, size: 4, col: new T.Color(1, 1, 1), rot: Math.random() * 6.28 };
-        this.scene.fx.add(f.mesh);
-      }
-      f.life = f.max = opts.max || 0.3;
-      f.size = opts.size || 6;
-      f.col.set(opts.color || '#ffffff');
-      f.mesh.material.color.copy(f.col);
-      f.mesh.position.set(pos.x, pos.y, pos.z);
-      f.mesh.visible = true;
-      this.flashes.push(f);
+    emit(x, y, z, vx, vy, vz, life, s0, s1, r, g, b, a, drag, grav) {
+      const i = this.i; this.i = (i + 1) % this.n;
+      this.p[i * 3] = x; this.p[i * 3 + 1] = y; this.p[i * 3 + 2] = z; this.v[i * 3] = vx; this.v[i * 3 + 1] = vy; this.v[i * 3 + 2] = vz;
+      this.life[i] = this.max[i] = life; this.s0[i] = s0; this.s1[i] = s1;
+      this.c0[i * 4] = r; this.c0[i * 4 + 1] = g; this.c0[i * 4 + 2] = b; this.c0[i * 4 + 3] = a;
+      this.drag[i] = drag || 0; this.grav[i] = grav || 0;
     }
-
-    boom(pos, color, big) {
-      const n = big ? 7 : 3;
+    update(dt) {
+      const n = this.n, p = this.p, v = this.v, c = this.c, c0 = this.c0;
       for (let i = 0; i < n; i++) {
-        const a = Math.random() * 6.28, d = Math.random() * (big ? 30 : 10);
-        this.flash({ x: pos.x + Math.cos(a) * d, y: pos.y + (Math.random() - 0.3) * (big ? 25 : 8), z: pos.z + Math.sin(a) * d },
-          { color, max: (big ? 0.6 : 0.3) + Math.random() * 0.3, size: (big ? 40 : 14) + Math.random() * 20 });
+        let l = this.life[i];
+        if (l <= 0) { if (this.s[i] !== 0) this.s[i] = 0; continue; }
+        l -= dt; this.life[i] = l;
+        if (l <= 0) { this.s[i] = 0; continue; }
+        const k = 1 - l / this.max[i], j = i * 3, q = i * 4, dr = Math.max(0, 1 - this.drag[i] * dt);
+        v[j] *= dr; v[j + 1] = v[j + 1] * dr - this.grav[i] * dt; v[j + 2] *= dr;
+        p[j] += v[j] * dt; p[j + 1] += v[j + 1] * dt; p[j + 2] += v[j + 2] * dt;
+        this.s[i] = this.s0[i] + (this.s1[i] - this.s0[i]) * Math.sqrt(k);
+        const fade = k < 0.12 ? k / 0.12 : 1 - (k - 0.12) / 0.88;
+        c[q] = c0[q]; c[q + 1] = c0[q + 1] * (1 - k * 0.45); c[q + 2] = c0[q + 2] * (1 - k * 0.8); c[q + 3] = c0[q + 3] * fade;
       }
+      this.geo.attributes.position.needsUpdate = true; this.geo.attributes.aColor.needsUpdate = true; this.geo.attributes.aSize.needsUpdate = true;
+    }
+  }
+
+  const WEATHER = {
+    snow:   { n: 2600, col: [1, 1, 1], size: 0.16, fall: 3.5, wind: 5, a: 0.9, stretch: 0 },
+    dust:   { n: 1200, col: [0.95, 0.8, 0.58], size: 0.2, fall: 0.2, wind: 16, a: 0.35, stretch: 0 },
+    rain:   { n: 3600, col: [0.75, 0.86, 1], size: 0.12, fall: 42, wind: 8, a: 0.55, stretch: 1 },
+    ash:    { n: 1500, col: [0.5, 0.48, 0.47], size: 0.18, fall: 1.2, wind: 4, a: 0.75, stretch: 0 },
+    embers: { n: 1400, col: [5, 1.6, 0.3], size: 0.13, fall: -2.4, wind: 6, a: 1, stretch: 0, add: 1 },
+    bands:  { n: 1400, col: [2.2, 1.0, 3.0], size: 0.15, fall: -0.6, wind: 14, a: 0.8, stretch: 0, add: 1 },
+  };
+
+  class FX {
+    constructor(scene, quality) {
+      const T = E.THREE;
+      this.scene = scene; this.q = quality || 1;
+      this.rng = E.RNG(12345);
+      this.add = new Particles(scene, Math.round(5000 * this.q), true, softTex('glow'));
+      this.smoke = new Particles(scene, Math.round(2600 * this.q), false, softTex('smoke'));
+      this.dustCol = [0.6, 0.5, 0.4]; this.onShake = null;
+      // bolts
+      const a = new T.PlaneGeometry(1, 1).rotateX(Math.PI / 2), b = new T.PlaneGeometry(1, 1).rotateX(Math.PI / 2).rotateZ(Math.PI / 2);
+      const bg = T.mergeGeometries([a, b]);
+      this.boltN = 1400;
+      this.bolts = new T.InstancedMesh(bg, new T.MeshBasicMaterial({ map: boltTex(), transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false }), this.boltN);
+      this.bolts.frustumCulled = false; this.bolts.count = 0; this.bolts.renderOrder = 7;
+      this.bolts.setColorAt(0, new T.Color(1, 1, 1));
+      scene.fx.add(this.bolts);
+      // solid ordnance (grenades, bombs)
+      this.shells = new T.InstancedMesh(new T.IcosahedronGeometry(1, 0), new T.MeshStandardMaterial({ color: 0x15171c, roughness: 0.5, metalness: 0.7, emissive: 0xff5a1a, emissiveIntensity: 0.6 }), 128);
+      this.shells.frustumCulled = false; this.shells.count = 0; scene.fx.add(this.shells);
+      // shockwave rings + markers
+      this.rings = []; this.ringPool = [];
+      this.ringGeo = new T.RingGeometry(0.82, 1, 48).rotateX(-Math.PI / 2);
+      // explosion lights
+      this.lights = [];
+      for (let i = 0; i < 4; i++) { const l = new T.PointLight(0xffa050, 0, 120, 1.6); l.userData.t = 0; scene.fx.add(l); this.lights.push(l); }
+      this.emitters = []; this.weather = null;
+      this._m = new T.Matrix4(); this._q = new T.Quaternion(); this._v = new T.Vector3(); this._s = new T.Vector3(); this._z = new T.Vector3(0, 0, 1); this._c = new T.Color();
     }
 
-    // apply drained sim events
-    applyEvents(events) {
+    setBiome(biome, terrain) {
+      const T = E.THREE, c = biome.palette.low;
+      this.dustCol = [c[0] / 255 * 0.9, c[1] / 255 * 0.9, c[2] / 255 * 0.9]; this.terrain = terrain;
+      if (this.weather) { this.scene.fx.remove(this.weather); this.weather.geometry.dispose(); this.weather = null; }
+      const W = WEATHER[(biome.weather || {}).kind]; if (!W) return;
+      const n = Math.round(W.n * this.q * (biome.weather.density || 0.5) * 1.4), pos = new Float32Array(n * 3), r = E.RNG(99);
+      for (let i = 0; i < n * 3; i++) pos[i] = r.next();
+      const g = new T.BufferGeometry(); g.setAttribute('position', new T.BufferAttribute(pos, 3));
+      const m = new T.ShaderMaterial({
+        transparent: true, depthWrite: false, blending: W.add ? T.AdditiveBlending : T.NormalBlending,
+        uniforms: { time: { value: 0 }, cam: { value: new T.Vector3() }, col: { value: new T.Vector3(W.col[0], W.col[1], W.col[2]) }, size: { value: W.size }, fall: { value: W.fall }, wind: { value: W.wind }, alpha: { value: W.a }, uScale: { value: 600 }, stretch: { value: W.stretch } },
+        vertexShader: `uniform float time, size, fall, wind, uScale, stretch; uniform vec3 cam; varying float vA;
+          void main(){ vec3 B = vec3(90.0, 60.0, 90.0);
+            vec3 p = position * B; p.y -= time * fall; p.x += time * wind + sin(time * 0.7 + position.z * 40.0) * 1.5; p.z += time * wind * 0.4;
+            p = mod(p - cam, B) - B * 0.5 + cam;
+            vec4 mv = modelViewMatrix * vec4(p, 1.0); float d = max(-mv.z, 0.1);
+            vA = smoothstep(45.0, 28.0, length(p - cam)) * smoothstep(0.6, 3.0, d);
+            gl_PointSize = min(size * (1.0 + stretch * 5.0) * uScale / d, 64.0); gl_Position = projectionMatrix * mv; }`,
+        fragmentShader: `uniform vec3 col; uniform float alpha, stretch; varying float vA;
+          void main(){ vec2 c = gl_PointCoord - 0.5; float a = stretch > 0.5 ? smoothstep(0.09, 0.0, abs(c.x + c.y * 0.12)) * smoothstep(0.5, 0.2, abs(c.y)) : smoothstep(0.5, 0.1, length(c));
+            gl_FragColor = vec4(col, a * alpha * vA); }`,
+      });
+      this.weather = new T.Points(g, m); this.weather.frustumCulled = false; this.weather.renderOrder = 8;
+      this.scene.fx.add(this.weather);
+    }
+
+    // ── primitives ───────────────────────────────────────────
+    spark(p, n, col, speed, life, size) {
+      const r = this.rng;
+      for (let i = 0; i < n; i++) {
+        const a = r.angle(), e = Math.acos(r.f(-0.2, 1)), s = speed * r.f(0.4, 1);
+        this.add.emit(p.x, p.y, p.z, Math.sin(e) * Math.cos(a) * s, Math.cos(e) * s, Math.sin(e) * Math.sin(a) * s, life * r.f(0.5, 1), size, size * 0.3, col[0] * 3.2, col[1] * 3.2, col[2] * 3.2, 1, 1.2, 14);
+      }
+    }
+    puff(p, n, col, size, life, rise, spread) {
+      const r = this.rng;
+      for (let i = 0; i < n; i++) {
+        const a = r.angle(), s = (spread || size) * r.f(0.2, 1), k = r.f(0.75, 1.1);
+        this.smoke.emit(p.x + Math.cos(a) * s * 0.3, p.y + r.f(0, size * 0.3), p.z + Math.sin(a) * s * 0.3, Math.cos(a) * s * 0.8, (rise || 1.5) * r.f(0.5, 1.4), Math.sin(a) * s * 0.8,
+          life * r.f(0.6, 1.2), size * 0.5, size * r.f(1.6, 2.6), col[0] * k, col[1] * k, col[2] * k, r.f(0.35, 0.6), 1.4, -0.3);
+      }
+    }
+    flash(p, size, col, life) { this.add.emit(p.x, p.y, p.z, 0, 0, 0, life || 0.12, size, size * 1.5, col[0] * 3, col[1] * 3, col[2] * 3, 1, 0, 0); }
+    ring(p, r1, col, life, flat) {
+      const T = E.THREE;
+      let m = this.ringPool.pop();
+      if (!m) { m = new T.Mesh(this.ringGeo, new T.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false })); m.renderOrder = 6; this.scene.fx.add(m); }
+      m.visible = true; m.position.set(p.x, p.y + 0.3, p.z); m.material.color.setRGB(col[0] * 2, col[1] * 2, col[2] * 2);
+      this.rings.push({ m, t: 0, life: life || 0.5, r1, flat: !!flat });
+    }
+    light(p, col, power, dist) {
+      let best = this.lights[0];
+      for (const l of this.lights) if (l.userData.t < best.userData.t) best = l;
+      best.position.set(p.x, p.y + 2, p.z); best.color.setRGB(col[0], col[1], col[2]); best.intensity = power; best.distance = dist; best.userData.t = 1; best.userData.p = power;
+    }
+    explosion(p, size, col) {
+      const r = this.rng, c = col || HOT, k = Math.min(3, 0.6 + size / 9);
+      this.flash(p, size * 3.2, [1, 0.9, 0.7], 0.14);
+      const nf = Math.round(7 * k * this.q) + 3;
+      for (let i = 0; i < nf; i++) {
+        const a = r.angle(), e = Math.acos(r.f(-0.1, 1)), s = size * r.f(0.6, 2.2);
+        this.add.emit(p.x, p.y + size * 0.15, p.z, Math.sin(e) * Math.cos(a) * s, Math.cos(e) * s * 0.9 + size * 0.3, Math.sin(e) * Math.sin(a) * s, r.f(0.35, 0.85), size * 0.5, size * r.f(1.1, 1.9), c[0] * 2.6, c[1] * 1.5, c[2] * 0.7, 1, 2.2, -1);
+      }
+      this.spark(p, Math.round(9 * k * this.q), [1, 0.7, 0.35], size * 4.5, 1.1, Math.max(0.25, size * 0.05));
+      this.puff({ x: p.x, y: p.y + size * 0.2, z: p.z }, Math.round(6 * k * this.q) + 2, [0.13, 0.12, 0.12], size * 0.95, 2.8, size * 0.35 + 1.5, size * 1.4);
+      this.ring(p, size * 2.6, [1, 0.75, 0.45], 0.45);
+      this.light(p, [1, 0.6, 0.3], 40 * size, size * 9 + 30);
+      if (this.onShake) this.onShake(p, size);
+    }
+    dustHit(p, size) { this.puff(p, 3, this.dustCol, size, 1.1, 1.2, size * 1.5); }
+    emitter(o) { this.emitters.push(Object.assign({ t: 0, acc: 0 }, o)); }
+
+    // ── sim events ───────────────────────────────────────────
+    applyEvents(events, world) {
+      const cam = this.scene.camera.position;
       for (const e of events) {
-        if (e.type === 'muzzle') this.flash(e.pos, { color: E.faction(e.faction).palette.engine, max: 0.08, size: 8 });
-        else if (e.type === 'impact') this.flash(e.pos, { color: E.faction(e.faction).palette.engine, max: 0.18, size: 10 });
-        else if (e.type === 'shieldhit') this.flash(e.pos, { color: E.faction(e.team).palette.shield, max: 0.25, size: 22 });
-        else if (e.type === 'death') {
-          const c = E.faction(e.faction).palette.engine;
-          this.boom(e.pos, c, e.kind === 'capital' ? true : e.kind === 'vehicle' ? true : false);
-        }         else if (e.type === 'launch') this.flash(e.pos, { color: E.faction(e.faction).palette.engine, max: 0.5, size: 26 });
-        else if (e.type === 'objectiveCaptured') {
-          this.boom(e.pos, e.team === 'aegis' ? '#ff5a2b' : '#3df0b0', true);
+        if (e.type === 'fire') {
+          const W = E.WEAPONS[e.wk] || {}, c = TEAM_BOLT[e.team] || HOT, sc = W.scale || 1;
+          if (E.distXZ2(cam, e.pos) > 900 * 900 && sc < 2) continue;
+          if (W.kind === 'bolt' || W.kind === 'turbo') this.flash(e.pos, 1.3 * sc, c, 0.07);
+          else if (W.kind === 'shell' || W.kind === 'rocket' || W.kind === 'missile') { this.flash(e.pos, 3.2 * sc, HOT, 0.1); this.puff(e.pos, 3, [0.5, 0.5, 0.5], 1.2 * sc, 0.9, 0.6, 2); }
+        } else if (e.type === 'impact') {
+          const W = E.WEAPONS[e.wk] || {}, c = TEAM_BOLT[e.team] || HOT;
+          if (e.splash > 0) {
+            if (e.surf === 'water') { this.puff(e.pos, 8, [0.85, 0.92, 1], e.splash * 0.7, 1.6, e.splash * 0.9, e.splash); this.ring(e.pos, e.splash * 1.6, [0.6, 0.8, 1], 0.7, true); }
+            else this.explosion(e.pos, e.splash, e.wk === 'orbital' || W.kind === 'turbo' ? c : null);
+            if (e.surf === 'ground') this.puff(e.pos, 5, this.dustCol, e.splash * 0.8, 2.2, 2.5, e.splash * 1.6);
+          } else if (e.surf === 'shield') { const sc = E.faction(e.team === 'aegis' ? 'verdant' : 'aegis').palette.shield; this.flash(e.pos, e.big ? 16 : 3.2, [sc[0] / 255, sc[1] / 255, sc[2] / 255], 0.22); this.spark(e.pos, 2, [0.5, 0.8, 1], 6, 0.3, 0.14); }
+          else if (e.surf === 'unit') { this.spark(e.pos, e.big ? 6 : 4, c, e.big ? 26 : 9, 0.4, e.big ? 0.5 : 0.14); this.flash(e.pos, e.big ? 9 : 1.6, c, 0.1); }
+          else if (e.surf === 'water') this.puff(e.pos, 2, [0.85, 0.92, 1], 0.6, 0.6, 2.5, 0.6);
+          else { this.dustHit(e.pos, 0.7); this.spark(e.pos, 2, c, 5, 0.25, 0.12); }
+        } else if (e.type === 'death') {
+          const F = E.faction(e.team).palette.engine, c = [F[0] / 255, F[1] / 255, F[2] / 255];
+          if (e.kind === 'infantry') { this.spark(e.pos, 5, HOT, 5, 0.4, 0.12); this.puff({ x: e.pos.x, y: e.pos.y + 1, z: e.pos.z }, 2, [0.2, 0.2, 0.2], 0.9, 1.2, 1); }
+          else if (e.kind === 'capital') { /* the renderer stages the breakup */ }
+          else {
+            this.explosion({ x: e.pos.x, y: e.pos.y + 1, z: e.pos.z }, e.kind === 'vehicle' ? 9 : 7);
+            if (e.kind !== 'fighter') this.emitter({ pos: { x: e.pos.x, y: e.pos.y + 1.2, z: e.pos.z }, life: 10, rate: 7, kind: 'burn' });
+            else this.emitter({ pos: E.V3.clone(e.pos), vel: { x: e.vel.x * 0.6, y: e.vel.y * 0.6, z: e.vel.z * 0.6 }, life: 3.5, rate: 26, kind: 'debris', grav: 16 });
+          }
+        } else if (e.type === 'capture') { const c = TEAM_BOLT[e.team]; this.ring(e.pos, 46, c, 1.2, true); this.spark({ x: e.pos.x, y: e.pos.y + 4, z: e.pos.z }, 30, c, 22, 1.6, 0.3); this.light(e.pos, c, 300, 90); }
+        else if (e.type === 'heal') { this.ring(e.pos, e.r, [0.3, 1, 0.6], 0.8, true); for (let i = 0; i < 10; i++) this.add.emit(e.pos.x + this.rng.f(-4, 4), e.pos.y + 0.4, e.pos.z + this.rng.f(-4, 4), 0, this.rng.f(2, 5), 0, 1.1, 0.3, 0.1, 0.6, 3, 1.4, 1, 0.5, 0); }
+        else if (e.type === 'strikeWarn') this.rings.push({ m: this._marker(e.pos, e.r), t: 0, life: 6.2, r1: e.r, flat: true, marker: true });
+        else if (e.type === 'launch') this.flash(e.pos, 14, HOT, 0.4);
+      }
+    }
+    _marker(p, r) {
+      const T = E.THREE, m = new T.Mesh(this.ringGeo, new T.MeshBasicMaterial({ color: new T.Color(3, 0.25, 0.1), transparent: true, depthWrite: false, depthTest: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false }));
+      m.position.set(p.x, (this.terrain ? this.terrain.height(p.x, p.z) : p.y) + 0.6, p.z); m.scale.setScalar(r); m.renderOrder = 6; this.scene.fx.add(m);
+      return m;
+    }
+
+    // projectiles -> instanced bolts / shells, plus exhaust trails
+    syncProjectiles(list, dt) {
+      const T = E.THREE, m = this._m, q = this._q, v = this._v, s = this._s, col = this._c;
+      let nb = 0, ns = 0;
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i], sp = Math.hypot(p.vel.x, p.vel.y, p.vel.z) || 1;
+        const k = p.kind, c = TEAM_BOLT[p.team] || HOT;
+        if (k === 'grenade' || k === 'bomb') {
+          if (ns < 128) { const r = k === 'bomb' ? 0.7 : 0.22; m.makeScale(r, r, r); m.setPosition(p.pos.x, p.pos.y, p.pos.z); this.shells.setMatrixAt(ns++, m); }
+          if (k === 'bomb') this.add.emit(p.pos.x, p.pos.y, p.pos.z, 0, 0, 0, 0.25, 1.4, 0.3, c[0] * 2, c[1] * 2, c[2] * 2, 1, 0, 0);
+          continue;
         }
+        if (nb >= this.boltN) continue;
+        let len, wid, r = c[0], g = c[1], b = c[2], I = 5;
+        const sc = p.scale || 1;
+        if (k === 'bolt' || k === 'turbo') { len = E.clamp(sp * 0.032, 2.5, 26) * (0.6 + sc * 0.5); wid = 0.34 * sc; }
+        else if (k === 'shell') { len = 5; wid = 0.5; r = 1; g = 0.8; b = 0.5; I = 4; }
+        else { len = 3.2 * sc; wid = 0.55 * sc; r = 1; g = 0.7; b = 0.3; I = 6;
+          this.smoke.emit(p.pos.x, p.pos.y, p.pos.z, this.rng.f(-0.5, 0.5), this.rng.f(0, 0.8), this.rng.f(-0.5, 0.5), 1.3, 0.5 * sc, 2.2 * sc, 0.75, 0.75, 0.78, 0.4, 0.8, -0.2);
+          this.add.emit(p.pos.x, p.pos.y, p.pos.z, 0, 0, 0, 0.12, 1.6 * sc, 0.4, 3, 1.6, 0.5, 1, 0, 0); }
+        v.set(p.vel.x / sp, p.vel.y / sp, p.vel.z / sp); q.setFromUnitVectors(this._z, v);
+        s.set(wid, wid, len);
+        m.compose(v.set(p.pos.x - p.vel.x / sp * len * 0.4, p.pos.y - p.vel.y / sp * len * 0.4, p.pos.z - p.vel.z / sp * len * 0.4), q, s);
+        this.bolts.setMatrixAt(nb, m); this.bolts.setColorAt(nb, col.setRGB(r * I + 0.6, g * I + 0.6, b * I + 0.6)); nb++;
       }
+      this.bolts.count = nb; this.shells.count = ns;
+      if (nb) { this.bolts.instanceMatrix.needsUpdate = true; this.bolts.instanceColor.needsUpdate = true; }
+      if (ns) this.shells.instanceMatrix.needsUpdate = true;
     }
 
-    // sync the projectile tracer cloud
-    syncProjectiles(projectiles) {
-      const n = Math.min(projectiles.length, this.capN);
-      this.points.visible = n > 0;
-      if (!n) return;
-      for (let i = 0; i < n; i++) {
-        const p = projectiles[i];
-        this.pPos[i * 3] = p.pos.x; this.pPos[i * 3 + 1] = p.pos.y; this.pPos[i * 3 + 2] = p.pos.z;
-        const c = p.color; this.pCol[i * 3] = c[0] / 255; this.pCol[i * 3 + 1] = c[1] / 255; this.pCol[i * 3 + 2] = c[2] / 255;
+    update(dt, t, cam) {
+      const sc = this.scene.renderer.domElement.height / (2 * Math.tan(cam.fov * Math.PI / 360));
+      this.add.mat.uniforms.uScale.value = sc; this.smoke.mat.uniforms.uScale.value = sc;
+      // continuous emitters (burning wrecks, falling debris)
+      for (let i = this.emitters.length - 1; i >= 0; i--) {
+        const e = this.emitters[i]; e.t += dt; e.acc += dt * e.rate;
+        if (e.vel) { e.vel.y -= (e.grav || 0) * dt; e.pos.x += e.vel.x * dt; e.pos.y += e.vel.y * dt; e.pos.z += e.vel.z * dt; if (this.terrain && e.pos.y < this.terrain.height(e.pos.x, e.pos.z)) { this.explosion(e.pos, 6); e.t = e.life; } }
+        const k = 1 - e.t / e.life, r = this.rng, s = e.size || 1;
+        while (e.acc >= 1) { e.acc -= 1;
+          this.smoke.emit(e.pos.x + r.f(-s, s), e.pos.y, e.pos.z + r.f(-s, s), r.f(-1, 1), r.f(3, 6) * s, r.f(-1, 1), 2.6, 1.2 * s, 5.5 * s, 0.1, 0.1, 0.1, 0.5 * k + 0.1, 0.5, -0.8);
+          if (r.next() < 0.7 * k) this.add.emit(e.pos.x + r.f(-s, s), e.pos.y, e.pos.z + r.f(-s, s), r.f(-1, 1), r.f(2, 5), r.f(-1, 1), 0.55, 1.3 * s, 2.6 * s, 3, 1.4, 0.4, 0.9, 1, -2);
+        }
+        if (e.t >= e.life) this.emitters.splice(i, 1);
       }
-      this.pGeo.setDrawRange(0, n);
-      this.pGeo.attributes.position.needsUpdate = true;
-      this.pGeo.attributes.color.needsUpdate = true;
-    }
-
-    update(dt, t) {
-      // flashes expand + fade
-      for (let i = this.flashes.length - 1; i >= 0; i--) {
-        const f = this.flashes[i];
-        f.life -= dt;
-        if (f.life <= 0) { f.mesh.visible = false; this.pool.push(f); this.flashes.splice(i, 1); continue; }
-        const k = 1 - f.life / f.max;      // 0 -> 1
-        const s = f.size * (0.3 + k * 1.7);
-        f.mesh.scale.set(s, s, s);
-        f.mesh.material.opacity = (1 - k) * 0.9;
-        // face camera
-        f.mesh.quaternion.copy(this.scene.camera.quaternion);
+      this.add.update(dt); this.smoke.update(dt);
+      for (let i = this.rings.length - 1; i >= 0; i--) {
+        const r = this.rings[i]; r.t += dt; const k = r.t / r.life;
+        if (k >= 1) { if (r.marker) { this.scene.fx.remove(r.m); r.m.material.dispose(); } else { r.m.visible = false; this.ringPool.push(r.m); } this.rings.splice(i, 1); continue; }
+        if (r.marker) { r.m.material.opacity = 0.5 + 0.5 * Math.sin(r.t * 14); r.m.rotation.y = r.t; }
+        else { const s = r.r1 * (0.15 + 0.85 * (1 - (1 - k) * (1 - k))); r.m.scale.setScalar(s); r.m.material.opacity = (1 - k) * 0.85; }
       }
+      for (const l of this.lights) if (l.userData.t > 0) { l.userData.t -= dt * 3.2; l.intensity = Math.max(0, l.userData.t) * l.userData.p; }
+      if (this.weather) { const u = this.weather.material.uniforms; u.time.value = t; u.cam.value.copy(cam.position); u.uScale.value = sc; }
     }
   }
 
   E.FX = FX;
+  E.TEAM_BOLT = TEAM_BOLT;
 })(window.E = window.E || {});
 
-// ---- js/render/hulls.js ----
-// Procedural models: infantry, vehicles, fighters, and capital ships, all built
-// from code with faction-distinct hull grammar (angular Concord vs organic Pact).
-// A small material cache keeps memory flat across many units.
+// ---- js/render/geo.js ----
+// Procedural geometry toolkit. Every model in the game is assembled from
+// primitives and lofted hulls by a Builder, then merged into ONE BufferGeometry
+// with per-vertex colour and an `aFx` attribute (x = emissive strength,
+// y = surface mode: 0 plain, 1 fine panels, 2 coarse panels, 3 panels+windows),
+// so a whole ship draws in a single call with a shared material.
 (function (E) {
   'use strict';
 
-  const matCache = new Map();
-  function mat(faction, part, extra) {
-    const pal = faction.palette;
-    const key = faction.id + ':' + part;
-    if (!matCache.has(key)) {
-      const c = pal[part] || pal.hull;
-      matCache.set(key, new E.THREE.MeshStandardMaterial({
-        color: new E.THREE.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255),
-        roughness: 0.55, metalness: 0.5,
-        ...(extra || {}),
-      }));
+  const lin = (c) => { const T = E.THREE, k = new T.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255, T.SRGBColorSpace); return [k.r, k.g, k.b]; };
+  const shade = (c, k) => [E.clamp(c[0] * k, 0, 255), E.clamp(c[1] * k, 0, 255), E.clamp(c[2] * k, 0, 255)];
+
+  class Builder {
+    constructor() { this.pos = []; this.nor = []; this.col = []; this.fx = []; this._m = new E.THREE.Matrix4(); this._e = new E.THREE.Euler(); this._q = new E.THREE.Quaternion(); }
+
+    // add any BufferGeometry, transformed, with a flat colour
+    add(geo, x, y, z, color, o) {
+      const T = E.THREE; o = o || {};
+      const sc = new T.Vector3(o.sx || 1, o.sy || 1, o.sz || 1);
+      this._e.set(o.rx || 0, o.ry || 0, o.rz || 0, 'YXZ'); this._q.setFromEuler(this._e);
+      this._m.compose(new T.Vector3(x, y, z), this._q, sc);
+      let g = geo.index ? geo.toNonIndexed() : geo.clone();
+      g.applyMatrix4(this._m);
+      if (!o.smooth) g.computeVertexNormals();
+      const p = g.attributes.position.array, n = g.attributes.normal.array, c = lin(color);
+      const emi = o.emi || 0, mode = o.mode === undefined ? 1 : o.mode;
+      for (let i = 0; i < p.length; i += 3) {
+        this.pos.push(p[i], p[i + 1], p[i + 2]); this.nor.push(n[i], n[i + 1], n[i + 2]);
+        this.col.push(c[0], c[1], c[2]); this.fx.push(emi, mode);
+      }
+      g.dispose(); if (geo !== g) geo.dispose();
+      return this;
     }
-    return matCache.get(key);
+    // box; o.taper = [tx, tz] scales the top face (wedges, sloped armour); o.shear = z-offset of the top
+    box(w, h, d, x, y, z, color, o) {
+      const g = new E.THREE.BoxGeometry(w, h, d);
+      if (o && (o.taper || o.shear)) {
+        const p = g.attributes.position, tx = o.taper ? o.taper[0] : 1, tz = o.taper ? o.taper[1] : 1, sh = o.shear || 0;
+        for (let i = 0; i < p.count; i++) if (p.getY(i) > 0) { p.setX(i, p.getX(i) * tx); p.setZ(i, p.getZ(i) * tz + sh); }
+      }
+      return this.add(g, x, y, z, color, o);
+    }
+    cyl(rt, rb, h, seg, x, y, z, color, o) { return this.add(new E.THREE.CylinderGeometry(rt, rb, h, seg || 8), x, y, z, color, o); }
+    sphere(r, x, y, z, color, o) { return this.add(new E.THREE.SphereGeometry(r, (o && o.seg) || 10, (o && o.seg2) || 8), x, y, z, color, Object.assign({ smooth: true }, o)); }
+    cone(r, h, seg, x, y, z, color, o) { return this.add(new E.THREE.ConeGeometry(r, h, seg || 8), x, y, z, color, o); }
+    torus(r, t, x, y, z, color, o) { return this.add(new E.THREE.TorusGeometry(r, t, 6, (o && o.seg) || 18), x, y, z, color, o); }
+
+    // Loft a hull along +z through cross-sections {z, w, h, y?, x?, p?}. p is the
+    // superellipse power: 2 = round, 5+ = boxy. n = sides around.
+    loft(secs, color, o) {
+      const T = E.THREE; o = o || {};
+      const n = o.n || 10, P = [], I = [];
+      const pw = (v, e) => Math.sign(v) * Math.pow(Math.abs(v), e);
+      for (let i = 0; i < secs.length; i++) {
+        const s = secs[i], e = 2 / (s.p || o.p || 2);
+        for (let k = 0; k < n; k++) {
+          const a = (k / n) * E.TAU + (o.rot || 0);
+          P.push((s.x || 0) + pw(Math.cos(a), e) * s.w * 0.5, (s.y || 0) + pw(Math.sin(a), e) * s.h * 0.5, s.z);
+        }
+      }
+      for (let i = 0; i < secs.length - 1; i++) for (let k = 0; k < n; k++) {
+        const a = i * n + k, b = i * n + (k + 1) % n, c = a + n, d = b + n;
+        I.push(a, b, c, b, d, c);
+      }
+      // end caps
+      const cap = (i, flip) => { const s = secs[i], ci = P.length / 3; P.push(s.x || 0, s.y || 0, s.z);
+        for (let k = 0; k < n; k++) { const a = i * n + k, b = i * n + (k + 1) % n; flip ? I.push(ci, b, a) : I.push(ci, a, b); } };
+      cap(0, true); cap(secs.length - 1, false);
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(P, 3)); g.setIndex(I); g.computeVertexNormals();
+      return this.add(g, o.x || 0, o.y || 0, o.z || 0, color, o);
+    }
+
+    build() {
+      const T = E.THREE, g = new T.BufferGeometry();
+      g.setAttribute('position', new T.Float32BufferAttribute(this.pos, 3));
+      g.setAttribute('normal', new T.Float32BufferAttribute(this.nor, 3));
+      g.setAttribute('color', new T.Float32BufferAttribute(this.col, 3));
+      g.setAttribute('aFx', new T.Float32BufferAttribute(this.fx, 2));
+      g.computeBoundingSphere(); g.computeBoundingBox();
+      return g;
+    }
   }
-  const accentMat = (faction) => mat(faction, 'accent');
-  const hullMat = (faction) => mat(faction, 'hull');
-  const darkMat = (faction) => mat(faction, 'hullDark');
+
+  // Shared hull material: PBR + vertex colours + procedural panel lines,
+  // lit windows and HDR emissive (engines, visors) that the bloom pass picks up.
+  let hullMat = null;
+  function material() {
+    if (hullMat) return hullMat;
+    const T = E.THREE;
+    const m = new T.MeshStandardMaterial({ vertexColors: true, metalness: 0.62, roughness: 0.5, envMapIntensity: 0.9 });
+    m.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec2 aFx; varying vec2 vFx; varying vec3 vOPos;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvFx = aFx; vOPos = position;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+          varying vec2 vFx; varying vec3 vOPos;
+          float gcHash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float gcMode = floor(vFx.y + 0.5), gcPn = 0.5, gcWin = 0.0;
+          if (gcMode > 0.5) {
+            float fq = gcMode < 1.5 ? 2.6 : 0.16;
+            vec3 pc = vOPos * fq;
+            gcPn = gcHash(floor(pc));
+            vec3 fr = abs(fract(pc) - 0.5);
+            float seam = smoothstep(0.455, 0.5, max(fr.x, max(fr.y, fr.z)));
+            diffuseColor.rgb *= (0.84 + 0.3 * gcPn) * (1.0 - seam * 0.3);
+            if (gcMode > 2.5) {
+              vec3 wc = vOPos * vec3(0.55, 0.9, 0.3);
+              vec3 wf = abs(fract(wc) - 0.5);
+              float lit = step(0.63, gcHash(floor(wc) + 7.0));
+              gcWin = lit * step(wf.y, 0.16) * step(max(wf.x, wf.z), 0.3);
+            }
+          }`)
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + (gcPn - 0.5) * 0.3, 0.08, 1.0);')
+        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          totalEmissiveRadiance += vColor.rgb * vFx.x + vec3(1.0, 0.86, 0.6) * gcWin * 1.8;`);
+    };
+    hullMat = m;
+    return m;
+  }
+
+  E.Geo = { Builder, material, lin, shade };
+})(window.E = window.E || {});
+
+// ---- js/render/hulls.js ----
+// Procedural models: infantry, vehicles, fighters, turrets and capital ships,
+// all built from code with a distinct hull grammar per faction — the Concord is
+// angular plate and slab, the Pact is lofted, finned and bioluminescent.
+// Models face +z, origin at the feet (ground units) or the centre (aircraft).
+// Geometry is cached per (faction, kind, type); units share one hull material.
+(function (E) {
+  'use strict';
+  const cache = new Map();
+  const B = () => new E.Geo.Builder();
+  const sh = (c, k) => E.Geo.shade(c, k);
+  function cached(key, make) { let g = cache.get(key); if (!g) { g = make(); cache.set(key, g); } return g; }
+  function mesh(geo, shadow) { const m = new E.THREE.Mesh(geo, E.Geo.material()); m.castShadow = shadow !== false; m.receiveShadow = true; return m; }
 
   // ── INFANTRY ────────────────────────────────────────────────
-  function makeInfantry(faction, role) {
-    const T = E.THREE;
-    const g = new T.Group();
-    const m = hullMat(faction), am = accentMat(faction), cm = mat(faction, 'canopies');
-    // legs, torso, head, backpack, weapon
-    const body = new T.Mesh(new T.CapsuleGeometry(0.32, 0.7, 4, 8), m); body.position.y = 0.95; g.add(body);
-    const chest = new T.Mesh(new T.BoxGeometry(0.55, 0.5, 0.4), am); chest.position.y = 1.15; g.add(chest);
-    const head = new T.Mesh(new T.SphereGeometry(0.2, 10, 8), m); head.position.y = 1.62; g.add(head);
-    const visor = new T.Mesh(new T.BoxGeometry(0.24, 0.1, 0.12), cm); visor.position.set(0, 1.62, -0.16); g.add(visor);
-    // weapon in front (muzzle at z=-0.7)
-    const gun = new T.Mesh(new T.BoxGeometry(0.08, 0.1, 0.7), darkMat(faction)); gun.position.set(0.2, 1.05, -0.35); g.add(gun);
-    // backpack (medic has a glowing cross)
-    const pack = new T.Mesh(new T.BoxGeometry(0.4, 0.45, 0.2), darkMat(faction)); pack.position.set(0, 1.2, 0.28); g.add(pack);
-    if (role === 'medic') { const c = new T.Mesh(new T.BoxGeometry(0.16, 0.16, 0.05), new T.MeshStandardMaterial({ color: 0xffffff, emissive: 0x66ffcc, emissiveIntensity: 1 })); c.position.set(0, 1.2, 0.4); g.add(c); }
-    if (role === 'heavy') { const sh = new T.Mesh(new T.BoxGeometry(0.7, 0.3, 0.5), am); sh.position.set(0, 1.35, 0); g.add(sh); }
-    g.userData.viewH = 1.7; g.userData.role = role;
-    g.traverse(o => { if (o.isMesh) { o.castShadow = true; } });
-    return g;
-  }
-
-  // ── GROUND VEHICLE ──────────────────────────────────────────
-  function makeVehicle(faction, type) {
-    const T = E.THREE;
-    const v = E.VEHICLES[type];
-    const g = new T.Group();
-    const organic = faction.hull.style === 'organic';
-    const hull = organic
-      ? new T.CapsuleGeometry(v.r * 0.5, v.r * 1.1, 4, 10)
-      : new T.BoxGeometry(v.r * 1.4, v.r * 0.6, v.r * 1.8);
-    const body = new T.Mesh(hull, hullMat(faction));
-    body.position.y = v.viewH * 0.5; body.rotation.x = Math.PI / 2 * (organic ? 1 : 0);
-    g.add(body);
-    // hover ring / skids
-    const ring = new T.Mesh(new T.TorusGeometry(v.r * 0.9, v.r * 0.12, 8, 20), accentMat(faction));
-    ring.rotation.x = Math.PI / 2; ring.position.y = v.viewH * 0.25; g.add(ring);
-    // engine glow at rear
-    const eng = new T.Mesh(new T.BoxGeometry(v.r * 0.9, v.r * 0.4, v.r * 0.4), new T.MeshStandardMaterial({ color: 0x000000, emissive: new E.THREE.Color().setRGB(faction.palette.engine[0] / 255, faction.palette.engine[1] / 255, faction.palette.engine[2] / 255), emissiveIntensity: 2 }));
-    eng.position.set(0, v.viewH * 0.5, v.r * 0.9); g.add(eng);
-    // turret
-    const turret = new T.Group(); turret.position.y = v.viewH * 0.7; g.add(turret);
-    const turretBase = new T.Mesh(new T.CylinderGeometry(v.r * 0.35, v.r * 0.5, v.r * 0.4, organic ? 14 : 6), hullMat(faction)); turret.add(turretBase);
-    const barrel = new T.Mesh(new T.CylinderGeometry(0.2, 0.25, v.r * 1.6, 8), darkMat(faction));
-    barrel.rotation.x = Math.PI / 2; barrel.position.z = -v.r * 0.8; turret.add(barrel);
-    g.userData.turret = turret; g.userData.viewH = v.viewH; g.userData.kind = 'vehicle';
-    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
-    return g;
-  }
-
-  // ── FIGHTER ─────────────────────────────────────────────────
-  function makeFighter(faction, type) {
-    const T = E.THREE;
-    const g = new T.Group();
-    const organic = faction.hull.style === 'organic';
-    const hullG = organic
-      ? new T.SphereGeometry(1, 10, 8)
-      : new T.ConeGeometry(1, 4, 4);
-    const body = new T.Mesh(hullG, hullMat(faction));
-    body.rotation.x = -Math.PI / 2; body.scale.set(0.6, 2.4, 1); g.add(body);
-    // canopy
-    const canopy = new T.Mesh(new T.SphereGeometry(0.4, 8, 6), mat(faction, 'canopies'));
-    canopy.position.set(0, 0.4, -0.6); canopy.scale.set(0.7, 0.6, 1.2); g.add(canopy);
-    // wings
-    const wing = new T.Mesh(organic ? new T.ConeGeometry(1.4, 1.2, 3) : new T.BoxGeometry(3, 0.1, 1.2), hullMat(faction));
-    wing.position.set(0, 0, 0.6); wing.scale.x *= (type === 'strike' ? 0.7 : 1); g.add(wing);
-    // engine
-    const eng = new T.Mesh(new T.CylinderGeometry(0.3, 0.4, 0.6, 8), new T.MeshStandardMaterial({ color: 0x000000, emissive: new E.THREE.Color().setRGB(faction.palette.engine[0] / 255, faction.palette.engine[1] / 255, faction.palette.engine[2] / 255), emissiveIntensity: 2 }));
-    eng.rotation.x = Math.PI / 2; eng.position.set(0, 0, 2.0); g.add(eng);
-    // wingtip cannons
-    const cannon = new T.Mesh(new T.CylinderGeometry(0.08, 0.08, 1.2, 6), darkMat(faction));
-    cannon.rotation.x = Math.PI / 2; cannon.position.set(type === 'strike' ? 1 : 1.4, 0, 0.4); g.add(cannon);
-    const cannon2 = cannon.clone(); cannon2.position.x *= -1; g.add(cannon2);
-    g.scale.setScalar(0.8);
-    g.userData.viewH = 2.5; g.userData.kind = 'fighter'; g.userData.type = type;
-    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
-    return g;
-  }
-
-  // ── CAPITAL SHIP ────────────────────────────────────────────
-  // A big hull from the faction's grammar + a genome that varies proportions.
-  function makeCapital(faction, type, genome) {
-    const T = E.THREE;
-    const c = E.CAPITALS[type];
-    const g = new T.Group();
-    const organic = faction.hull.style === 'organic';
-    const r = genome ? genome.r : 1;
-    const len = c.r * 3.2 * r, wid = c.r * 1.6 * r, hei = c.r * 0.8 * r;
-
-    // main hull
-    let hullG;
-    if (organic) {
-      hullG = new T.SphereGeometry(1, 18, 14);
-      const body = new T.Mesh(hullG, hullMat(faction));
-      body.scale.set(len, hei, wid); g.add(body);
+  // Three meshes: upper body (pitches with aim), and two legs (walk cycle).
+  function infantryGeo(F, type) {
+    const P = F.palette, org = F.hull.style === 'organic';
+    const armor = sh(P.hullLight, 1.05), under = P.hullDark, acc = P.accent, glow = P.glow;
+    const up = B(), leg = B();
+    const bulk = type === 'heavy' ? 1.18 : type === 'sniper' ? 0.92 : 1;
+    // pelvis, abdomen, chest
+    up.box(0.36 * bulk, 0.2, 0.24, 0, 0.04, 0, under, { mode: 0 });
+    up.box(0.3 * bulk, 0.24, 0.2, 0, 0.22, 0, under, { mode: 0 });
+    up.box(0.4 * bulk, 0.36, 0.27, 0, 0.5, 0.01, armor, { taper: [1.18, 1.05] });
+    up.box(0.22 * bulk, 0.16, 0.04, 0, 0.52, 0.15, acc, { mode: 0 });
+    // shoulders + arms reaching forward to the weapon
+    for (const s of [-1, 1]) {
+      if (org) up.sphere(0.115 * bulk, s * 0.29 * bulk, 0.64, 0, acc, { sy: 0.8 });
+      else up.box(0.17 * bulk, 0.11, 0.22, s * 0.3 * bulk, 0.66, 0, acc, { taper: [0.8, 0.9], mode: 0 });
+      up.box(0.1, 0.1, 0.34, s * 0.27 * bulk, 0.5, 0.14, under, { rx: 0.35, ry: s * 0.25, mode: 0 });
+      up.box(0.09, 0.09, 0.3, s * 0.17 * bulk, 0.42, 0.36, armor, { ry: s * 0.6, mode: 0 });
+    }
+    // head
+    if (org) {
+      up.sphere(0.145, 0, 0.87, 0.01, armor, { sy: 1.1, sz: 1.15 });
+      up.box(0.2, 0.05, 0.1, 0, 0.87, 0.11, glow, { emi: 3.5, mode: 0 });
+      up.cone(0.03, 0.22, 5, 0.07, 1.04, -0.06, acc, { rx: -0.5, mode: 0 }); up.cone(0.03, 0.22, 5, -0.07, 1.04, -0.06, acc, { rx: -0.5, mode: 0 });
     } else {
-      hullG = new T.BoxGeometry(len, hei, wid);
-      const body = new T.Mesh(hullG, hullMat(faction)); g.add(body);
-      // bow plate
-      const bow = new T.Mesh(new T.ConeGeometry(wid, len * 0.6, 4), hullMat(faction));
-      bow.rotation.x = -Math.PI / 2; bow.rotation.z = Math.PI / 4; bow.position.z = -(len / 2) * 1.1; bow.scale.set(1, hei / wid, 1); g.add(bow);
+      up.box(0.23, 0.24, 0.26, 0, 0.87, 0.01, armor, { taper: [0.85, 0.9] });
+      up.box(0.21, 0.05, 0.04, 0, 0.88, 0.135, glow, { emi: 3.5, mode: 0 });
+      up.box(0.04, 0.12, 0.26, 0, 1.01, -0.01, acc, { mode: 0 });
     }
-    // superstructure / bridge
-    const bridge = new T.Mesh(organic ? new T.SphereGeometry(1, 12, 10) : new T.BoxGeometry(len * 0.35, hei * 1.4, wid * 0.5), hullMat(faction));
-    bridge.position.y = hei * 0.8; bridge.scale.z *= organic ? 1.2 : 1; g.add(bridge);
-    const bridgeWin = new T.Mesh(new T.BoxGeometry(len * 0.3, hei * 0.3, wid * 0.52), mat(faction, 'canopies'));
-    bridgeWin.position.y = hei * 0.9; g.add(bridgeWin);
-    // wings / fins (the faction's signature)
-    const finMat = accentMat(faction);
-    if (organic) {
-      // flowing blades
-      for (const sgn of [-1, 1]) {
-        const blade = new T.Mesh(new T.ConeGeometry(wid * 0.9, len * 0.8, 4), hullMat(faction));
-        blade.scale.set(1, 0.15, 0.5); blade.rotation.z = sgn * 0.5; blade.position.set(sgn * wid * 0.6, 0, len * 0.2);
-        g.add(blade);
-        const blade2 = new T.Mesh(new T.ConeGeometry(wid * 0.6, len * 0.5, 4), finMat);
-        blade2.scale.set(1, 0.1, 0.35); blade2.rotation.z = sgn * 0.7; blade2.position.set(sgn * wid * 0.9, hei * 0.3, len * 0.1);
-        g.add(blade2);
-      }
-    } else {
-      // angular wing boxes
-      for (const sgn of [-1, 1]) {
-        const wing = new T.Mesh(new T.BoxGeometry(wid * 1.4, hei * 0.25, len * 0.7), hullMat(faction));
-        wing.position.set(sgn * wid * 0.9, 0, len * 0.1); wing.rotation.y = sgn * 0.25; g.add(wing);
-        const fin = new T.Mesh(new T.BoxGeometry(2, hei * 1.2, wid * 0.4), finMat);
-        fin.position.set(sgn * wid * 1.4, hei * 0.3, -len * 0.2); g.add(fin);
-      }
-    }
-    // engine nacelles with glow
-    const engMat = new T.MeshStandardMaterial({ color: 0x000000, emissive: new E.THREE.Color().setRGB(faction.palette.engine[0] / 255, faction.palette.engine[1] / 255, faction.palette.engine[2] / 255), emissiveIntensity: 2.2 });
-    for (const sgn of [-1, 1]) {
-      const nac = new T.Mesh(organic ? new T.CylinderGeometry(wid * 0.25, wid * 0.3, len * 0.7, 10) : new T.BoxGeometry(wid * 0.4, hei * 0.5, len * 0.6), darkMat(faction));
-      nac.rotation.x = Math.PI / 2; nac.position.set(sgn * wid * 0.7, 0, len * 0.55); g.add(nac);
-      const glow = new T.Mesh(new T.CircleGeometry(wid * 0.22, 16), engMat);
-      glow.position.set(sgn * wid * 0.7, 0, len * 0.9); glow.rotation.y = Math.PI; g.add(glow);
-    }
-    // main gun turrets (front)
-    const turretGroup = new T.Group(); g.add(turretGroup);
-    const nTurret = type === 'cruiser' ? 2 : 3;
-    for (let i = 0; i < nTurret; i++) {
-      const t = new T.Group();
-      t.position.set((i - (nTurret - 1) / 2) * wid * 0.6, hei * 0.5, -len * 0.35);
-      const base = new T.Mesh(new T.CylinderGeometry(wid * 0.18, wid * 0.25, hei * 0.4, organic ? 12 : 6), hullMat(faction)); t.add(base);
-      const barrel = new T.Mesh(new T.CylinderGeometry(wid * 0.05, wid * 0.08, wid * 1.2, 8), darkMat(faction));
-      barrel.rotation.x = Math.PI / 2; barrel.position.z = -wid * 0.7; t.add(barrel);
-      turretGroup.add(t);
-    }
-    g.userData.turrets = turretGroup;
-    g.userData.viewH = c.viewH; g.userData.kind = 'capital'; g.userData.type = type; g.userData.radius = c.r;
-    g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-    return g;
+    // backpack
+    up.box(0.3 * bulk, 0.36, 0.14, 0, 0.5, -0.19, under);
+    if (type === 'medic') { up.box(0.16, 0.05, 0.02, 0, 0.52, -0.27, [255, 255, 255], { emi: 3, mode: 0 }); up.box(0.05, 0.16, 0.02, 0, 0.52, -0.27, [255, 255, 255], { emi: 3, mode: 0 }); }
+    // weapon (held centre-right; right is -x)
+    const gx = -0.1, gy = 0.4, dark = sh(under, 0.7);
+    if (type === 'sniper') { up.box(0.06, 0.1, 1.15, gx, gy, 0.6, dark, { mode: 0 }); up.cyl(0.035, 0.035, 0.3, 6, gx, gy + 0.09, 0.45, dark, { rx: Math.PI / 2, mode: 0 }); up.box(0.03, 0.03, 0.05, gx, gy, 1.19, glow, { emi: 4, mode: 0 }); }
+    else if (type === 'heavy') {
+      up.box(0.13, 0.15, 0.7, gx, gy - 0.03, 0.42, dark, { mode: 0 }); up.cyl(0.05, 0.05, 0.3, 6, gx, gy - 0.03, 0.9, dark, { rx: Math.PI / 2, mode: 0 });
+      up.cyl(0.085, 0.085, 0.95, 8, 0.22, 0.76, -0.05, sh(armor, 0.8), { rx: Math.PI / 2, mode: 0 }); up.cyl(0.07, 0.07, 0.02, 8, 0.22, 0.76, 0.43, acc, { rx: Math.PI / 2, emi: 1.5, mode: 0 });
+    } else { up.box(0.07, 0.11, type === 'medic' ? 0.5 : 0.66, gx, gy, 0.42, dark, { mode: 0 }); up.box(0.05, 0.14, 0.1, gx, gy - 0.1, 0.3, dark, { mode: 0 }); up.box(0.03, 0.03, 0.05, gx, gy + 0.01, 0.76, glow, { emi: 4, mode: 0 }); }
+    // leg (pivot at the hip)
+    leg.box(0.15 * bulk, 0.46, 0.17, 0, -0.24, 0, under, { mode: 0 });
+    leg.box(0.13, 0.1, 0.13, 0, -0.48, 0.03, acc, { mode: 0 });
+    leg.box(0.13 * bulk, 0.44, 0.15, 0, -0.72, 0, armor, { taper: [1.15, 1.1] });
+    leg.box(0.14, 0.1, 0.27, 0, -0.95, 0.05, under, { mode: 0 });
+    return { up: up.build(), leg: leg.build() };
+  }
+  function makeInfantry(F, type) {
+    const T = E.THREE, g = cached('inf:' + F.id + ':' + type, () => infantryGeo(F, type));
+    const root = new T.Group(), s = E.INFANTRY[type].h / 1.85;
+    const body = new T.Group(); body.scale.setScalar(s); root.add(body);
+    const up = mesh(g.up); up.position.y = 1.0; body.add(up);
+    const legL = mesh(g.leg); legL.position.set(0.11, 1.0, 0); body.add(legL);
+    const legR = mesh(g.leg); legR.position.set(-0.11, 1.0, 0); body.add(legR);
+    return { root, body, up, legL, legR };
   }
 
-  E.matCache = matCache;
-  E.makeInfantry = makeInfantry;
-  E.makeVehicle = makeVehicle;
-  E.makeFighter = makeFighter;
-  E.makeCapital = makeCapital;
+  // ── GROUND VEHICLES ─────────────────────────────────────────
+  function vehicleGeo(F, type) {
+    const P = F.palette, org = F.hull.style === 'organic';
+    const hull = B(), tur = B(), gun = B();
+    const c1 = P.hull, c2 = P.hullDark, c3 = P.hullLight, acc = P.accent, eng = P.engine, dark = sh(P.hullDark, 0.6);
+    if (type === 'skiff') {
+      if (org) {
+        hull.loft([{ z: -3, w: 0.8, h: 0.5, y: 0.9 }, { z: -2, w: 2.2, h: 1.1, y: 0.9 }, { z: 0.6, w: 2.5, h: 1.25, y: 0.85 }, { z: 2.4, w: 1.5, h: 0.8, y: 0.8 }, { z: 3.3, w: 0.3, h: 0.25, y: 0.75 }], c1, { n: 12, smooth: true });
+        for (const s of [-1, 1]) { hull.sphere(0.75, s * 1.75, 0.75, -0.6, c3, { sx: 0.75, sy: 0.6, sz: 2.4 }); hull.box(0.1, 0.9, 1.6, s * 1.75, 1.35, -1.7, acc, { taper: [1, 0.3], shear: -0.6, mode: 0 }); hull.sphere(0.34, s * 1.75, 0.75, -2.35, eng, { emi: 6, mode: 0 }); }
+      } else {
+        hull.box(2.3, 0.75, 5.0, 0, 0.85, -0.2, c1, { taper: [0.8, 0.92] });
+        hull.box(1.9, 0.5, 1.8, 0, 0.82, 2.9, c3, { taper: [0.35, 0.3], shear: 0.5 });
+        for (const s of [-1, 1]) { hull.box(0.75, 0.62, 3.7, s * 1.62, 0.72, -0.5, c2, { taper: [0.8, 0.9] }); hull.box(0.5, 0.42, 0.1, s * 1.62, 0.72, -2.38, eng, { emi: 6, mode: 0 }); hull.box(0.1, 0.8, 1.2, s * 1.62, 1.3, -1.8, acc, { taper: [1, 0.4], shear: -0.5, mode: 0 }); }
+      }
+      hull.sphere(0.62, 0, 1.3, 0.9, P.canopies, { sx: 0.95, sy: 0.6, sz: 1.6, emi: 0.15, mode: 0 });
+      for (const s of [-1, 1]) hull.box(0.3, 0.06, 3.2, s * 1.62, 0.36, -0.5, P.glow, { emi: 3, mode: 0 });
+      hull.box(1.2, 0.06, 3.4, 0, 0.44, -0.2, P.glow, { emi: 2.2, mode: 0 });
+      tur.cyl(0.42, 0.55, 0.35, org ? 12 : 6, 0, 0.1, 0, c3);
+      for (const s of [-1, 1]) { gun.cyl(0.07, 0.09, 1.9, 6, s * 0.24, 0.12, 0.95, dark, { rx: Math.PI / 2, mode: 0 }); gun.box(0.05, 0.05, 0.08, s * 0.24, 0.12, 1.92, P.glow, { emi: 4, mode: 0 }); }
+      gun.box(0.75, 0.3, 0.6, 0, 0.12, 0.05, c2);
+      return { hull: hull.build(), tur: tur.build(), gun: gun.build(), ty: 1.42, tz: -0.9 };
+    }
+    // tank
+    if (org) {
+      hull.loft([{ z: -4.2, w: 2.6, h: 1.2, y: 1.15 }, { z: -3, w: 4.4, h: 1.9, y: 1.2 }, { z: 1.5, w: 4.7, h: 2.0, y: 1.15 }, { z: 3.6, w: 3.2, h: 1.3, y: 1.0 }, { z: 4.5, w: 0.8, h: 0.5, y: 0.9 }], c1, { n: 14, smooth: true, p: 2.6 });
+      for (const s of [-1, 1]) { hull.sphere(1, s * 2.5, 0.85, 0, c2, { sx: 0.8, sy: 0.7, sz: 4.2 }); hull.box(0.12, 1.2, 2.4, s * 2.3, 2.2, -2.6, acc, { taper: [1, 0.25], shear: -1, mode: 0 }); }
+      hull.sphere(0.6, 0, 1.3, -4.1, eng, { emi: 6, sx: 2.2, mode: 0 });
+    } else {
+      hull.box(4.5, 1.15, 8.0, 0, 1.15, 0, c1, { taper: [0.82, 0.9] });
+      hull.box(4.2, 0.7, 2.2, 0, 1.0, 4.3, c3, { taper: [0.7, 0.2], shear: 0.6 });
+      hull.box(3.4, 0.5, 3.2, 0, 1.95, -1.9, c2, { taper: [0.85, 0.85] });
+      for (const s of [-1, 1]) { hull.box(1.0, 0.95, 7.4, s * 2.55, 0.85, -0.1, c2, { taper: [0.75, 0.94] }); hull.box(0.5, 0.2, 0.9, s * 1.2, 2.25, -2.9, dark, { mode: 0 }); hull.box(0.7, 0.5, 0.1, s * 1.3, 1.25, -4.02, eng, { emi: 6, mode: 0 }); }
+      hull.box(1.0, 0.1, 5, 0, 1.75, 0.6, acc, { mode: 0 });
+    }
+    for (const s of [-1, 1]) hull.box(0.5, 0.07, 6.6, s * 2.5, 0.34, -0.1, P.glow, { emi: 3, mode: 0 });
+    hull.box(2.6, 0.07, 6.2, 0, 0.52, 0, P.glow, { emi: 1.6, mode: 0 });
+    if (org) tur.sphere(1.45, 0, 0.3, 0, c3, { sy: 0.55, sz: 1.2 }); else { tur.box(2.7, 0.95, 3.3, 0, 0.42, -0.1, c3, { taper: [0.72, 0.75] }); tur.box(0.8, 0.3, 0.9, 0.7, 1.0, -0.6, c2); }
+    tur.cyl(0.03, 0.03, 1.6, 4, -0.9, 1.5, -1.2, dark, { mode: 0 });
+    gun.cyl(0.2, 0.26, 4.8, 8, 0, 0, 2.9, dark, { rx: Math.PI / 2, mode: 0 });
+    gun.cyl(0.33, 0.33, 0.7, 8, 0, 0, 5.0, c2, { rx: Math.PI / 2 });
+    gun.box(0.9, 0.7, 1.0, 0, 0, 0.6, c1);
+    gun.cyl(0.07, 0.07, 1.6, 5, 0.55, 0.05, 1.5, dark, { rx: Math.PI / 2, mode: 0 });
+    return { hull: hull.build(), tur: tur.build(), gun: gun.build(), ty: 2.25, tz: -0.4 };
+  }
+  function makeVehicle(F, type) {
+    const T = E.THREE, g = cached('veh:' + F.id + ':' + type, () => vehicleGeo(F, type));
+    const root = new T.Group(), body = new T.Group(); root.add(body);
+    body.add(mesh(g.hull));
+    const turret = new T.Group(); turret.position.set(0, g.ty, g.tz); body.add(turret);
+    turret.add(mesh(g.tur));
+    const gun = mesh(g.gun); gun.position.set(0, 0.42, 0.5); turret.add(gun);
+    return { root, body, turret, gun };
+  }
+
+  // ── TURRET EMPLACEMENT ──────────────────────────────────────
+  function makeTurret(F) {
+    const T = E.THREE, P = F.palette;
+    const g = cached('tur:' + F.id, () => {
+      const base = B(), head = B(), gun = B(), dark = sh(P.hullDark, 0.6);
+      base.cyl(2.3, 2.9, 1.2, 6, 0, 0.6, 0, P.hullDark); base.cyl(1.2, 1.6, 1.3, 8, 0, 1.8, 0, P.hull);
+      head.box(2.2, 1.1, 2.4, 0, 0.3, 0, P.hullLight, { taper: [0.75, 0.8] }); head.box(0.5, 0.25, 0.1, 0, 0.5, 1.2, P.glow, { emi: 3, mode: 0 });
+      for (const s of [-1, 1]) { gun.cyl(0.13, 0.16, 3.2, 6, s * 0.62, 0, 1.6, dark, { rx: Math.PI / 2, mode: 0 }); gun.box(0.5, 0.5, 1.2, s * 0.62, 0, 0.2, P.hull); }
+      return { base: base.build(), head: head.build(), gun: gun.build() };
+    });
+    const root = new T.Group(); root.add(mesh(g.base));
+    const turret = new T.Group(); turret.position.y = 2.6; root.add(turret);
+    turret.add(mesh(g.head));
+    const gun = mesh(g.gun); gun.position.set(0, 0.35, 0.3); turret.add(gun);
+    return { root, body: root, turret, gun, fixedBase: true };
+  }
+
+  // ── FIGHTERS ────────────────────────────────────────────────
+  function fighterGeo(F, type) {
+    const P = F.palette, org = F.hull.style === 'organic', b = B(), bomber = type === 'bomber';
+    const c1 = P.hull, c2 = P.hullDark, c3 = P.hullLight, acc = P.accent, eng = P.engine, dark = sh(P.hullDark, 0.6);
+    const k = bomber ? 1.25 : 1;
+    if (org) {
+      b.loft([{ z: -3.6 * k, w: 0.5, h: 0.5 }, { z: -2.6 * k, w: 1.5 * k, h: 1.2 * k }, { z: 0, w: 1.7 * k, h: 1.3 * k }, { z: 2.6 * k, w: 0.9, h: 0.7, y: -0.05 }, { z: 4.4 * k, w: 0.08, h: 0.08, y: -0.1 }], c1, { n: 12, smooth: true });
+      // crescent wings: three swept segments each side
+      for (const s of [-1, 1]) {
+        b.box(2.3 * k, 0.14, 1.9, s * 1.7 * k, 0, -0.6, c3, { ry: -s * 0.35, taper: [1, 0.8] });
+        b.box(2.0 * k, 0.11, 1.3, s * 3.3 * k, 0.12, 0.3, c1, { ry: -s * 0.9, rz: s * 0.12 });
+        b.box(1.5, 0.08, 0.7, s * 4.1 * k, 0.22, 1.5, acc, { ry: -s * 1.3, rz: s * 0.2, mode: 0 });
+        b.box(0.05, 0.05, 0.1, s * 4.25 * k, 0.24, 2.25, P.glow, { emi: 5, mode: 0 });
+        if (bomber) b.sphere(0.5, s * 1.9, -0.45, -0.5, c2, { sz: 2.2 });
+      }
+      b.box(0.08, 1.1, 1.8, 0, 0.8, -2.2, acc, { taper: [1, 0.25], shear: -0.9, mode: 0 });
+      b.sphere(0.62 * k, 0, 0, -3.3 * k, eng, { emi: 7, sz: 0.6, mode: 0 });
+      b.box(0.06, 0.03, 4.6, 0.5, 0.52, 0, P.glow, { emi: 2.5, mode: 0 }); b.box(0.06, 0.03, 4.6, -0.5, 0.52, 0, P.glow, { emi: 2.5, mode: 0 });
+    } else {
+      b.loft([{ z: -3.8 * k, w: 1.3 * k, h: 0.9 * k }, { z: -2.4 * k, w: 1.7 * k, h: 1.25 * k }, { z: 0.4, w: 1.5 * k, h: 1.1 * k }, { z: 2.8 * k, w: 0.75, h: 0.6, y: -0.1 }, { z: 4.6 * k, w: 0.06, h: 0.06, y: -0.15 }], c1, { n: 6, p: 3.4, rot: Math.PI / 6 });
+      for (const s of [-1, 1]) {
+        b.box(3.6 * k, 0.14, 2.3, s * 2.3 * k, -0.08, -1.3, c3, { ry: s * 0.32, taper: [0.9, 0.55] });
+        b.box(1.0, 0.1, 2.9, s * 4.1 * k, -0.08, -0.7, acc, { taper: [0.5, 0.85], mode: 0 });
+        b.cyl(0.07, 0.09, 2.6, 6, s * 4.15 * k, -0.08, 0.9, dark, { rx: Math.PI / 2, mode: 0 });
+        b.box(0.06, 0.06, 0.1, s * 4.15 * k, -0.08, 2.22, P.glow, { emi: 5, mode: 0 });
+        b.box(0.1, 1.3, 1.5, s * 0.75 * k, 0.85, -2.9 * k, c2, { rz: -s * 0.35, taper: [1, 0.4], shear: -0.7 });
+        b.cyl(0.42 * k, 0.5 * k, 1.5, 8, s * 0.62 * k, 0, -3.9 * k, c2, { rx: Math.PI / 2 });
+        b.cyl(0.36 * k, 0.36 * k, 0.08, 10, s * 0.62 * k, 0, -4.68 * k, eng, { rx: Math.PI / 2, emi: 8, mode: 0 });
+        if (bomber) b.box(0.7, 0.6, 3.2, s * 1.9, -0.45, -0.6, c2, { taper: [0.8, 0.8] });
+      }
+      b.box(0.5, 0.06, 2.4, 0, 0.62 * k, -1.2, acc, { mode: 0 });
+    }
+    b.sphere(0.5 * k, 0, 0.42 * k, 1.1 * k, P.canopies, { sx: 0.85, sy: 0.7, sz: 2.0, emi: 0.2, mode: 0 });
+    if (bomber) b.box(1.1, 0.5, 3.4, 0, -0.75, -0.3, c2, { taper: [0.8, 0.8] });
+    return b.build();
+  }
+  function makeFighter(F, type) {
+    const T = E.THREE, root = new T.Group(), body = new T.Group(); root.add(body);
+    body.add(mesh(cached('fig:' + F.id + ':' + type, () => fighterGeo(F, type))));
+    return { root, body };
+  }
+
+  // ── CAPITAL SHIPS ───────────────────────────────────────────
+  function capitalGeo(F, type) {
+    const P = F.palette, org = F.hull.style === 'organic', d = E.CAPITALS[type], b = B();
+    const L = d.len, H = d.h * 1.25, W = d.h * 2.5, rng = E.RNG(E.hashStr(F.id + type));
+    const c1 = P.hull, c2 = P.hullDark, c3 = P.hullLight, acc = P.accent, eng = P.engine, glow = P.glow, dark = sh(P.hullDark, 0.55);
+    const big = type === 'dreadnought', carrier = type === 'carrier';
+    if (org) {
+      // teardrop body + keel
+      b.loft([{ z: -0.5 * L, w: W * 0.2, h: H * 0.25 }, { z: -0.38 * L, w: W * 0.62, h: H * 0.7 }, { z: -0.1 * L, w: W * 0.9, h: H * 0.95 }, { z: 0.18 * L, w: W, h: H * 1.05 },
+        { z: 0.36 * L, w: W * 0.7, h: H * 0.8, y: -H * 0.04 }, { z: 0.47 * L, w: W * 0.3, h: H * 0.36, y: -H * 0.1 }, { z: 0.52 * L, w: W * 0.04, h: H * 0.05, y: -H * 0.14 }], c1, { n: 18, smooth: true, mode: 3 });
+      b.loft([{ z: -0.34 * L, w: W * 0.2, h: H * 0.3, y: -H * 0.5 }, { z: -0.05 * L, w: W * 0.45, h: H * 0.6, y: -H * 0.52 }, { z: 0.26 * L, w: W * 0.2, h: H * 0.3, y: -H * 0.45 }], c2, { n: 12, smooth: true, mode: 2 });
+      // dorsal spine ribs
+      for (let i = 0; i < 9; i++) { const z = E.lerp(-0.36, 0.3, i / 8) * L, k = 1 - Math.abs(i - 4.5) / 7; b.box(W * 0.07, H * 0.34 * k + 3, L * 0.035, 0, H * 0.5 * (0.6 + k * 0.4) + 2, z, c3, { taper: [0.3, 0.5], shear: -L * 0.015, mode: 2 }); }
+      // swept petals
+      const petals = big ? 4 : 3;
+      for (let i = 0; i < petals; i++) for (const s of [-1, 1]) {
+        const z0 = E.lerp(-0.05, -0.34, i / Math.max(1, petals - 1)) * L, rz = s * (0.25 + i * 0.22), len = W * (1.25 - i * 0.14);
+        b.box(len, H * 0.08, L * 0.13, s * (W * 0.42 + len * 0.42), Math.sin(rz * s) * len * 0.42, z0 - len * 0.2, c3, { ry: s * 0.5, rz, taper: [0.9, 0.5], mode: 2 });
+        b.box(len * 0.8, H * 0.05, L * 0.05, s * (W * 0.5 + len * 0.95), Math.sin(rz * s) * len * 1.0, z0 - len * 0.72, acc, { ry: s * 1.0, rz: rz * 1.1, mode: 0 });
+        b.box(len * 1.1, H * 0.022, L * 0.012, s * (W * 0.42 + len * 0.45), Math.sin(rz * s) * len * 0.44 + H * 0.05, z0 - len * 0.2, glow, { ry: s * 0.5, rz, emi: 2.6, mode: 0 });
+      }
+      // bioluminescent veins along the flanks
+      for (let i = 0; i < 7; i++) { const a = (i / 6 - 0.5) * 2.2; for (const s of [-1, 1]) b.box(1.3, 1.3, L * 0.5, s * Math.cos(a) * W * 0.47, Math.sin(a) * H * 0.5, 0.02 * L, glow, { emi: 2.2, mode: 0 }); }
+      b.sphere(H * 0.26, 0, H * 0.5, 0.2 * L, P.canopies, { sz: 1.8, sy: 0.6, emi: 0.9, mode: 0 });
+      for (let i = 0; i < 3; i++) { const x = (i - 1) * W * 0.26, y = i === 1 ? H * 0.12 : -H * 0.1; b.sphere(H * 0.3, x, y, -0.46 * L, c2, { sz: 1.5 }); b.sphere(H * 0.24, x, y, -0.5 * L - H * 0.12, eng, { emi: 9, sz: 0.5, mode: 0 }); }
+      b.box(W * 0.3, 2, L * 0.16, 0, -H * 0.82, -0.02 * L, P.canopies, { emi: 2.2, mode: 0 });
+    } else {
+      // slab hull tapering to a blade prow
+      b.loft([{ z: -0.5 * L, w: W * 0.82, h: H * 0.8 }, { z: -0.36 * L, w: W, h: H }, { z: 0.02 * L, w: W * 0.94, h: H * 0.86 }, { z: 0.3 * L, w: W * 0.52, h: H * 0.56, y: -H * 0.04 },
+        { z: 0.47 * L, w: W * 0.16, h: H * 0.32, y: -H * 0.08 }, { z: 0.52 * L, w: W * 0.02, h: H * 0.14, y: -H * 0.1 }], c1, { n: 8, p: 5, rot: Math.PI / 8, mode: 3 });
+      b.box(W * 0.05, H * 0.5, L * 0.2, 0, -H * 0.06, 0.43 * L, acc, { taper: [1, 0.3], shear: L * 0.04, mode: 0 });
+      // flank sponsons with gun decks
+      for (const s of [-1, 1]) {
+        b.box(W * 0.22, H * 0.42, L * 0.56, s * W * 0.52, -H * 0.05, -0.08 * L, c2, { taper: [0.7, 0.96], mode: 3 });
+        b.box(W * 0.08, H * 0.12, L * 0.5, s * W * 0.63, -H * 0.05, -0.08 * L, dark, { mode: 3 });
+        for (let i = 0; i < d.side; i++) { const z = E.lerp(-0.3, 0.3, d.side > 1 ? i / (d.side - 1) : 0.5) * L; b.box(W * 0.07, H * 0.1, L * 0.035, s * W * 0.66, -H * 0.05, z, c3, { mode: 0 }); b.cyl(1.1, 1.4, W * 0.14, 6, s * W * 0.72, -H * 0.05, z, dark, { rz: Math.PI / 2, mode: 0 }); }
+        b.box(W * 0.012, H * 0.02, L * 0.52, s * W * 0.645, H * 0.09, -0.08 * L, acc, { emi: 1.6, mode: 0 });
+        if (carrier) { b.box(W * 0.5, H * 0.08, L * 0.5, s * W * 0.85, -H * 0.3, -0.05 * L, c3, { mode: 2 }); b.box(W * 0.4, 1.2, L * 0.44, s * W * 0.85, -H * 0.255, -0.05 * L, P.canopies, { emi: 1.2, mode: 0 }); }
+      }
+      // stepped citadel + bridge tower
+      const tiers = big ? 4 : 3;
+      for (let i = 0; i < tiers; i++) { const k = 1 - i * 0.22; b.box(W * 0.5 * k, H * 0.24, L * 0.3 * k, 0, H * (0.5 + i * 0.22), (-0.2 + i * 0.02) * L, i % 2 ? c2 : c3, { taper: [0.8, 0.85], mode: 3 }); }
+      const ty = H * (0.5 + tiers * 0.22);
+      b.box(W * 0.2, H * 0.3, L * 0.07, 0, ty + H * 0.08, -0.16 * L, c1, { taper: [1.35, 1.2], mode: 3 });
+      b.box(W * 0.26, H * 0.05, L * 0.012, 0, ty + H * 0.17, -0.16 * L + L * 0.037, P.canopies, { emi: 2.5, mode: 0 });
+      b.cyl(0.6, 0.9, H * 0.7, 5, W * 0.06, ty + H * 0.55, -0.18 * L, dark, { mode: 0 }); b.cyl(0.5, 0.7, H * 0.45, 5, -W * 0.07, ty + H * 0.42, -0.2 * L, dark, { mode: 0 });
+      // greebles
+      for (let i = 0; i < 130; i++) {
+        const z = rng.f(-0.44, 0.24) * L, hw = W * 0.45 * E.clamp01(1.1 - Math.max(0, z / L) * 2.2), x = rng.f(-hw, hw);
+        if (Math.abs(x) < W * 0.27 && z < 0.02 * L && z > -0.38 * L) continue;
+        const w = rng.f(2, 9), h = rng.f(1.2, 5), dd = rng.f(3, 16);
+        b.box(w, h, dd, x, H * 0.43 * (z > 0.02 * L ? 1 - (z / L) * 0.9 : 1) + h * 0.3, z, rng.chance(0.2) ? c3 : c2, { mode: 1 });
+      }
+      // ventral hangar glow + engines
+      b.box(W * 0.34, 2, L * 0.18, 0, -H * 0.44, -0.1 * L, P.canopies, { emi: 2.4, mode: 0 });
+      b.box(W * 0.42, H * 0.16, L * 0.24, 0, -H * 0.44, -0.1 * L, c2, { mode: 2 });
+      const ne = big ? 4 : 3;
+      for (let i = 0; i < ne; i++) { const x = (i - (ne - 1) / 2) * W * 0.24; b.cyl(H * 0.22, H * 0.27, L * 0.07, 10, x, -H * 0.02, -0.52 * L, c2, { rx: Math.PI / 2 }); b.cyl(H * 0.19, H * 0.19, 1, 12, x, -H * 0.02, -0.557 * L, eng, { rx: Math.PI / 2, emi: 9, mode: 0 }); }
+    }
+    // main battery turrets on the dorsal line (match the sim's hardpoints)
+    for (let i = 0; i < d.main; i++) {
+      const z = E.lerp(-0.12, 0.34, d.main > 1 ? i / (d.main - 1) : 0.5) * L, y = d.h * 0.55;
+      if (z < -0.02 * L && !org) continue; // hidden under the citadel; the muzzle still fires from there
+      b.cyl(W * 0.06, W * 0.075, H * 0.14, org ? 12 : 6, 0, y, z, c3);
+      for (const s of [-1, 1]) b.cyl(0.9, 1.2, W * 0.26, 6, s * W * 0.022, y + H * 0.04, z + W * 0.13, dark, { rx: Math.PI / 2, mode: 0 });
+    }
+    return b.build();
+  }
+  function makeCapital(F, type) {
+    const T = E.THREE, root = new T.Group(), body = new T.Group(); root.add(body);
+    const m = mesh(cached('cap:' + F.id + ':' + type, () => capitalGeo(F, type)));
+    body.add(m);
+    return { root, body, hull: m };
+  }
+
+  function makeUnit(u) {
+    const F = E.faction(u.team);
+    if (u.kind === 'infantry') return makeInfantry(F, u.type);
+    if (u.kind === 'vehicle') return makeVehicle(F, u.type);
+    if (u.kind === 'fighter') return makeFighter(F, u.type);
+    if (u.kind === 'capital') return makeCapital(F, u.type);
+    return makeTurret(F);
+  }
+
+  E.Models = { makeUnit, makeInfantry, makeVehicle, makeFighter, makeCapital, makeTurret, cache };
 })(window.E = window.E || {});
 
 // ---- js/render/planet.js ----
 // Builds the visible planet surface from the pure terrain sampler: a
-// vertex-colored heightfield, an animated water plane, and instanced cover
-// (rocks, vegetation, ruins). All geometry and color from code.
+// high-resolution arena mesh on the sim's own height grid (so feet meet the
+// ground exactly), a coarse far ring out to the horizon, a shaded water plane,
+// and instanced cover (rocks, trees, spires, ruins). All geometry, colour and
+// surface detail come from code; the ground shader adds procedural albedo
+// variation, slope rock, bump and lava glow per pixel.
 (function (E) {
   'use strict';
 
+  const LOOK = {
+    tundra:   { rock: '#5c6470', tint: [1.12, 1.12, 1.15], rockAt: 0.3, bump: 0.5, rough: 0.6 },
+    desert:   { rock: '#9a6a44', tint: [1.1, 0.96, 0.82], rockAt: 0.34, bump: 0.55, rough: 0.95 },
+    jungle:   { rock: '#4f4a3c', tint: [0.72, 0.95, 0.6], rockAt: 0.42, bump: 0.7, rough: 0.9 },
+    urban:    { rock: '#55585f', tint: [0.8, 0.8, 0.82], rockAt: 0.3, bump: 0.6, rough: 0.85 },
+    volcanic: { rock: '#1c1512', tint: [0.6, 0.5, 0.45], rockAt: 0.3, bump: 1.0, rough: 0.8, lava: '#ff4a10', lavaLevel: -5 },
+    ocean:    { rock: '#4c5a55', tint: [0.9, 1.05, 0.85], rockAt: 0.38, bump: 0.6, rough: 0.85 },
+    cratered: { rock: '#6a6e78', tint: [0.86, 0.86, 0.9], rockAt: 0.36, bump: 0.9, rough: 0.95 },
+    gas:      { rock: '#2e2238', tint: [1.15, 0.85, 1.2], rockAt: 0.32, bump: 0.8, rough: 0.8, lava: '#b040ff', lavaLevel: -9 },
+  };
+
+  function groundMaterial(biomeId) {
+    const T = E.THREE, L = LOOK[biomeId] || LOOK.desert;
+    const m = new T.MeshStandardMaterial({ vertexColors: true, roughness: L.rough, metalness: 0.0, envMapIntensity: 0.35 });
+    const U = { uRock: { value: new T.Color(L.rock) }, uTint: { value: new T.Vector3(L.tint[0], L.tint[1], L.tint[2]) }, uRockAt: { value: L.rockAt }, uBump: { value: L.bump },
+      uLava: { value: new T.Color(L.lava || '#000000') }, uLavaLevel: { value: L.lava ? L.lavaLevel : -1e6 }, uTime: { value: 0 } };
+    m.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, U);
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz; vWNrm = normalize(mat3(modelMatrix) * objectNormal);');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm; uniform vec3 uRock, uTint, uLava; uniform float uRockAt, uBump, uLavaLevel, uTime;' + E.GLSL_NOISE)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          vec2 gwp = vWPos.xz;
+          float gn1 = gcFbm(gwp * 0.31), gn2 = gcFbm3(gwp * 0.045 + 31.0), gn3 = gcN2(gwp * 2.7);
+          float gSteep = 1.0 - normalize(vWNrm).y;
+          float gRock = smoothstep(uRockAt, uRockAt + 0.2, gSteep + (gn2 - 0.5) * 0.22);
+          vec3 gBase = diffuseColor.rgb * (0.7 + 0.42 * gn1 + 0.14 * gn3);
+          gBase = mix(gBase, gBase * uTint, smoothstep(0.42, 0.68, gn2));
+          vec3 gRockC = uRock * (0.55 + 0.7 * gcFbm(vec2(gwp.x * 0.4 + vWPos.y * 0.8, gwp.y * 0.4 - vWPos.y * 0.6)));
+          diffuseColor.rgb = mix(gBase, gRockC, gRock);`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+          { float ge = 0.4; float b0 = gcFbm3(gwp * 0.8), bx = gcFbm3((gwp + vec2(ge, 0.0)) * 0.8), bz = gcFbm3((gwp + vec2(0.0, ge)) * 0.8);
+            normal = normalize(normal + (viewMatrix * vec4(vec3(b0 - bx, 0.0, b0 - bz) * uBump * (1.0 + gRock), 0.0)).xyz); }`)
+        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          { float lv = smoothstep(uLavaLevel + 5.0, uLavaLevel - 3.0, vWPos.y);
+            float cr = gcFbm(gwp * 0.07 + vec2(uTime * 0.012, 0.0));
+            float crack = smoothstep(0.1, 0.0, abs(cr - 0.5)) + lv * smoothstep(0.45, 0.62, cr);
+            totalEmissiveRadiance += uLava * lv * crack * (2.2 + 0.8 * sin(uTime * 1.7 + cr * 30.0)); }`);
+    };
+    m.userData.U = U;
+    return m;
+  }
+
+  function colorAt(terrain, biome, noise, x, z, h, out) {
+    const pal = biome.palette, wl = terrain.waterLevel;
+    const t = E.clamp01(E.invLerp(-22, 150, h));
+    let c = t < 0.28 ? E.mixC(pal.low, pal.mid, t / 0.28) : E.mixC(pal.mid, pal.high, E.clamp01((t - 0.28) / 0.72));
+    const n = noise.fbm(x * 0.004, z * 0.004, 3);
+    c = E.mixC(c, n > 0 ? pal.high : pal.low, Math.min(0.35, Math.abs(n) * 0.6));
+    if (h < wl + 2.5) c = E.mixC(c, [c[0] * 0.5, c[1] * 0.52, c[2] * 0.5], E.clamp01((wl + 2.5 - h) / 3)); // wet shore
+    const k = new E.THREE.Color().setRGB(c[0] / 255, c[1] / 255, c[2] / 255, E.THREE.SRGBColorSpace);
+    out[0] = k.r; out[1] = k.g; out[2] = k.b;
+  }
+
   function buildTerrain(scene, terrain, biome, quality) {
-    const T = E.THREE;
-    const R = (quality === 'low' ? 96 : 160);       // grid resolution
-    const EXT = 4000;                                // half-extent of the tile
-    const pal = biome.palette;
-    const water = biome.water || {};
-    const wlevel = (water.level || 0) * 90;          // meters
-    const group = new T.Group();
+    const T = E.THREE, G = terrain.grid, group = new T.Group();
+    const noise = E.Noise(terrain.planet.seed ^ 0x77), c3 = [0, 0, 0];
+    const mat = groundMaterial(terrain.biome);
 
-    const pos = new Float32Array((R + 1) * (R + 1) * 3);
-    const col = new Float32Array((R + 1) * (R + 1) * 3);
-    const idx = [];
-    const rng = E.RNG(terrain.planet.seed ^ 0x51);
-    let k = 0;
-    const cLow = pal.low, cMid = pal.mid, cHigh = pal.high;
-    for (let iz = 0; iz <= R; iz++) {
-      for (let ix = 0; ix <= R; ix++) {
-        const x = -EXT + (ix / R) * EXT * 2;
-        const z = -EXT + (iz / R) * EXT * 2;
-        const h = terrain.height(x, z);
-        const sl = terrain.slope(x, z);
-        pos[k] = x; pos[k + 1] = h; pos[k + 2] = z; k += 3;
-
-        // color: blend low->mid->high by height, darken rock on steep slopes
-        const t = E.clamp01(E.invLerp(-40, 120, h));
-        let c = t < 0.5 ? E.mixC(cLow, cMid, t * 2) : E.mixC(cMid, cHigh, (t - 0.5) * 2);
-        const rock = E.clamp01(sl * 0.8) * 0.7;
-        c = E.mixC(c, [90, 88, 92], rock);
-        // waterline tint (wet)
-        if (water.cover > 0.05 && h < wlevel + 3) c = E.mixC(c, water.color, 0.5);
-        // slight per-vertex jitter to kill banding
-        const j = (rng.next() - 0.5) * 6;
-        col[k - 3] = E.clamp(c[0] + j, 0, 255) / 255;
-        col[k - 2] = E.clamp(c[1] + j, 0, 255) / 255;
-        col[k - 1] = E.clamp(c[2] + j, 0, 255) / 255;
-      }
+    // ── arena: the sim's height grid, vertex for vertex ──
+    const st = quality === 'low' ? 2 : 1, NX = Math.floor((G.GW - 1) / st) + 1, NZ = Math.floor((G.GH - 1) / st) + 1;
+    const pos = new Float32Array(NX * NZ * 3), col = new Float32Array(NX * NZ * 3), idx = [];
+    for (let iz = 0, k = 0; iz < NZ; iz++) for (let ix = 0; ix < NX; ix++, k += 3) {
+      const x = G.GX0 + ix * st * G.CS, z = G.GZ0 + iz * st * G.CS, h = terrain.cell(ix * st, iz * st);
+      pos[k] = x; pos[k + 1] = h; pos[k + 2] = z;
+      colorAt(terrain, biome, noise, x, z, h, c3); col[k] = c3[0]; col[k + 1] = c3[1]; col[k + 2] = c3[2];
     }
-    for (let iz = 0; iz < R; iz++) {
-      for (let ix = 0; ix < R; ix++) {
-        const a = iz * (R + 1) + ix, b = a + 1, c = a + R + 1, d = c + 1;
-        idx.push(a, c, b, b, c, d);
-      }
-    }
+    for (let iz = 0; iz < NZ - 1; iz++) for (let ix = 0; ix < NX - 1; ix++) { const a = iz * NX + ix, b = a + 1, c = a + NX, d = c + 1; idx.push(a, c, b, b, c, d); }
     const geo = new T.BufferGeometry();
-    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
-    geo.setAttribute('color', new T.BufferAttribute(col, 3));
-    geo.setIndex(idx);
-    geo.computeVertexNormals();
-    const mat = new T.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.02, flatShading: false });
-    const mesh = new T.Mesh(geo, mat);
-    mesh.receiveShadow = true;
-    group.add(mesh);
+    geo.setAttribute('position', new T.BufferAttribute(pos, 3)); geo.setAttribute('color', new T.BufferAttribute(col, 3));
+    geo.setIndex(idx); geo.computeVertexNormals();
+    const inner = new T.Mesh(geo, mat); inner.receiveShadow = true; group.add(inner);
 
-    // Water plane (animated shader for oceans; simple elsewhere)
-    if (water.cover > 0.02) {
-      const wg = new T.PlaneGeometry(EXT * 2.2, EXT * 2.2, 48, 48);
-      wg.rotateX(-Math.PI / 2);
-      const wm = new T.ShaderMaterial({
-        transparent: true, depthWrite: false,
-        uniforms: {
-          time: { value: 0 },
-          cA: { value: new T.Color().setRGB(water.color[0] / 255, water.color[1] / 255, water.color[2] / 255) },
-          cB: { value: new T.Color().setRGB(1, 1, 1) },
-          amp: { value: (water.swell || biome.weather && biome.weather.swell ? 1.0 : 0.3) },
-        },
-        vertexShader: `uniform float time,amp; varying float vW;
-          void main(){ vec3 p=position; float w=sin(p.x*0.03+time*1.3)*amp+cos(p.z*0.04+time*1.7)*amp; p.y+=w; vW=w;
-            gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.0); }`,
-        fragmentShader: `uniform vec3 cA,cB; varying float vW;
-          void main(){ float f=clamp(0.5+vW*0.15,0.0,1.0); gl_FragColor=vec4(mix(cA,cB,f*0.2),0.75); }`,
-      });
-      const waterMesh = new T.Mesh(wg, wm);
-      waterMesh.position.y = wlevel;
-      group.add(waterMesh);
-      group.userData.water = waterMesh;
+    // ── far ring: warped grid, dense near the arena, out to the horizon ──
+    const R = quality === 'low' ? 96 : 150, EXT = 13000, M = R + 1;
+    const op = new Float32Array(M * M * 3), oc = new Float32Array(M * M * 3), oi = [];
+    const warp = (u) => Math.sign(u) * Math.pow(Math.abs(u), 2.1) * EXT;
+    const x1 = G.GX0 + G.CS * 2, x2 = G.GX0 + (G.GW - 3) * G.CS, z1 = G.GZ0 + G.CS * 2, z2 = G.GZ0 + (G.GH - 3) * G.CS;
+    for (let iz = 0, k = 0; iz < M; iz++) for (let ix = 0; ix < M; ix++, k += 3) {
+      const x = warp(ix / R * 2 - 1), z = warp(iz / R * 2 - 1);
+      let h = terrain.exact(x, z);
+      colorAt(terrain, biome, noise, x, z, h, c3);
+      if (x > x1 && x < x2 && z > z1 && z < z2) h -= 40;   // tuck under the arena mesh
+      op[k] = x; op[k + 1] = h; op[k + 2] = z; oc[k] = c3[0]; oc[k + 1] = c3[1]; oc[k + 2] = c3[2];
     }
+    for (let iz = 0; iz < R; iz++) for (let ix = 0; ix < R; ix++) { const a = iz * M + ix, b = a + 1, c = a + M, d = c + 1; oi.push(a, c, b, b, c, d); }
+    const og = new T.BufferGeometry();
+    og.setAttribute('position', new T.BufferAttribute(op, 3)); og.setAttribute('color', new T.BufferAttribute(oc, 3));
+    og.setIndex(oi); og.computeVertexNormals();
+    const outer = new T.Mesh(og, mat); outer.receiveShadow = false; group.add(outer);
+    // skirt around the arena hides the seam
+    const sp = [], sc = [], si = [];
+    const edge = (ix, iz) => { const k = (iz * NX + ix) * 3; sp.push(pos[k], pos[k + 1], pos[k + 2], pos[k], pos[k + 1] - 70, pos[k + 2]); for (let j = 0; j < 2; j++) sc.push(col[k], col[k + 1], col[k + 2]); };
+    const strip = (list) => { const base = sp.length / 3; for (const [ix, iz] of list) edge(ix, iz); for (let i = 0; i < list.length - 1; i++) { const a = base + i * 2; si.push(a, a + 1, a + 2, a + 1, a + 3, a + 2, a, a + 2, a + 1, a + 1, a + 2, a + 3); } };
+    const top = [], bot = [], lef = [], rig = [];
+    for (let ix = 0; ix < NX; ix++) { top.push([ix, 0]); bot.push([ix, NZ - 1]); }
+    for (let iz = 0; iz < NZ; iz++) { lef.push([0, iz]); rig.push([NX - 1, iz]); }
+    [top, bot, lef, rig].forEach(strip);
+    const sg = new T.BufferGeometry();
+    sg.setAttribute('position', new T.Float32BufferAttribute(sp, 3)); sg.setAttribute('color', new T.Float32BufferAttribute(sc, 3)); sg.setIndex(si); sg.computeVertexNormals();
+    group.add(new T.Mesh(sg, mat));
 
-    buildCover(group, terrain, biome, R);
+    // ── water ──
+    if (terrain.waterLevel > -1e8) {
+      const w = biome.water.color, S = E.SKY[terrain.biome] || E.SKY.desert;
+      const wm = new T.ShaderMaterial({
+        transparent: true, depthWrite: true,
+        uniforms: { time: { value: 0 }, deep: { value: new T.Color().setRGB(w[0] / 255, w[1] / 255, w[2] / 255, T.SRGBColorSpace) }, skyHor: { value: new T.Color(S.hor) }, skyTop: { value: new T.Color(S.top) },
+          sunDir: { value: new T.Vector3(S.sun[0], S.sun[1], S.sun[2]).normalize() }, sunCol: { value: new T.Color(S.sunCol) }, swell: { value: biome.water.swell ? 1.0 : 0.45 } },
+        vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+        fragmentShader: E.GLSL_NOISE + `
+          varying vec3 vW; uniform float time, swell; uniform vec3 deep, skyHor, skyTop, sunDir, sunCol;
+          float wave(vec2 p){ return gcFbm3(p * 0.05 + vec2(time * 0.06, time * 0.04)) + gcFbm3(p * 0.19 - vec2(time * 0.09, -time * 0.07)) * 0.5 + gcN2(p * 0.9 + time * 0.5) * 0.12; }
+          void main(){
+            vec2 p = vW.xz; float e = 0.6;
+            float h0 = wave(p), hx = wave(p + vec2(e, 0.0)), hz = wave(p + vec2(0.0, e));
+            vec3 n = normalize(vec3((h0 - hx) * 2.2 * swell, 1.0, (h0 - hz) * 2.2 * swell));
+            vec3 v = normalize(cameraPosition - vW);
+            float fr = pow(1.0 - max(dot(n, v), 0.0), 4.0);
+            vec3 r = reflect(-v, n);
+            vec3 sky = mix(skyHor, skyTop, pow(max(r.y, 0.0), 0.5));
+            vec3 col = mix(deep * (0.5 + h0 * 0.5), sky, 0.12 + fr * 0.8);
+            col += sunCol * (pow(max(dot(r, sunDir), 0.0), 220.0) * 9.0 + pow(max(dot(r, sunDir), 0.0), 24.0) * 0.25);
+            gl_FragColor = vec4(col, 0.72 + fr * 0.28);
+          }`,
+      });
+      const water = new T.Mesh(new T.PlaneGeometry(26000, 26000, 1, 1).rotateX(-Math.PI / 2), wm);
+      water.position.y = terrain.waterLevel; water.renderOrder = 1;
+      group.add(water); group.userData.water = water;
+    }
+    group.userData.ground = mat;
+    buildCover(group, terrain, biome, quality);
     scene.world.add(group);
     return group;
   }
 
-  // Instanced cover. Density and kinds come from the biome's cover table.
-  function buildCover(group, terrain, biome, res) {
-    const T = E.THREE;
-    const cov = biome.cover || {};
-    const EXT = 3800;
-    const rng = E.RNG(terrain.planet.seed ^ 0x99);
-    const n = E.Noise(terrain.planet.seed ^ 0x44);
-    const place = (proto, count, tint) => {
-      if (count < 1) return;
-      const mat = new T.MeshStandardMaterial({ color: tint, roughness: 0.9, metalness: 0.05 });
-      const im = new T.InstancedMesh(proto, mat, count);
-      const m = new T.Matrix4(), q = new T.Quaternion(), s = new T.Vector3(), p = new T.Vector3();
-      let placed = 0, tries = count * 8;
-      while (placed < count && tries-- > 0) {
-        const x = rng.f(-EXT, EXT), z = rng.f(-EXT, EXT);
-        const h = terrain.height(x, z);
-        if (h < (biome.water ? (biome.water.level || 0) * 90 + 1 : -6)) continue; // don't sink in water
-        p.set(x, h, z); q.setFromAxisAngle(new T.Vector3(0, 1, 0), rng.angle());
-        const sc = rng.f(0.7, 1.6); s.set(sc, sc, sc);
-        m.compose(p, q, s); im.setMatrixAt(placed, m); placed++;
-      }
-      im.count = placed; im.instanceMatrix.needsUpdate = true; im.castShadow = true; im.receiveShadow = true;
-      group.add(im);
-    };
+  // ── cover ────────────────────────────────────────────────────
+  let natureMat = null;
+  function nature() {
+    if (!natureMat) natureMat = new E.THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.0, envMapIntensity: 0.3 });
+    return natureMat;
+  }
+  function rockGeo(seed, col) {
+    const T = E.THREE, r = E.RNG(seed), g = new T.IcosahedronGeometry(1, 1), p = g.attributes.position, seen = new Map();
+    for (let i = 0; i < p.count; i++) {
+      const key = p.getX(i).toFixed(3) + p.getY(i).toFixed(3) + p.getZ(i).toFixed(3);
+      let k = seen.get(key); if (k === undefined) { k = r.f(0.72, 1.25); seen.set(key, k); }
+      p.setXYZ(i, p.getX(i) * k, p.getY(i) * k * 0.75, p.getZ(i) * k);
+    }
+    const b = new E.Geo.Builder(); b.add(g, 0, 0.2, 0, col, { mode: 0 }); return b.build();
+  }
+  const GEO = {
+    rock: (b, P) => rockGeo(11, P.rock),
+    rock2: (b, P) => rockGeo(29, E.Geo.shade(P.rock, 0.8)),
+    jungleTree: (b) => { b.cyl(0.35, 0.6, 9, 6, 0, 4.5, 0, [74, 53, 36], { mode: 0 }); b.sphere(3.6, 0, 9.5, 0, [38, 96, 44], { sy: 0.6, seg: 7, seg2: 5, smooth: false, mode: 0 }); b.sphere(2.6, 1.6, 11.3, 0.8, [52, 122, 52], { sy: 0.6, seg: 7, seg2: 5, smooth: false, mode: 0 }); b.sphere(2.2, -1.4, 10.6, -1.2, [30, 82, 40], { sy: 0.6, seg: 6, seg2: 4, smooth: false, mode: 0 }); return b.build(); },
+    palm: (b) => { b.cyl(0.22, 0.34, 8, 5, 0, 4, 0, [96, 74, 50], { rz: 0.12, mode: 0 }); for (let i = 0; i < 6; i++) { const a = i / 6 * E.TAU; b.box(0.9, 0.08, 3.6, -0.5 + Math.sin(a) * 1.6, 7.9, Math.cos(a) * 1.6, [56, 128, 56], { ry: a, rx: 0.5, taper: [0.3, 1], mode: 0 }); } return b.build(); },
+    pine: (b) => { b.cyl(0.25, 0.4, 3, 5, 0, 1.5, 0, [60, 44, 32], { mode: 0 }); b.cone(2.6, 4, 7, 0, 4.4, 0, [34, 66, 54], { mode: 0 }); b.cone(2.0, 3.4, 7, 0, 6.6, 0, [44, 80, 66], { mode: 0 }); b.cone(1.3, 2.8, 7, 0, 8.6, 0, [214, 228, 240], { mode: 0 }); return b.build(); },
+    cactus: (b) => { b.cyl(0.42, 0.5, 4.4, 7, 0, 2.2, 0, [84, 128, 70], { mode: 0 }); b.cyl(0.26, 0.26, 1.8, 6, 0.95, 2.9, 0, [78, 120, 66], { mode: 0 }); b.cyl(0.26, 0.26, 0.9, 6, 0.55, 2.1, 0, [78, 120, 66], { rz: Math.PI / 2, mode: 0 }); b.cyl(0.24, 0.24, 1.4, 6, -0.9, 2.4, 0, [78, 120, 66], { mode: 0 }); b.cyl(0.24, 0.24, 0.8, 6, -0.5, 1.8, 0, [78, 120, 66], { rz: Math.PI / 2, mode: 0 }); return b.build(); },
+    scrub: (b) => { for (let i = 0; i < 6; i++) { const a = i * 1.05; b.cone(0.16, 1.5, 4, Math.cos(a) * 0.45, 0.6, Math.sin(a) * 0.45, [142, 124, 78], { rx: Math.sin(a) * 0.5, rz: -Math.cos(a) * 0.5, mode: 0 }); } return b.build(); },
+    shard: (b) => { b.cone(1.5, 8, 5, 0, 3.6, 0, [176, 214, 240], { rz: 0.14, emi: 0.12, mode: 0 }); b.cone(0.9, 4.6, 5, 1.3, 2, 0.5, [150, 196, 232], { rz: -0.3, emi: 0.12, mode: 0 }); b.cone(0.7, 3.2, 4, -1.0, 1.4, -0.7, [200, 230, 250], { rz: 0.4, emi: 0.12, mode: 0 }); return b.build(); },
+    spire: (b, P) => { b.cone(2.2, 13, 6, 0, 6, 0, [34, 26, 24], { rz: 0.08, mode: 0 }); b.cone(1.3, 7, 5, 2, 3, 1, [44, 32, 28], { rz: -0.25, mode: 0 }); b.sphere(0.6, 0.6, 0.5, -1.4, P.lava || [255, 90, 20], { emi: 5, sy: 0.4, mode: 0 }); return b.build(); },
+    tower: (b) => { b.box(16, 60, 16, 0, 30, 0, [92, 98, 112], { mode: 3 }); b.box(12, 14, 12, 0, 67, 0, [74, 80, 94], { mode: 3 }); b.box(1, 14, 1, 3, 81, 3, [50, 54, 62], { mode: 0 }); b.box(0.8, 0.8, 0.8, 3, 88.4, 3, [255, 60, 40], { emi: 6, mode: 0 }); return b.build(); },
+    block: (b) => { b.box(26, 26, 18, 0, 13, 0, [104, 104, 112], { mode: 3 }); b.box(10, 8, 10, -5, 30, 0, [84, 88, 98], { mode: 3 }); return b.build(); },
+    ruin: (b) => { b.box(7, 3.2, 0.7, 0, 1.6, 0, [118, 116, 112], { taper: [0.6, 1], mode: 0 }); b.box(0.7, 2, 4.5, 3.2, 1, 2.2, [104, 102, 100], { taper: [1, 0.5], mode: 0 }); b.box(1.6, 0.8, 1.2, -1.5, 0.4, 1.8, [96, 94, 92], { ry: 0.5, mode: 0 }); return b.build(); },
+    coral: (b) => { b.cone(0.9, 3.6, 5, 0, 1.6, 0, [198, 110, 96], { mode: 0 }); b.cone(0.6, 2.4, 5, 0.9, 1, 0.4, [224, 150, 110], { rz: -0.4, mode: 0 }); b.cone(0.5, 2, 5, -0.7, 0.9, -0.5, [180, 96, 120], { rz: 0.5, mode: 0 }); return b.build(); },
+  };
+  // [geo, count, min scale, max scale, {far: ring only, hull: use hull material, slope: max, wet: allow underwater}]
+  const COVER = {
+    tundra:   [['rock', 380, 0.8, 4.2], ['pine', 520, 0.8, 1.7], ['shard', 170, 0.6, 2.2], ['rock2', 160, 3, 9, { far: 1 }]],
+    desert:   [['rock', 420, 0.7, 4.5], ['rock2', 260, 2, 10, { far: 1 }], ['cactus', 230, 0.7, 1.6], ['scrub', 900, 0.6, 1.5]],
+    jungle:   [['jungleTree', 1300, 0.7, 1.7], ['palm', 420, 0.8, 1.5], ['rock', 300, 0.8, 3.5], ['scrub', 500, 0.8, 1.6]],
+    urban:    [['tower', 150, 0.7, 1.9, { far: 1, hull: 1 }], ['block', 130, 0.7, 1.4, { far: 1, hull: 1 }], ['ruin', 260, 0.7, 1.6], ['rock', 240, 0.5, 2], ['scrub', 300, 0.6, 1.2]],
+    volcanic: [['spire', 300, 0.6, 2.2], ['rock', 520, 0.8, 5], ['rock2', 240, 3, 11, { far: 1 }]],
+    ocean:    [['rock', 420, 0.8, 4.5], ['palm', 300, 0.8, 1.5], ['coral', 340, 0.7, 1.8, { wet: 1 }], ['scrub', 300, 0.7, 1.4]],
+    cratered: [['rock', 650, 0.6, 5], ['rock2', 300, 2, 12, { far: 1 }], ['shard', 60, 0.5, 1.6]],
+    gas:      [['spire', 260, 0.7, 2.6], ['rock', 480, 0.8, 5], ['shard', 120, 0.6, 2], ['rock2', 220, 3, 11, { far: 1 }]],
+  };
 
-    // rocks
-    const rockG = new T.IcosahedronGeometry(3, 0);
-    place(rockG, Math.round((cov.rocks || 0) * 220), 0x6b6f78);
-    // ice chunks (tundra/cratered)
-    if (cov.ice) place(new T.IcosahedronGeometry(4, 0), Math.round(cov.ice * 160), 0xbcd4e6);
-    // cacti
-    if (cov.cactus) place(new T.CylinderGeometry(0.6, 0.9, 5, 5), Math.round(cov.cactus * 120), 0x5f8a4a);
-    // vegetation (trees) — a simple trunk + canopy combo
-    if (cov.trees) {
-      const count = Math.round(cov.trees * 260);
-      const trunkG = new T.CylinderGeometry(0.5, 0.8, 4, 5);
-      const canG = new T.IcosahedronGeometry(3.4, 0);
-      const trunkMat = new T.MeshStandardMaterial({ color: 0x4a3524, roughness: 1 });
-      const canMat = new T.MeshStandardMaterial({ color: 0x2f6b34, roughness: 1 });
-      const trunks = new T.InstancedMesh(trunkG, trunkMat, count);
-      const cans = new T.InstancedMesh(canG, canMat, count);
-      const m = new T.Matrix4(), q = new T.Quaternion(), s = new T.Vector3(), p = new T.Vector3(), p2 = new T.Vector3();
-      let placed = 0, tries = count * 8;
+  function buildCover(group, terrain, biome, quality) {
+    const T = E.THREE, L = LOOK[terrain.biome] || LOOK.desert;
+    const rng = E.RNG(terrain.planet.seed ^ 0x99), noise = E.Noise(terrain.planet.seed ^ 0x44);
+    const P = { rock: E.rgb(L.rock), lava: L.lava ? E.rgb(L.lava) : null };
+    const cps = terrain.layout.cps, dens = quality === 'low' ? 0.45 : 1;
+    const m = new T.Matrix4(), q = new T.Quaternion(), s = new T.Vector3(), p = new T.Vector3(), up = new T.Vector3(0, 1, 0), col = new T.Color();
+    for (const [name, count0, s0, s1, o] of (COVER[terrain.biome] || COVER.desert)) {
+      const opt = o || {}, count = Math.round(count0 * dens);
+      const geo = GEO[name](new E.Geo.Builder(), P);
+      const im = new T.InstancedMesh(geo, opt.hull ? E.Geo.material() : nature(), count);
+      let placed = 0, tries = count * 14;
       while (placed < count && tries-- > 0) {
-        const x = rng.f(-EXT, EXT), z = rng.f(-EXT, EXT);
+        let x, z;
+        if (opt.far) { const a = rng.angle(), d = rng.f(1.05, 2.6); x = Math.cos(a) * d * E.ARENA.x * 1.15; z = Math.sin(a) * d * E.ARENA.z * 1.3; }
+        else { x = rng.f(-1480, 1480); z = rng.f(-1180, 1180); }
+        if (!opt.far && noise.fbm(x * 0.006, z * 0.006, 2) < -0.12 + rng.next() * 0.2) continue;   // clump
         const h = terrain.height(x, z);
-        if (h < (biome.water ? (biome.water.level || 0) * 90 + 1 : -6)) continue;
-        p.set(x, h + 2, z); q.setFromAxisAngle(new T.Vector3(0, 1, 0), rng.angle());
-        const sc = rng.f(0.8, 2.0); s.set(sc, sc, sc);
-        m.compose(p, q, s); trunks.setMatrixAt(placed, m);
-        p2.set(x, h + 6 * sc, z); m.compose(p2, q, s); cans.setMatrixAt(placed, m);
+        if (!opt.wet && h < terrain.waterLevel + 0.6) continue;
+        if (opt.wet && h > terrain.waterLevel - 1) continue;
+        if (!opt.far && terrain.slope(x, z) > 0.75) continue;
+        let near = false;
+        for (const c of cps) if ((x - c.x) * (x - c.x) + (z - c.z) * (z - c.z) < (c.r * 1.5) * (c.r * 1.5)) { near = true; break; }
+        if (near) continue;
+        const sc = s0 + (s1 - s0) * rng.next() * rng.next();
+        p.set(x, h - 0.15 * sc, z); q.setFromAxisAngle(up, rng.angle()); s.set(sc * rng.f(0.85, 1.15), sc * rng.f(0.85, 1.2), sc * rng.f(0.85, 1.15));
+        m.compose(p, q, s); im.setMatrixAt(placed, m);
+        const v = rng.f(0.8, 1.12); col.setRGB(v, v * rng.f(0.96, 1.04), v); im.setColorAt(placed, col);
         placed++;
       }
-      trunks.count = placed; cans.count = placed;
-      trunks.instanceMatrix.needsUpdate = true; cans.instanceMatrix.needsUpdate = true;
-      trunks.castShadow = cans.castShadow = true; trunks.receiveShadow = true;
-      group.add(trunks, cans);
-    }
-    // buildings / ruins (urban)
-    if (cov.buildings) {
-      const count = Math.round(cov.buildings * 240);
-      const g = new T.BoxGeometry(1, 1, 1);
-      const mat = new T.MeshStandardMaterial({ color: 0x8a8f9c, roughness: 0.8, metalness: 0.1 });
-      const im = new T.InstancedMesh(g, mat, count);
-      const m = new T.Matrix4(), q = new T.Quaternion(), s = new T.Vector3(), p = new T.Vector3();
-      let placed = 0, tries = count * 8;
-      while (placed < count && tries-- > 0) {
-        const x = rng.f(-EXT, EXT), z = rng.f(-EXT, EXT);
-        const h = terrain.height(x, z);
-        p.set(x, h, z); q.setFromAxisAngle(new T.Vector3(0, 1, 0), (rng.next() < 0.5 ? 0 : Math.PI / 2));
-        const w = rng.f(6, 16), hgt = rng.f(10, 70); s.set(w, hgt, w * rng.f(0.8, 1.4));
-        m.compose(p, q, s); m.elements[13] += hgt / 2; im.setMatrixAt(placed, m); placed++;
-      }
-      im.count = placed; im.instanceMatrix.needsUpdate = true; im.castShadow = im.receiveShadow = true;
+      im.count = placed; im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
+      im.castShadow = !opt.far; im.receiveShadow = true; im.frustumCulled = false;
       group.add(im);
     }
   }
 
   E.buildTerrain = buildTerrain;
-  E.buildCover = buildCover;
+  E.LOOK = LOOK;
+})(window.E = window.E || {});
+
+// ---- js/render/props.js ----
+// Battlefield structures: command posts (platform, pylon, holo-beacon, capture
+// ring), home-base bunkers and scattered barricades. The glowing parts use a
+// per-post material so they can be tinted live by ownership and capture state.
+(function (E) {
+  'use strict';
+  const GREY = { hull: [84, 90, 102], dark: [44, 48, 58], light: [128, 136, 150] };
+  const TEAM_COL = { aegis: [1.0, 0.3, 0.1], verdant: [0.15, 1.0, 0.5], neutral: [0.75, 0.82, 1.0] };
+  let postGeo = null, baseGeo = {}, barGeo = null;
+
+  function postGeometry() {
+    if (postGeo) return postGeo;
+    const b = new E.Geo.Builder();
+    b.cyl(6.5, 7.4, 0.7, 6, 0, 0.35, 0, GREY.dark);
+    b.cyl(4.2, 4.6, 0.35, 6, 0, 0.85, 0, GREY.hull);
+    b.cyl(0.75, 1.25, 7.5, 6, 0, 4.6, 0, GREY.hull);
+    b.cyl(1.5, 0.8, 1.0, 6, 0, 8.6, 0, GREY.light);
+    b.cyl(0.08, 0.08, 4.5, 4, 0, 11.3, 0, GREY.dark, { mode: 0 });
+    for (let i = 0; i < 3; i++) { const a = i / 3 * E.TAU + 0.5; b.box(0.5, 3.2, 1.6, Math.cos(a) * 1.3, 2.2, Math.sin(a) * 1.3, GREY.light, { ry: -a, taper: [1, 0.3] }); b.box(1.6, 1.3, 2.4, Math.cos(a) * 5.2, 1.3, Math.sin(a) * 5.2, GREY.hull, { ry: -a + Math.PI / 2, taper: [0.8, 0.8] }); }
+    postGeo = b.build(); return postGeo;
+  }
+  function baseGeometry(team) {
+    if (baseGeo[team]) return baseGeo[team];
+    const P = E.faction(team).palette, b = new E.Geo.Builder(), s = team === 'aegis' ? -1 : 1;
+    // bunker behind the post (away from the front)
+    b.box(18, 5.5, 11, s * 20, 2.75, 0, P.hull, { taper: [0.86, 0.8], mode: 2 });
+    b.box(12, 2.4, 7, s * 20, 6.6, 0, P.hullDark, { taper: [0.8, 0.8], mode: 3 });
+    b.box(0.3, 2.6, 3.2, s * 10.9, 1.5, 0, P.canopies, { emi: 1.6, mode: 0 });
+    b.box(17, 0.3, 0.4, s * 20, 5.2, 5.2, P.accent, { emi: 1.4, mode: 0 }); b.box(17, 0.3, 0.4, s * 20, 5.2, -5.2, P.accent, { emi: 1.4, mode: 0 });
+    b.cyl(0.25, 0.4, 9, 5, s * 25, 12, 3, P.hullDark, { mode: 0 }); b.sphere(1.6, s * 25, 16.5, 3, P.hullLight, { sy: 0.35 });
+    // landing pads
+    for (const z of [-24, 24]) { b.cyl(8, 8.6, 0.5, 8, s * 14, 0.25, z, P.hullDark, { mode: 2 }); b.torus(6.6, 0.16, s * 14, 0.56, z, P.glow, { rx: Math.PI / 2, emi: 2.2, mode: 0 }); }
+    baseGeo[team] = b.build(); return baseGeo[team];
+  }
+  function barricadeGeometry() {
+    if (barGeo) return barGeo;
+    const b = new E.Geo.Builder();
+    b.box(3.4, 1.25, 0.7, 0, 0.62, 0, GREY.hull, { taper: [0.92, 0.5] }); b.box(0.5, 1.5, 1.0, 1.9, 0.75, 0, GREY.dark); b.box(0.5, 1.5, 1.0, -1.9, 0.75, 0, GREY.dark);
+    barGeo = b.build(); return barGeo;
+  }
+
+  function makePost(cp, terrain) {
+    const T = E.THREE, g = new T.Group();
+    g.position.set(cp.pos.x, cp.pos.y, cp.pos.z);
+    const m = new T.Mesh(postGeometry(), E.Geo.material()); m.castShadow = m.receiveShadow = true; g.add(m);
+    if (cp.home) { const bm = new T.Mesh(baseGeometry(cp.home), E.Geo.material()); bm.castShadow = bm.receiveShadow = true; g.add(bm); }
+    // barricades around the pad
+    const rng = E.RNG(cp.id * 977 + 13), n = 7, im = new T.InstancedMesh(barricadeGeometry(), E.Geo.material(), n), mat = new T.Matrix4(), q = new T.Quaternion(), up = new T.Vector3(0, 1, 0);
+    for (let i = 0; i < n; i++) {
+      const a = i / n * E.TAU + rng.f(-0.25, 0.25), d = cp.r * rng.f(0.5, 0.92), x = Math.cos(a) * d, z = Math.sin(a) * d;
+      q.setFromAxisAngle(up, -a + Math.PI / 2 + rng.f(-0.3, 0.3));
+      mat.compose(new T.Vector3(x, terrain.height(cp.pos.x + x, cp.pos.z + z) - cp.pos.y, z), q, new T.Vector3(1, 1, 1)); im.setMatrixAt(i, mat);
+    }
+    im.castShadow = im.receiveShadow = true; g.add(im);
+    // glow: beam, holo ring, ground ring (tinted live)
+    const glow = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide, fog: false });
+    const beamMat = glow.clone(); beamMat.opacity = 0.16;
+    const beam = new T.Mesh(new T.CylinderGeometry(0.5, 1.5, 220, 10, 1, true), beamMat); beam.position.y = 119; g.add(beam);
+    const holo = new T.Mesh(new T.TorusGeometry(2.3, 0.12, 6, 28), glow); holo.position.y = 10.4; holo.rotation.x = Math.PI / 2; g.add(holo);
+    const holo2 = new T.Mesh(new T.TorusGeometry(1.5, 0.08, 6, 24), glow); holo2.position.y = 11.6; g.add(holo2);
+    const ringMat = glow.clone(); ringMat.opacity = 0.55;
+    const ring = new T.Mesh(new T.RingGeometry(cp.r - 0.5, cp.r, 72).rotateX(-Math.PI / 2), ringMat); ring.position.y = 0.25; g.add(ring);
+    const light = new T.PointLight(0xffffff, 60, 46, 1.6); light.position.y = 9; g.add(light);
+    return { g, glow, beamMat, ringMat, holo, holo2, light, col: new T.Color(1, 1, 1) };
+  }
+
+  function updatePost(p, cp, t, dt) {
+    const a = TEAM_COL.aegis, v = TEAM_COL.verdant, n = TEAM_COL.neutral, k = Math.abs(cp.cap), c = cp.cap >= 0 ? a : v;
+    const own = cp.owner ? 1 : k * 0.85;
+    let r = n[0] + (c[0] - n[0]) * own, g = n[1] + (c[1] - n[1]) * own, b = n[2] + (c[2] - n[2]) * own;
+    const pulse = cp.contested || (!cp.owner && k > 0.02) || (cp.owner && k < 0.99) ? 0.65 + 0.35 * Math.sin(t * 9) : 1;
+    p.col.setRGB(r * 2.4 * pulse, g * 2.4 * pulse, b * 2.4 * pulse);
+    p.glow.color.copy(p.col); p.beamMat.color.copy(p.col); p.ringMat.color.copy(p.col); p.light.color.setRGB(r, g, b);
+    p.holo.rotation.z += dt * 0.8; p.holo2.rotation.y += dt * 1.6; p.holo2.rotation.x += dt * 0.5;
+  }
+
+  E.Props = { makePost, updatePost, TEAM_COL };
 })(window.E = window.E || {});
 
 // ---- js/render/renderer.js ----
-// The Renderer: owns the three.js Scene, the planet (terrain/sky/atmosphere),
-// and a pool of unit meshes it keeps in sync with world state. It is the only
-// bridge between the simulation and the GPU. Browser-only (needs THREE).
+// The Renderer: owns the three.js Scene, the planet (terrain / sky / props),
+// the FX, and a set of unit models it keeps in sync with world state. It is the
+// only bridge between the simulation and the GPU. Browser-only (needs THREE).
 (function (E) {
   'use strict';
 
   class Renderer {
-    constructor(canvas) {
-      this.scene = new E.Scene(canvas);
+    constructor(canvas, opts) {
+      opts = opts || {};
+      this.scene = new E.Scene(canvas, opts);
       this.camera = new E.Camera(this.scene);
-      this.fx = new E.FX(this.scene);
-      this.terrain = null;
-      this.planetGroup = null;
-      this.sky = null;
-      this.meshes = new Map();      // unit id -> { group, kind, faction, prev }
-      this.time = 0;
-      window.addEventListener('resize', () => this.scene.resize());
+      this.fx = new E.FX(this.scene, this.scene.Q.particles);
+      this.fx.onShake = (p, size) => { const d = this.scene.camera.position.distanceTo(p); this.camera.shake(E.clamp(size * 5 / (d + 12), 0, 0.7)); };
+      this.models = new Map();     // unit id -> record
+      this.corpses = []; this.wrecks = []; this.posts = [];
+      this.selRings = []; this.time = 0; this.world = null;
+      this._q = new E.THREE.Quaternion(); this._q2 = new E.THREE.Quaternion(); this._up = new E.THREE.Vector3(0, 1, 0); this._n = new E.THREE.Vector3(); this._e = new E.THREE.Euler(0, 0, 0, 'YXZ');
+      this._resize = () => this.scene.resize();
+      window.addEventListener('resize', this._resize);
     }
 
-    // Build a full visible world for a planet.
-    setPlanet(planet) {
-      const biome = E.biome(planet.biome);
-      const T = E.THREE;
-      // clear any previous world
-      if (this.planetGroup) { this.scene.world.remove(this.planetGroup); this.planetGroup.traverse(o => o.geometry && o.geometry.dispose()); }
-      if (this.sky) { this.scene.scene.remove(this.sky.group); }
-      this.meshes.forEach(m => this.scene.units.remove(m.group));
-      this.meshes.clear();
-
-      this.terrain = E.makeTerrain(planet);
-      this.scene.setBiomeAtmosphere(biome);
-      this.planetGroup = E.buildTerrain(this.scene, this.terrain, biome, this.scene.quality);
-      this.sky = E.makeSky(this.scene, planet, biome);
-      this.planet = planet;
+    // Build the visible world for a match.
+    setWorld(world) {
+      const T = E.THREE, S = this.scene;
+      this.clear();
+      this.world = world; this.terrain = world.terrain;
+      const biome = world.planet.biomeDef;
+      this.sky = E.makeSky(S, world.planet, biome);
+      S.setAtmosphere(this.sky.atmosphere);
+      S.setEnvironment(this.sky.dome);
+      this.planetGroup = E.buildTerrain(S, world.terrain, biome, S.qualityName);
+      this.camera.terrain = world.terrain;
+      this.fx.setBiome(biome, world.terrain);
+      for (const cp of world.cps) { const p = E.Props.makePost(cp, world.terrain); S.world.add(p.g); this.posts.push(p); }
+      this.camera.snap();
+    }
+    clear() {
+      const S = this.scene;
+      const kill = (g) => g.traverse(o => { if (o.isInstancedMesh || (o.geometry && o.geometry.userData.own)) o.geometry.dispose(); });
+      if (this.planetGroup) { S.world.remove(this.planetGroup); this.planetGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); }); this.planetGroup = null; }
+      if (this.sky) { S.scene.remove(this.sky.group); this.sky = null; }
+      for (const p of this.posts) S.world.remove(p.g); this.posts.length = 0;
+      this.models.forEach(m => S.units.remove(m.m.root)); this.models.clear();
+      for (const c of this.corpses) S.units.remove(c.root); this.corpses.length = 0;
+      for (const w of this.wrecks) S.units.remove(w.rec.m.root); this.wrecks.length = 0;
+      for (const r of this.selRings) S.hud3d.remove(r); this.selRings.length = 0;
+      this.fx.emitters.length = 0;
     }
 
-    groundY(x, z) { return this.terrain ? this.terrain.height(x, z) : 0; }
-
-    // Create (once) the mesh for a unit, return it.
-    meshFor(unit) {
-      let m = this.meshes.get(unit.id);
-      if (m && m.kind === unit.kind) return m;
-      if (m) { this.scene.units.remove(m.group); this.scene.units.remove(m); }
-      const faction = E.faction(unit.faction);
-      let group;
-      if (unit.kind === 'infantry') group = E.makeInfantry(faction, unit.role);
-      else if (unit.kind === 'vehicle') group = E.makeVehicle(faction, unit.type);
-      else if (unit.kind === 'fighter') group = E.makeFighter(faction, unit.type);
-      else if (unit.kind === 'capital') group = E.makeCapital(faction, unit.type, unit.genome || null);
-      else group = new E.THREE.Group();
-      // faction ring marker under ground units
-      group.position.set(unit.pos.x, unit.pos.y, unit.pos.z);
-      group.rotation.y = unit.yaw || 0;
-      // floating health bar (hidden at full health)
-      const bar = new E.THREE.Mesh(new E.THREE.PlaneGeometry(2, 0.35), new E.THREE.MeshBasicMaterial({ color: 0x22ff66, side: E.THREE.DoubleSide, transparent: true, depthTest: false }));
-      bar.position.y = (unit.viewH || 2) + 1.2; bar.renderOrder = 10;
-      bar.userData.baseW = 2;
-      group.add(bar);
-      this.scene.units.add(group);
-      m = { group, kind: unit.kind, faction: unit.faction, role: unit.role, type: unit.type, bar, prev: E.V3.make(unit.pos.x, unit.pos.y, unit.pos.z) };
-      this.meshes.set(unit.id, m);
-      return m;
+    record(u) {
+      let r = this.models.get(u.id);
+      if (r) return r;
+      const m = E.Models.makeUnit(u);
+      m.root.position.set(u.pos.x, u.pos.y, u.pos.z); m.root.rotation.y = u.yaw;
+      this.scene.units.add(m.root);
+      r = { m, kind: u.kind, x: u.pos.x, y: u.pos.y, z: u.pos.z, phase: (u.id * 1.7) % 6.28, fresh: true, smokeT: 0, u };
+      if (u.kind === 'capital') this.capitalGlow(r, u);
+      this.models.set(u.id, r);
+      return r;
+    }
+    capitalGlow(r, u) {
+      const T = E.THREE, c = E.faction(u.team).palette.engine, d = u.def, org = E.faction(u.team).hull.style === 'organic';
+      const tex = this._glowTex || (this._glowTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 64; const x = cv.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.3, 'rgba(255,255,255,0.4)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new T.CanvasTexture(cv); })());
+      const n = org ? 3 : (u.type === 'dreadnought' ? 4 : 3), W = d.h * 2.5, H = d.h * 1.25;
+      for (let i = 0; i < n; i++) {
+        const s = new T.Sprite(new T.SpriteMaterial({ map: tex, color: new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), blending: T.AdditiveBlending, depthWrite: false, transparent: true, fog: false }));
+        s.scale.setScalar(H * 1.5); s.position.set((i - (n - 1) / 2) * W * (org ? 0.26 : 0.24), 0, -d.len * 0.57); r.m.body.add(s);
+      }
     }
 
-    removeUnit(id) {
-      const m = this.meshes.get(id);
-      if (m) { this.scene.units.remove(m.group); this.meshes.delete(id); }
-    }
-
-    // Sync all tracked units to their world state (with a little smoothing).
-    syncUnits(units, dt) {
-      const k = 1 - Math.exp(-dt * 10);
-      const seen = new Set();
-      for (const u of units) {
-        if (!u.alive) { this.removeUnit(u.id); continue; }
+    syncUnits(world, dt, t, localId) {
+      const k = 1 - Math.exp(-dt * 20), T = this.terrain, seen = this._seen || (this._seen = new Set());
+      seen.clear();
+      const cam = this.scene.camera.position;
+      for (const u of world.units) {
+        if (!u.alive) continue;
         seen.add(u.id);
-        const m = this.meshFor(u);
-        const g = m.group;
-        const p = u.pos, prev = m.prev;
-        g.position.x += (p.x - g.position.x) * k;
-        g.position.y += (p.y - g.position.y) * k;
-        g.position.z += (p.z - g.position.z) * k;
-        g.rotation.y = E.lerpAngle(g.rotation.y, u.yaw || 0, k);
-        prev.x = p.x; prev.y = p.y; prev.z = p.z;
-        // vehicle turret follows unit aim
-        if (g.userData.turret && !g.userData.turret.userData.locked) g.userData.turret.rotation.y = (u.aim || 0) - (u.yaw || 0);
-        // health bar: show only when damaged
-        if (m.bar && u.maxHp) {
-          const f = E.clamp01(u.hp / u.maxHp);
-          const show = f < 0.999;
-          m.bar.visible = show;
-          if (show) {
-            m.bar.scale.x = f;
-            m.bar.position.x = (f - 1) * (m.bar.userData.baseW || 2) * 0.5;
-            m.bar.material.color.setRGB(1 - f * 0.6, f, 0.2);
+        const r = this.record(u), m = r.m, g = m.root;
+        r.u = u;
+        if (r.fresh || Math.abs(u.pos.x - r.x) + Math.abs(u.pos.z - r.z) > 60) { r.x = u.pos.x; r.y = u.pos.y; r.z = u.pos.z; r.fresh = false; }
+        else { r.x += (u.pos.x - r.x) * k; r.y += (u.pos.y - r.y) * k; r.z += (u.pos.z - r.z) * k; }
+        g.position.set(r.x, r.y, r.z);
+        const d2 = (r.x - cam.x) * (r.x - cam.x) + (r.z - cam.z) * (r.z - cam.z);
+        if (u.kind === 'infantry') {
+          g.rotation.y = E.lerpAngle(g.rotation.y, u.yaw, Math.min(1, dt * 14));
+          g.visible = d2 < 1500 * 1500;
+          if (d2 < 420 * 420) {
+            const sp = Math.hypot(u.vel.x, u.vel.z), amp = Math.min(1, sp / 4) * (u.onGround ? 1 : 0.3);
+            r.phase += sp * dt * 2.3;
+            const sw = Math.sin(r.phase) * 0.8 * amp;
+            m.legL.rotation.x = sw + (u.onGround ? 0 : -0.5); m.legR.rotation.x = -sw + (u.onGround ? 0 : 0.4);
+            m.up.rotation.x = -E.clamp(u.aimPitch, -0.7, 0.7) * 0.8 + amp * 0.12;
+            m.up.position.y = 1.0 + Math.abs(Math.cos(r.phase)) * 0.045 * amp;
+            const rec = Math.max(0, 1 - (world.t - u.lastFire) * 9); m.up.position.z = -rec * 0.05;
+          }
+        } else if (u.kind === 'vehicle') {
+          T.normal(r.x, r.z, this._n);
+          this._q.setFromUnitVectors(this._up, this._n); this._q2.setFromAxisAngle(this._up, u.yaw); this._q.multiply(this._q2);
+          g.quaternion.slerp(this._q, Math.min(1, dt * 7));
+          m.body.position.y = Math.sin(t * 2.2 + u.id) * 0.07;
+          m.turret.rotation.y = u.aimYaw - u.yaw; m.gun.rotation.x = -u.aimPitch;
+          const rec = Math.max(0, 1 - (world.t - u.lastFire) * 5); m.gun.position.z = 0.5 - rec * 0.5;
+          if (d2 < 500 * 500 && Math.abs(u.spd) > 4 && this.fx.rng.next() < dt * 14) this.fx.puff({ x: r.x - Math.sin(u.yaw) * u.r * 0.7, y: r.y - u.def.hover + 0.2, z: r.z - Math.cos(u.yaw) * u.r * 0.7 }, 1, this.fx.dustCol, 1.5, 1.4, 0.8, 2.5);
+        } else if (u.kind === 'turret') {
+          m.turret.rotation.y = u.aimYaw; m.gun.rotation.x = -u.aimPitch;
+        } else if (u.kind === 'fighter') {
+          this._e.set(-u.pitch, u.yaw, -u.roll); this._q.setFromEuler(this._e);
+          g.quaternion.slerp(this._q, Math.min(1, dt * 16));
+          if (d2 < 1600 * 1600) { // engine streak
+            const c = E.faction(u.team).palette.engine, fx = Math.sin(u.yaw) * Math.cos(u.pitch), fy = Math.sin(u.pitch), fz = Math.cos(u.yaw) * Math.cos(u.pitch), b = u.r * 0.95;
+            this.fx.add.emit(r.x - fx * b, r.y - fy * b, r.z - fz * b, -fx * 8, -fy * 8, -fz * 8, 0.22 + u.spd * 0.0012, 1.5, 0.3, c[0] / 255 * 2.2, c[1] / 255 * 2.2, c[2] / 255 * 2.2, 1, 0, 0);
+          }
+        } else if (u.kind === 'capital') {
+          this._e.set(0, u.yaw, -u.roll); g.quaternion.setFromEuler(this._e);
+          // battle damage: fires and smoke along the hull as health drops
+          const dmg = 1 - u.hp / u.maxHp;
+          if (dmg > 0.25) {
+            r.smokeT -= dt * dmg * 6;
+            while (r.smokeT < 0) {
+              r.smokeT += 1;
+              const rg = this.fx.rng, lz = rg.f(-0.4, 0.3) * u.def.len, lx = rg.f(-0.3, 0.3) * u.h * 2, fx = Math.sin(u.yaw), fz = Math.cos(u.yaw);
+              const px = r.x + fx * lz - fz * lx, py = r.y + u.h * 0.45, pz = r.z + fz * lz + fx * lx;
+              this.fx.smoke.emit(px, py, pz, rg.f(-3, 3), rg.f(4, 12), rg.f(-3, 3), 5, 9, 40, 0.07, 0.07, 0.07, 0.55, 0.3, -1);
+              if (rg.next() < dmg) this.fx.add.emit(px, py, pz, rg.f(-2, 2), rg.f(3, 9), rg.f(-2, 2), 0.9, 8, 15, 3, 1.3, 0.3, 1, 0.6, -2);
+            }
           }
         }
+        if (u.id === localId) g.visible = !(u.kind === 'infantry' && this.camera.zoom > 0.85 && u.type === 'sniper');
       }
-      // remove stale
-      for (const id of [...this.meshes.keys()]) if (!seen.has(id)) this.removeUnit(id);
+      for (const [id, r] of this.models) if (!seen.has(id)) { this.scene.units.remove(r.m.root); this.models.delete(id); }
     }
 
-    // Objective beacons: a pillar + base ring, tinted by owner, height = progress.
-    syncObjectives(objectives, dt) {
-      if (!this.objGroup) { this.objGroup = new E.THREE.Group(); this.scene.hud3d.add(this.objGroup); this.obj = new Map(); }
-      const T = E.THREE, seen = new Set();
-      for (const o of objectives) {
-        seen.add(o.id);
-        let m = this.obj.get(o.id);
-        if (!m) {
-          const g = new T.Group();
-          const base = new T.Mesh(new T.TorusGeometry(o.radius, 1.2, 8, 32), new T.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.7, side: T.DoubleSide }));
-          base.rotation.x = Math.PI / 2; base.position.y = 1; g.add(base);
-          const pillar = new T.Mesh(new T.CylinderGeometry(2.5, 2.5, 400, 12, 1, true), new T.MeshBasicMaterial({ color: 0x88aaff, transparent: true, opacity: 0.28, side: T.DoubleSide, depthWrite: false }));
-          pillar.position.y = 200; g.add(pillar);
-          g.position.set(o.pos.x, o.pos.y, o.pos.z);
-          this.objGroup.add(g);
-          m = { g, base, pillar };
-          this.obj.set(o.id, m);
+    // deaths: infantry fall, capitals break up and fall out of the sky
+    applyEvents(events, world) {
+      this.fx.applyEvents(events, world);
+      for (const e of events) {
+        if (e.type !== 'death') continue;
+        const r = this.models.get(e.uid); if (!r) continue;
+        this.models.delete(e.uid);
+        if (e.kind === 'infantry') { this.corpses.push({ root: r.m.root, body: r.m.body, t: 0, dir: this.fx.rng.sign() }); if (this.corpses.length > 40) this.scene.units.remove(this.corpses.shift().root); }
+        else if (e.kind === 'capital') { this.wrecks.push({ rec: r, t: 0, vy: 0, len: r.u.def.len, h: r.u.h, yaw: e.yaw, boomT: 0 }); this.fx.explosion(e.pos, 60); this.camera.shake(0.8); }
+        else this.scene.units.remove(r.m.root);
+      }
+    }
+    updateDead(dt) {
+      for (let i = this.corpses.length - 1; i >= 0; i--) {
+        const c = this.corpses[i]; c.t += dt;
+        c.body.rotation.x = -Math.min(1, c.t * 3.2) * (Math.PI / 2 - 0.08) * c.dir; c.body.position.y = Math.min(1, c.t * 3.2) * 0.25;
+        if (c.t > 9) c.root.position.y -= dt * 0.5;
+        if (c.t > 12) { this.scene.units.remove(c.root); this.corpses.splice(i, 1); }
+      }
+      for (let i = this.wrecks.length - 1; i >= 0; i--) {
+        const w = this.wrecks[i], g = w.rec.m.root, rg = this.fx.rng; w.t += dt;
+        w.vy += dt * 5; g.position.y -= w.vy * dt; g.rotation.x += dt * 0.035; g.rotation.z += dt * 0.022;
+        g.position.x += Math.sin(w.yaw) * 6 * dt; g.position.z += Math.cos(w.yaw) * 6 * dt;
+        w.boomT -= dt;
+        if (w.boomT <= 0) { w.boomT = rg.f(0.12, 0.4); const lz = rg.f(-0.45, 0.45) * w.len; const p = { x: g.position.x + Math.sin(w.yaw) * lz + rg.f(-20, 20), y: g.position.y + rg.f(-w.h, w.h) * 0.6, z: g.position.z + Math.cos(w.yaw) * lz + rg.f(-20, 20) }; this.fx.explosion(p, rg.f(14, 34)); }
+        const gy = this.terrain.height(g.position.x, g.position.z);
+        if (g.position.y < gy + w.h * 0.3 || w.t > 40) {
+          for (let k = 0; k < 7; k++) this.fx.explosion({ x: g.position.x + rg.f(-1, 1) * w.len * 0.4, y: gy + 8, z: g.position.z + rg.f(-1, 1) * w.len * 0.4 }, rg.f(40, 80));
+          this.camera.shake(1); this.fx.emitter({ pos: { x: g.position.x, y: gy + 4, z: g.position.z }, life: 40, rate: 14, kind: 'burn', size: 14 });
+          this.scene.units.remove(g); this.wrecks.splice(i, 1);
         }
-        const col = o.owner === 'aegis' ? new T.Color(0xff5a2b) : o.owner === 'verdant' ? new T.Color(0x3df0b0) : new T.Color(0x8fa8cc);
-        m.base.material.color.copy(col);
-        m.pillar.material.color.copy(col);
-        m.pillar.scale.y = 0.2 + (o.progress || 0) * 0.8;
       }
-      for (const id of [...this.obj.keys()]) if (!seen.has(id)) { const m = this.obj.get(id); this.objGroup.remove(m.g); this.obj.delete(id); }
     }
 
-    // Target ring on the unit the focused capital/ship is engaging.
-    syncTarget(world) {
-      const T = E.THREE;
-      if (!this.targetRing) {
-        this.targetRing = new T.Mesh(new T.TorusGeometry(1, 0.6, 8, 28), new T.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.8, side: T.DoubleSide, depthTest: false }));
-        this.targetRing.rotation.x = Math.PI / 2; this.targetRing.renderOrder = 20;
-        this.scene.hud3d.add(this.targetRing);
+    // selection rings under commanded units
+    syncSelection(ids, world, team) {
+      const T = E.THREE, col = E.Props.TEAM_COL[team] || [1, 1, 1];
+      let n = 0;
+      for (const id of ids || []) {
+        const r = this.models.get(id); if (!r) continue;
+        let m = this.selRings[n];
+        if (!m) { m = new T.Mesh(new T.RingGeometry(0.86, 1, 32).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthTest: false, blending: T.AdditiveBlending, fog: false })); m.renderOrder = 9; this.scene.hud3d.add(m); this.selRings.push(m); }
+        m.visible = true; m.material.color.setRGB(col[0] * 2, col[1] * 2, col[2] * 2);
+        const u = r.u, s = Math.max(1.4, u.r * 1.5); m.scale.setScalar(s);
+        m.position.set(r.x, (u.kind === 'fighter' ? r.y - 2 : this.terrain.height(r.x, r.z) + 0.3), r.z); n++;
       }
-      const f = world.focusedUnit();
-      if (!f || (f.kind !== 'capital' && f.kind !== 'fighter')) { this.targetRing.visible = false; return; }
-      // nearest enemy unit
-      let best = null, bd = Infinity;
-      for (const e of world.unitList()) {
-        if (!e.alive || e.team === f.team) continue;
-        const d = E.distXZ2(f.pos, e.pos);
-        if (d < bd) { bd = d; best = e; }
-      }
-      if (!best) { this.targetRing.visible = false; this.currentTarget = null; return; }
-      this.currentTarget = best; this.currentTargetDist = Math.sqrt(bd);
-      this.targetRing.visible = true;
-      this.targetRing.position.set(best.pos.x, best.pos.y + best.viewH * 0.5, best.pos.z);
-      const s = Math.max(10, best.r * 1.6);
-      this.targetRing.scale.set(s, s, s);
-      this.targetRing.rotation.z += 0.02;
+      for (let i = n; i < this.selRings.length; i++) this.selRings[i].visible = false;
     }
 
-    // Per-frame animation + camera + render.
-    update(dt, t, world) {
+    // Per-frame: sync, animate, frame the camera, render.
+    update(dt, t, world, view) {
       this.time = t;
-      this.scene.gov(dt * 1000);
-      if (this.planetGroup && this.planetGroup.userData.water) {
-        this.planetGroup.userData.water.material.uniforms.time.value = t;
-      }
-      if (world) {
-        this.syncUnits(world.unitList(), dt);
-        this.syncObjectives(world.objectives, dt);
-        this.syncTarget(world);
-        // focus: possessed unit, else the centroid of my force
-        let focus = world.focusedUnit();
-        if (!focus && world.playerUnit && world.playerUnit.alive) {
-          let x = 0, z = 0, y = 0, n = 0;
-          for (const u of world.unitList()) if (u.alive && u.team === world.human) { x += u.pos.x; y += u.pos.y; z += u.pos.z; n++; }
-          if (n) focus = { id: 'force', pos: { x: x / n, y: y / n, z: z / n }, viewH: 10, yaw: 0 };
-        }
-        this.camera.setMode(world.mode(), focus);
-      }
-      this.fx.update(dt, t);
-      this.camera.update(dt, t);
-      // never let the camera sink below the surface
-      if (this.terrain) {
-        const cp = this.camera.cam.position;
-        const minY = this.terrain.height(cp.x, cp.z) + 4;
-        if (cp.y < minY) cp.y = minY;
-      }
-      this.scene.setCameraAltitude(this.camera.cam.position.y);
-      this.scene.render();
+      const S = this.scene;
+      S.gov(dt * 1000);
+      const pg = this.planetGroup;
+      if (pg) { if (pg.userData.water) pg.userData.water.material.uniforms.time.value = t; pg.userData.ground.userData.U.uTime.value = t; }
+      const local = view.unit ? view.unit.id : 0;
+      this.syncUnits(world, dt, t, local);
+      this.updateDead(dt);
+      for (let i = 0; i < this.posts.length; i++) E.Props.updatePost(this.posts[i], world.cps[i], t, dt);
+      if (view.unit) { const r = this.models.get(view.unit.id); view.pos = r ? r : view.unit.pos; }
+      this.camera.update(dt, t, view);
+      const cam = S.camera;
+      this.fx.update(dt, t, cam);
+      this.sky.update(t, cam.position);
+      // shadows hug the action; widen for the map view
+      const f = view.mode === 'unit' && view.unit ? view.pos : (view.mode === 'commander' ? { x: this.camera.cmd.x, y: 0, z: this.camera.cmd.z } : this.camera.orbit);
+      const ext = view.mode === 'unit' && view.unit ? (view.unit.kind === 'infantry' ? 110 : view.unit.kind === 'capital' ? 700 : 240) : 520;
+      S.focusShadows(f, ext);
+      S.atmo.uniforms.density.value = this.sky.atmosphere.density * (1 - E.smoothstep(300, 1400, cam.position.y) * 0.75);
+      S.render(t);
     }
+    dispose() { window.removeEventListener('resize', this._resize); this.clear(); this.scene.dispose(); }
   }
 
   E.Renderer = Renderer;
 })(window.E = window.E || {});
 
 // ---- js/render/scene.js ----
-// three.js scene core: renderer, camera, lights, fog, the group hierarchy, and
-// a light quality governor (downgrades pixel ratio / shadows when frames drop).
-// Browser-only (needs THREE + WebGL).
+// three.js scene core: renderer, HDR post-processing chain, lights, shadows and
+// a quality governor. The frame is rendered to a float target, then:
+//   scene -> atmosphere (depth-based height fog + sun in-scatter)
+//         -> bloom -> grade (vignette, grain, damage, fade) -> tone-map/output.
+// Browser-only (needs THREE + WebGL2).
 (function (E) {
   'use strict';
 
+  const QUALITY = {
+    low:    { dpr: 0.75, shadows: 0,    bloom: false, msaa: 0, particles: 0.4 },
+    medium: { dpr: 1,    shadows: 1024, bloom: true,  msaa: 0, particles: 0.7 },
+    high:   { dpr: 1.5,  shadows: 2048, bloom: true,  msaa: 4, particles: 1 },
+  };
+
+  const VS = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
+
+  function atmospherePass() {
+    const T = E.THREE;
+    const pass = new T.Pass();
+    const mat = new T.ShaderMaterial({
+      depthTest: false, depthWrite: false,
+      uniforms: {
+        tDiffuse: { value: null }, tDepth: { value: null },
+        invProj: { value: new T.Matrix4() }, invView: { value: new T.Matrix4() }, camPos: { value: new T.Vector3() },
+        fogColor: { value: new T.Color(0.6, 0.7, 0.8) }, sunColor: { value: new T.Color(1, 0.9, 0.7) }, sunDir: { value: new T.Vector3(0, 1, 0) },
+        density: { value: 0.0006 }, heightK: { value: 0.006 }, base: { value: 0 }, maxFog: { value: 0.96 },
+      },
+      vertexShader: VS,
+      fragmentShader: `
+        varying vec2 vUv; uniform sampler2D tDiffuse, tDepth; uniform mat4 invProj, invView;
+        uniform vec3 camPos, fogColor, sunColor, sunDir; uniform float density, heightK, base, maxFog;
+        void main(){
+          vec4 col = texture2D(tDiffuse, vUv);
+          float d = texture2D(tDepth, vUv).x;
+          if (d < 0.99999) {
+            vec4 v = invProj * vec4(vUv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0); v /= v.w;
+            vec3 wp = (invView * v).xyz;
+            vec3 rd = wp - camPos; float dist = length(rd); rd /= max(dist, 1e-4);
+            float t = rd.y * heightK;
+            float f = abs(t) < 1e-5 ? dist : (1.0 - exp(-dist * t)) / t;
+            float amt = density * exp(clamp(-(camPos.y - base) * heightK, -20.0, 4.0)) * f;
+            float fog = clamp(1.0 - exp(-amt), 0.0, maxFog);
+            float sun = pow(max(dot(rd, sunDir), 0.0), 8.0);
+            col.rgb = mix(col.rgb, mix(fogColor, sunColor, sun * 0.55), fog);
+          }
+          gl_FragColor = col;
+        }`,
+    });
+    const quad = new T.FullScreenQuad(mat);
+    pass.uniforms = mat.uniforms;
+    pass.render = function (renderer, writeBuffer, readBuffer) {
+      mat.uniforms.tDiffuse.value = readBuffer.texture;
+      mat.uniforms.tDepth.value = readBuffer.depthTexture;
+      renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+      quad.render(renderer);
+    };
+    pass.dispose = function () { mat.dispose(); quad.dispose(); };
+    return pass;
+  }
+
+  const GradeShader = {
+    uniforms: { tDiffuse: { value: null }, time: { value: 0 }, damage: { value: 0 }, fade: { value: 0 }, sat: { value: 1.08 }, vig: { value: 0.32 }, zoom: { value: 0 } },
+    vertexShader: VS,
+    fragmentShader: `
+      varying vec2 vUv; uniform sampler2D tDiffuse; uniform float time, damage, fade, sat, vig, zoom;
+      float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+      void main(){
+        vec2 c = vUv - 0.5; float r2 = dot(c, c);
+        vec2 ab = c * r2 * 0.012;
+        vec3 col = vec3(texture2D(tDiffuse, vUv + ab).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - ab).b);
+        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(vec3(l), col, sat - damage * 0.5);
+        col *= 1.0 - smoothstep(0.12, 0.85, r2 * (1.6 + zoom * 2.4)) * (vig + zoom * 0.5);
+        col = mix(col, vec3(0.75, 0.03, 0.0) * (0.4 + l), smoothstep(0.08, 0.5, r2) * damage);
+        col += (h(vUv * 800.0 + time) - 0.5) * 0.018;
+        gl_FragColor = vec4(col * (1.0 - fade), 1.0);
+      }`,
+  };
+
   class Scene {
-    constructor(canvas) {
-      const T = E.THREE;
+    constructor(canvas, opts) {
+      const T = E.THREE; opts = opts || {};
       this.cv = canvas;
-      this.renderer = new T.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      this.renderer = new T.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', alpha: false, stencil: false });
       this.renderer.outputColorSpace = T.SRGBColorSpace;
       this.renderer.toneMapping = T.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.05;
+      this.renderer.toneMappingExposure = 1.0;
       this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = T.PCFShadowMap;
+      this.renderer.shadowMap.type = T.PCFSoftShadowMap;
+      this.renderer.info.autoReset = false;
 
       this.scene = new T.Scene();
       this.scene.background = new T.Color(0x05070c);
-      this.camera = new T.PerspectiveCamera(60, 1, 0.5, 60000);
-      this.camera.position.set(0, 30, 80);
+      this.camera = new T.PerspectiveCamera(60, 1, 0.4, 30000);
+      this.camera.position.set(0, 60, 160);
 
-      // group hierarchy
-      this.world = new T.Group();   // terrain, water, cover
-      this.units = new T.Group();   // infantry/vehicles/fighters/capitals
-      this.fx = new T.Group();      // projectiles, flashes, trails, particles
-      this.hud3d = new T.Group();   // world-anchored labels/rings
+      this.world = new T.Group(); this.units = new T.Group(); this.fx = new T.Group(); this.hud3d = new T.Group();
       this.scene.add(this.world, this.units, this.fx, this.hud3d);
 
-      // lights
-      this.hemi = new T.HemisphereLight(0xbfd4ff, 0x0a0a0a, 0.5);
-      this.scene.add(this.hemi);
-      this.sun = new T.DirectionalLight(0xffffff, 1.4);
-      this.sun.position.set(0.4, 0.6, -0.5).multiplyScalar(2000);
+      this.hemi = new T.HemisphereLight(0xbfd4ff, 0x30281c, 0.9);
+      this.sun = new T.DirectionalLight(0xffffff, 3);
       this.sun.castShadow = true;
-      this.sun.shadow.mapSize.set(2048, 2048);
-      const sc = this.sun.shadow.camera;
-      sc.near = 50; sc.far = 6000; sc.left = sc.bottom = -1500; sc.right = sc.top = 1500;
-      this.scene.add(this.sun, this.sun.target);
-      this.fill = new T.AmbientLight(0x223040, 0.4);
-      this.scene.add(this.fill);
+      this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.6;
+      this.scene.add(this.hemi, this.sun, this.sun.target);
+      this.sunDir = new T.Vector3(0.4, 0.6, -0.5).normalize();
+      this.shadowExtent = 160;
 
-      this.fog = new T.Fog(0x9fb4c9, 200, 3000);
-      this.scene.fog = this.fog;
-
-      this.quality = 'high';
-      this.frameGapAvg = 16.7;
-      this.lastT = 0;
-      this.onResize = null;
+      this.qualityName = opts.quality && opts.quality !== 'auto' ? opts.quality : 'high';
+      this.auto = !opts.quality || opts.quality === 'auto';
+      this.Q = QUALITY[this.qualityName];
+      this.frameAvg = 16; this._gt = 0;
+      this.buildComposer();
+      this.applyQuality();
       this.resize();
     }
 
-    setBiomeAtmosphere(b) {
+    buildComposer() {
+      const T = E.THREE, Q = this.Q;
+      if (this.composer) { this.composer.dispose(); this.rt.dispose(); }
+      const rt = new T.WebGLRenderTarget(4, 4, { type: T.HalfFloatType, samples: Q.msaa, depthBuffer: true });
+      rt.depthTexture = new T.DepthTexture(4, 4, T.UnsignedIntType);
+      this.rt = rt;
+      const c = new T.EffectComposer(this.renderer, rt);
+      c.addPass(new T.RenderPass(this.scene, this.camera));
+      this.atmo = atmospherePass(); c.addPass(this.atmo);
+      this.bloom = new T.UnrealBloomPass(new T.Vector2(256, 256), 0.5, 0.55, 1.0); c.addPass(this.bloom);
+      this.grade = new T.ShaderPass(GradeShader); c.addPass(this.grade);
+      c.addPass(new T.OutputPass());
+      this.composer = c;
+      if (this._atmo) this.setAtmosphere(this._atmo);
+    }
+
+    applyQuality() {
+      const Q = this.Q, r = this.renderer;
+      this.bloom.enabled = Q.bloom;
+      r.shadowMap.enabled = Q.shadows > 0; this.sun.castShadow = Q.shadows > 0;
+      if (Q.shadows && this.sun.shadow.mapSize.x !== Q.shadows) { this.sun.shadow.mapSize.set(Q.shadows, Q.shadows); if (this.sun.shadow.map) { this.sun.shadow.map.dispose(); this.sun.shadow.map = null; } }
+      this.scene.traverse(o => { if (o.material && o.isMesh) o.material.needsUpdate = true; });
+    }
+    setQuality(name) {
+      this.auto = name === 'auto';
+      if (this.auto) name = this.qualityName;
+      const msaa = this.Q.msaa;
+      this.qualityName = name; this.Q = QUALITY[name] || QUALITY.high;
+      if (this.Q.msaa !== msaa) this.buildComposer();
+      this.applyQuality(); this.resize();
+    }
+
+    // biome atmosphere: sun, ambient, fog
+    setAtmosphere(a) {
+      this._atmo = a;
+      const u = this.atmo.uniforms;
+      u.fogColor.value.copy(a.fogColor); u.sunColor.value.copy(a.sunColor); u.sunDir.value.copy(a.sunDir);
+      u.density.value = a.density; u.heightK.value = a.heightK; u.base.value = a.base || 0;
+      this.sunDir.copy(a.sunDir);
+      this.sun.color.copy(a.sunColor); this.sun.intensity = a.sunI;
+      this.hemi.color.copy(a.skyColor); this.hemi.groundColor.copy(a.groundColor); this.hemi.intensity = a.ambI;
+      this.bloom.strength = a.bloom || 0.5;
+    }
+    setEnvironment(skyMesh) {
       const T = E.THREE;
-      const pal = b.palette;
-      this.scene.background = new T.Color().setRGB(pal.sky[0] / 255, pal.sky[1] / 255, pal.sky[2] / 255);
-      this.fog.color.setRGB(pal.fog[0] / 255, pal.fog[1] / 255, pal.fog[2] / 255);
-      // fog distance from the biome's inherent visibility challenge
-      const vis = (b.challenge && b.challenge.fog) || 3000;
-      this.fog.far = Math.max(400, vis);
-      this.fog.near = Math.max(30, vis * 0.08);
-      this._fogFar = this.fog.far; this._fogNear = this.fog.near;
-      this.hemi.color.setRGB(pal.sky[0] / 255, pal.sky[1] / 255, pal.sky[2] / 255);
-      this.hemi.groundColor.setRGB(pal.low[0] / 255, pal.low[1] / 255, pal.low[2] / 255);
-      const s = b.sun || {};
-      this.sun.color.setRGB(s.color[0] / 255, s.color[1] / 255, s.color[2] / 255);
-      this.sun.intensity = (s.strength || 1) * 1.3;
-      this.sun.position.set((s.dir ? s.dir[0] : 0.4), (s.dir ? s.dir[1] : 0.6), (s.dir ? s.dir[2] : -0.5)).multiplyScalar(2600);
-      this.sun.castShadow = this.quality !== 'low';
+      try {
+        const pm = new T.PMREMGenerator(this.renderer), s = new T.Scene();
+        const m = new T.Mesh(skyMesh.geometry, skyMesh.material); s.add(m);
+        const env = pm.fromScene(s, 0, 1, 40000).texture;
+        if (this.scene.environment) this.scene.environment.dispose();
+        this.scene.environment = env; this.scene.environmentIntensity = 0.75;
+        pm.dispose();
+      } catch (e) { console.warn('env map failed', e); }
     }
 
     resize() {
-      const W = window.innerWidth || this.cv.clientWidth || 1280;
-      const H = window.innerHeight || this.cv.clientHeight || 720;
-      this.camera.aspect = W / H;
-      this.camera.updateProjectionMatrix();
-      const dpr = Math.min(this.quality === 'low' ? 1 : 2, window.devicePixelRatio || 1);
+      const W = window.innerWidth || 1280, H = window.innerHeight || 720;
+      this.camera.aspect = W / H; this.camera.updateProjectionMatrix();
+      const dpr = Math.min(this.Q.dpr, window.devicePixelRatio || 1) * (this.dprScale || 1);
       this.renderer.setPixelRatio(dpr);
       this.renderer.setSize(W, H, false);
+      this.composer.setPixelRatio(dpr);
+      this.composer.setSize(W, H);
     }
 
-    // Fade ground fog as the camera climbs into air/space (clearer horizon up high).
-    setCameraAltitude(alt) {
-      if (!this.scene.fog) return;
-      const t = E.clamp01(E.invLerp(60, 3000, alt));
-      const base = this._fogFar || this.fog.far;
-      this.fog.far = base * (1 + t * 6);      // horizon opens up with altitude
-      this.fog.near = (this._fogNear || this.fog.near) * (1 + t * 3);
+    // keep the shadow frustum centred on what the player is looking at
+    focusShadows(p, extent) {
+      const s = this.sun, cam = s.shadow.camera, ex = extent || this.shadowExtent;
+      if (cam.right !== ex) { cam.left = cam.bottom = -ex; cam.right = cam.top = ex; cam.near = 10; cam.far = 2400; cam.updateProjectionMatrix(); }
+      const texel = (ex * 2) / (this.Q.shadows || 1024) * 4;
+      const fx = Math.round(p.x / texel) * texel, fz = Math.round(p.z / texel) * texel, fy = Math.round(p.y / texel) * texel;
+      s.target.position.set(fx, fy, fz);
+      s.position.set(fx + this.sunDir.x * 1100, fy + this.sunDir.y * 1100, fz + this.sunDir.z * 1100);
+      s.target.updateMatrixWorld();
     }
 
-    // Quality governor: downgrades before a visible stutter, probes back up.
+    // quality governor: step down before a visible stutter, probe back up
     gov(dtMs) {
-      this.frameGapAvg = this.frameGapAvg * 0.95 + dtMs * 0.05;
-      if (this._gt === undefined) this._gt = 0;
-      this._gt += dtMs;
-      if (this._gt < 2000) return;
-      this._gt = 0;
-      const r = this.renderer;
-      if (this.frameGapAvg > 20 && this.quality === 'high') {
-        this.quality = 'medium'; r.setPixelRatio(1); r.shadowMap.enabled = false;
-        this.sun.castShadow = false; this.scene.userData.low = true;
-      } else if (this.frameGapAvg > 30 && this.quality === 'medium') {
-        this.quality = 'low'; r.setPixelRatio(0.75);
-      } else if (this.frameGapAvg < 12 && this.quality === 'low') {
-        this.quality = 'medium'; r.setPixelRatio(1);
-      } else if (this.frameGapAvg < 10 && this.quality === 'medium') {
-        this.quality = 'high'; r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); r.shadowMap.enabled = true;
-      }
+      this.frameAvg = this.frameAvg * 0.95 + dtMs * 0.05;
+      if (!this.auto) return;
+      this._gt += dtMs; if (this._gt < 2500) return; this._gt = 0;
+      const order = ['low', 'medium', 'high'], i = order.indexOf(this.qualityName);
+      if (this.frameAvg > 24 && i > 0) { this._swap(order[i - 1]); this._up = 0; }
+      else if (this.frameAvg < 13 && i < 2) { this._up = (this._up || 0) + 1; if (this._up >= 4 && !this._capped) { this._swap(order[i + 1]); this._up = 0; this._capped = (this._downs = (this._downs || 0) + 1) > 3; } }
     }
+    _swap(name) { const msaa = this.Q.msaa; this.qualityName = name; this.Q = QUALITY[name]; if (this.Q.msaa !== msaa) this.buildComposer(); this.applyQuality(); this.resize(); this.frameAvg = 16; }
 
-    render() { this.renderer.render(this.scene, this.camera); }
-    dispose() { this.renderer.dispose(); }
+    render(t) {
+      const u = this.atmo.uniforms, cam = this.camera;
+      cam.updateMatrixWorld();
+      u.invProj.value.copy(cam.projectionMatrixInverse); u.invView.value.copy(cam.matrixWorld); u.camPos.value.copy(cam.position);
+      this.grade.uniforms.time.value = t % 100;
+      this.renderer.info.reset();
+      this.composer.render();
+    }
+    dispose() { this.composer.dispose(); this.renderer.dispose(); }
   }
 
   E.Scene = Scene;
+  E.QUALITY = QUALITY;
 })(window.E = window.E || {});
 
 // ---- js/render/sky.js ----
-// Procedural sky: a shader sky-dome (horizon->zenith gradient with a sun glow),
-// a starfield, and distant moons/asteroids. All generated from code, no images.
+// Procedural sky: an art-directed shader dome per biome (scattering-style
+// gradient, sun disc + halo, drifting fbm clouds, stars and nebulae that emerge
+// as the camera climbs toward space), plus distant shaded planets, moons and
+// rings. Everything is generated in the shader — no images.
 (function (E) {
   'use strict';
 
-  function makeSky(scene, planet, biome) {
-    const T = E.THREE;
-    const group = new T.Group();
+  E.GLSL_NOISE = `
+    float gcH2(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+    float gcN2(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(gcH2(i), gcH2(i + vec2(1, 0)), f.x), mix(gcH2(i + vec2(0, 1)), gcH2(i + vec2(1, 1)), f.x), f.y); }
+    float gcFbm(vec2 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++) { s += a * gcN2(p); p = p * 2.03 + 17.1; a *= 0.5; } return s; }
+    float gcFbm3(vec2 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 3; i++) { s += a * gcN2(p); p = p * 2.03 + 17.1; a *= 0.5; } return s; }`;
 
-    // Sky dome: big inverted sphere with a gradient + sun glow shader.
-    const geo = new T.SphereGeometry(48000, 32, 16);
-    const pal = biome.palette;
-    const sun = biome.sun || {};
-    const uniforms = {
-      top: { value: new T.Color().setRGB(pal.skyHi[0] / 255, pal.skyHi[1] / 255, pal.skyHi[2] / 255) },
-      bot: { value: new T.Color().setRGB(pal.sky[0] / 255, pal.sky[1] / 255, pal.sky[2] / 255) },
-      sunDir: { value: new T.Vector3(sun.dir ? sun.dir[0] : 0.4, sun.dir ? sun.dir[1] : 0.6, sun.dir ? sun.dir[2] : -0.5).normalize() },
-      sunCol: { value: new T.Color().setRGB(sun.color[0] / 255, sun.color[1] / 255, sun.color[2] / 255) },
-      sunI: { value: (sun.strength || 1) },
-      offset: { value: 6 },
-      exponent: { value: 0.9 },
-    };
-    const mat = new T.ShaderMaterial({
-      side: T.BackSide, depthWrite: false, fog: false, uniforms,
-      vertexShader: `
-        varying vec3 vDir;
-        void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-      fragmentShader: `
-        varying vec3 vDir; uniform vec3 top,bot,sunDir,sunCol; uniform float sunI,offset,exponent;
+  const hex = (h) => new E.THREE.Color(h);
+  // Per-biome art direction. sun = direction to the sun; space = how much of
+  // the sky is already "space" at ground level (airless worlds).
+  const SKY = {
+    tundra:   { top: '#1d3f78', hor: '#c6d6ea', sunCol: '#ffe2c4', sun: [0.55, 0.3, -0.5], sunI: 3.0, cloud: 0.5, cloudCol: '#eef3fa', cloudDark: '#7d8ea8', fog: '#a9bfd6', amb: 1.0, space: 0.0, bloom: 0.5 },
+    desert:   { top: '#1f4f9a', hor: '#efcfa2', sunCol: '#fff0d0', sun: [0.4, 0.52, -0.55], sunI: 3.6, cloud: 0.22, cloudCol: '#fff3e0', cloudDark: '#c9a988', fog: '#e2c49c', amb: 0.95, space: 0.0, bloom: 0.5 },
+    jungle:   { top: '#2c6f96', hor: '#c4e2cc', sunCol: '#fff6d8', sun: [0.5, 0.55, -0.4], sunI: 3.0, cloud: 0.6, cloudCol: '#f4fbf2', cloudDark: '#6f9082', fog: '#a8cdb6', amb: 1.05, space: 0.0, bloom: 0.5 },
+    urban:    { top: '#232a52', hor: '#f08e4e', sunCol: '#ffb070', sun: [0.75, 0.16, -0.4], sunI: 3.2, cloud: 0.5, cloudCol: '#ffb48a', cloudDark: '#4a3a5e', fog: '#c98a6c', amb: 0.85, space: 0.05, bloom: 0.6 },
+    volcanic: { top: '#140808', hor: '#a03812', sunCol: '#ff7a3a', sun: [0.3, 0.22, -0.7], sunI: 2.6, cloud: 0.78, cloudCol: '#c0502a', cloudDark: '#1c1210', fog: '#6a2a1a', amb: 0.7, space: 0.0, bloom: 0.75 },
+    ocean:    { top: '#27506f', hor: '#b4ccd6', sunCol: '#e8f6ff', sun: [0.35, 0.6, -0.5], sunI: 2.7, cloud: 0.72, cloudCol: '#e6eef2', cloudDark: '#55697a', fog: '#93b2c0', amb: 1.1, space: 0.0, bloom: 0.5 },
+    cratered: { top: '#020308', hor: '#1a1d2a', sunCol: '#ffffff', sun: [0.5, 0.4, -0.5], sunI: 4.0, cloud: 0.0, cloudCol: '#ffffff', cloudDark: '#888888', fog: '#3a3d48', amb: 0.45, space: 1.0, bloom: 0.6 },
+    gas:      { top: '#120a2a', hor: '#7a3f8c', sunCol: '#ffd0f0', sun: [0.45, 0.3, -0.6], sunI: 2.6, cloud: 0.35, cloudCol: '#e0a8f0', cloudDark: '#2c1a44', fog: '#5a3470', amb: 0.8, space: 0.45, bloom: 0.7 },
+  };
+
+  function planetMesh(radius, cA, cB, seed, banded, sunDir) {
+    const T = E.THREE;
+    const m = new T.ShaderMaterial({
+      fog: false, uniforms: { cA: { value: hex(cA) }, cB: { value: hex(cB) }, sunDir: { value: sunDir }, seed: { value: seed }, banded: { value: banded ? 1 : 0 } },
+      vertexShader: 'varying vec3 vN, vP; void main(){ vN = normalize(normal); vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: E.GLSL_NOISE + `
+        varying vec3 vN, vP; uniform vec3 cA, cB, sunDir; uniform float seed, banded;
         void main(){
-          float h = clamp(vDir.y,0.0,1.0);
-          vec3 col = mix(bot, top, pow(h, exponent));
-          float sd = max(dot(vDir, normalize(sunDir)),0.0);
-          col += sunCol * (pow(sd, 900.0)*1.4 + pow(sd, 10.0)*0.12) * sunI;
-          gl_FragColor = vec4(col,1.0);
+          vec3 n = normalize(vN);
+          vec2 uv = vec2(atan(n.z, n.x) * 2.0, n.y * 6.0) + seed;
+          float pat = banded > 0.5 ? gcFbm(vec2(uv.x * 0.25 + gcFbm(uv * 1.5) * 0.6, uv.y * 2.2)) : gcFbm(uv * 3.0);
+          vec3 col = mix(cA, cB, smoothstep(0.3, 0.7, pat));
+          if (banded < 0.5) col *= 0.75 + 0.5 * gcFbm(uv * 9.0);
+          float l = smoothstep(-0.15, 0.55, dot(n, sunDir));
+          float rim = pow(1.0 - max(dot(n, normalize(cameraPosition - vP)), 0.0), 3.0);
+          gl_FragColor = vec4(col * (0.03 + l * 1.1) + cB * rim * l * 0.5, 1.0);
         }`,
     });
-    const dome = new T.Mesh(geo, mat);
-    dome.renderOrder = -10;
+    return new T.Mesh(new T.SphereGeometry(radius, 48, 32), m);
+  }
+  function ringMesh(r0, r1, col) {
+    const T = E.THREE, g = new T.RingGeometry(r0, r1, 96, 1);
+    const m = new T.ShaderMaterial({
+      fog: false, transparent: true, side: T.DoubleSide, depthWrite: false, uniforms: { col: { value: hex(col) }, r0: { value: r0 }, r1: { value: r1 } },
+      vertexShader: 'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: E.GLSL_NOISE + `varying vec3 vP; uniform vec3 col; uniform float r0, r1;
+        void main(){ float t = (length(vP.xy) - r0) / (r1 - r0); float b = gcN2(vec2(t * 46.0, 0.5)) * 0.7 + gcN2(vec2(t * 9.0, 3.5)) * 0.5;
+          gl_FragColor = vec4(col * (0.5 + b * 0.6), smoothstep(0.0, 0.06, t) * smoothstep(1.0, 0.9, t) * b * 0.8); }`,
+    });
+    return new T.Mesh(g, m);
+  }
+
+  function makeSky(scene, planet, biome) {
+    const T = E.THREE, S = SKY[planet.biome] || SKY.desert;
+    const group = new T.Group();
+    const sunDir = new T.Vector3(S.sun[0], S.sun[1], S.sun[2]).normalize();
+    const uniforms = {
+      top: { value: hex(S.top) }, hor: { value: hex(S.hor) }, sunDir: { value: sunDir }, sunCol: { value: hex(S.sunCol) },
+      cloudCol: { value: hex(S.cloudCol) }, cloudDark: { value: hex(S.cloudDark) }, cover: { value: S.cloud },
+      time: { value: 0 }, space: { value: S.space }, seed: { value: (planet.seed % 1000) * 0.37 },
+      nebA: { value: hex(E.rgbStr(E.hsl2rgb((planet.seed % 97) / 97, 0.7, 0.45))) }, nebB: { value: hex(E.rgbStr(E.hsl2rgb(((planet.seed % 97) / 97 + 0.35) % 1, 0.8, 0.4))) },
+    };
+    const mat = new T.ShaderMaterial({
+      side: T.BackSide, depthWrite: false, depthTest: false, fog: false, uniforms,
+      vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: E.GLSL_NOISE + `
+        varying vec3 vDir; uniform vec3 top, hor, sunDir, sunCol, cloudCol, cloudDark, nebA, nebB; uniform float cover, time, space, seed;
+        float stars(vec3 d, float sc){
+          vec3 p = d * sc; vec3 i = floor(p), f = fract(p) - 0.5;
+          float h = fract(sin(dot(i, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          float s = smoothstep(0.985, 1.0, h) * smoothstep(0.38, 0.0, length(f));
+          return s * (0.6 + 0.4 * sin(time * 2.0 + h * 90.0));
+        }
+        void main(){
+          vec3 d = normalize(vDir);
+          float h = max(d.y, 0.0);
+          float sd = max(dot(d, sunDir), 0.0);
+          vec3 sky = mix(hor, top, pow(h, 0.5));
+          sky += sunCol * pow(sd, 6.0) * 0.22 * (1.0 - h);                    // warm scatter near the sun
+          sky = mix(sky, hor * 0.7, smoothstep(0.0, -0.3, d.y));
+          float sp = clamp(space, 0.0, 1.0) * smoothstep(-0.2, 0.35, d.y + space * 0.4);
+          vec3 col = sky * (1.0 - sp * 0.97);
+          // stars + nebula (space)
+          float st = stars(d, 140.0) + stars(d, 260.0) * 0.6;
+          vec2 nuv = vec2(atan(d.z, d.x) * 1.4, d.y * 2.6) + seed;
+          float nb = gcFbm(nuv * 1.3 + gcFbm(nuv * 2.0) * 0.8);
+          vec3 neb = mix(nebA, nebB, gcFbm(nuv * 0.7 + 5.0)) * smoothstep(0.42, 0.85, nb) * 0.5;
+          col += (vec3(st) * 2.2 + neb) * sp;
+          // clouds: project onto a plane above the viewer
+          if (cover > 0.01 && d.y > 0.0) {
+            vec2 cp = d.xz / (d.y + 0.14) * 1.1 + vec2(time * 0.006, time * 0.003) + seed;
+            float n = gcFbm(cp + gcFbm(cp * 2.3 + time * 0.01) * 0.35);
+            float dens = smoothstep(1.0 - cover, 1.0 - cover + 0.3, n + 0.18) * smoothstep(0.0, 0.16, d.y);
+            float lit = smoothstep(0.2, 0.9, gcFbm(cp + sunDir.xz * 0.12) - n + 0.55);
+            vec3 cc = mix(cloudDark, cloudCol, lit) + sunCol * pow(sd, 10.0) * 0.6;
+            col = mix(col, cc, dens * 0.92 * (1.0 - sp * 0.85));
+          }
+          // sun disc + halo
+          col += sunCol * (smoothstep(0.9994, 0.9998, sd) * 30.0 + pow(sd, 400.0) * 3.0 + pow(sd, 40.0) * 0.4);
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    });
+    const dome = new T.Mesh(new T.SphereGeometry(20000, 48, 24), mat);
+    dome.renderOrder = -100; dome.frustumCulled = false;
     group.add(dome);
 
-    // Stars (visible in the upper dome; subtle in gas biomes, bright in cratered).
-    const sr = E.RNG(planet.seed ^ 0xabcd);
-    const starCount = (biome.class === 'gas') ? 1600 : 900;
-    const pos = new Float32Array(starCount * 3), size = new Float32Array(starCount);
-    for (let i = 0; i < starCount; i++) {
-      const a = sr.angle(), y = sr.f(0.1, 1.0), r = Math.sqrt(1 - y * y);
-      pos[i * 3] = Math.cos(a) * r * 47000; pos[i * 3 + 1] = y * 47000; pos[i * 3 + 2] = Math.sin(a) * r * 47000;
-      size[i] = sr.f(0.8, 2.6);
+    // distant bodies (they ride with the dome so they never get closer)
+    const r = E.RNG(planet.seed ^ 0x1234), bodies = new T.Group(); group.add(bodies);
+    const place = (m, az, el, dist) => { m.position.set(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el)).multiplyScalar(dist); bodies.add(m); return m; };
+    if (planet.biome === 'gas') {
+      const g = place(planetMesh(6200, '#c08a5a', '#6a3a8c', planet.seed % 50, true, sunDir), 2.4, 0.42, 16000);
+      const ring = ringMesh(7800, 12500, '#d8b8e8'); ring.rotation.x = 1.25; ring.rotation.y = 0.3; g.add(ring);
+      place(planetMesh(520, '#8a8f9a', '#c4c9d4', 3, false, sunDir), 0.9, 0.5, 17000);
+    } else {
+      const n = 1 + (planet.seed % 2) + (S.space > 0.5 ? 1 : 0);
+      for (let i = 0; i < n; i++) {
+        const big = i === 0 && r.chance(0.5);
+        const hue = r.next();
+        const m = place(planetMesh(big ? r.f(1700, 2600) : r.f(380, 900), E.rgbStr(E.hsl2rgb(hue, 0.25, 0.55)), E.rgbStr(E.hsl2rgb(hue + 0.08, 0.35, 0.3)), r.f(0, 50), big && r.chance(0.5), sunDir), r.angle(), r.f(0.2, 0.75), 17500);
+        if (big && r.chance(0.4)) { const ring = ringMesh(m.geometry.parameters.radius * 1.3, m.geometry.parameters.radius * 2.1, '#cfc8b8'); ring.rotation.x = r.f(1.0, 1.5); m.add(ring); }
+      }
     }
-    const sg = new T.BufferGeometry();
-    sg.setAttribute('position', new T.BufferAttribute(pos, 3));
-    sg.setAttribute('size', new T.BufferAttribute(size, 1));
-    const smat = new T.ShaderMaterial({
-      transparent: true, depthWrite: false, fog: false, blending: T.AdditiveBlending,
-      uniforms: { opacity: { value: (biome.class === 'gas') ? 0.5 : 0.85 } },
-      vertexShader: `uniform float opacity; attribute float size; varying float vA; void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=size*(300.0/-mv.z); gl_Position=projectionMatrix*mv; vA=opacity; }`,
-      fragmentShader: `varying float vA; void main(){ float d=length(gl_PointCoord-0.5); if(d>0.5) discard; gl_FragColor=vec4(vec3(1.0), (1.0-d*2.0)*vA); }`,
-    });
-    const stars = new T.Points(sg, smat);
-    stars.renderOrder = -9;
-    group.add(stars);
+    bodies.traverse(o => { if (o.isMesh) { o.renderOrder = -90; o.material.depthWrite = false; o.frustumCulled = false; } });
+    scene.scene.add(group);
 
-    // Moons: a few distant spheres, tinted by the biome.
-    const mr = E.RNG(planet.seed ^ 0x1234);
-    const moons = Math.min(planet.moons || 1, 3);
-    for (let i = 0; i < moons; i++) {
-      const a = mr.angle(), y = mr.f(0.15, 0.6), r = Math.sqrt(1 - y * y);
-      const md = new T.Mesh(
-        new T.SphereGeometry(mr.f(2600, 4200), 24, 16),
-        new T.MeshStandardMaterial({ color: new T.Color().setRGB(
-          (pal.mid[0] + 30) / 255, (pal.mid[1] + 30) / 255, (pal.mid[2] + 30) / 255), roughness: 0.9, metalness: 0.1 }),
-      );
-      md.position.set(Math.cos(a) * r, y, Math.sin(a) * r).multiplyScalar(46000);
-      group.add(md);
-    }
-
-    const scene3 = scene.scene; // the three.js Scene (scene is the E.Scene wrapper)
-    scene3.add(group);
-    return { group, dome, mat: uniforms, stars, setSun(t) { /* day/night can drive uniforms here */ } };
+    const atmosphere = {
+      fogColor: hex(S.fog), sunColor: hex(S.sunCol), sunDir, sunI: S.sunI, skyColor: hex(S.hor).lerp(hex(S.top), 0.45), groundColor: new T.Color().setRGB(biome.palette.low[0] / 255, biome.palette.low[1] / 255, biome.palette.low[2] / 255, T.SRGBColorSpace).multiplyScalar(0.5),
+      ambI: S.amb, density: 2.0 / ((biome.challenge && biome.challenge.fog) || 3000), heightK: S.space > 0.5 ? 0.02 : 0.0045, base: 0, bloom: S.bloom,
+    };
+    return {
+      group, dome, uniforms, atmosphere, S,
+      update(t, camPos) {
+        uniforms.time.value = t;
+        group.position.copy(camPos);
+        uniforms.space.value = Math.max(S.space, E.smoothstep(350, 1500, camPos.y) * 0.85);
+      },
+    };
   }
 
   E.makeSky = makeSky;
+  E.SKY = SKY;
 })(window.E = window.E || {});
 
 // ---- js/ui/game.js ----
-// The game controller: owns the world, the renderer, input, and the loop.
-// M1 adds the battle controls:
-//   Left-click      select nearest own unit at cursor (ground)
-//   Left-drag       box-select own units
-//   Right-click     command the selection (attack-move to that point)
-//   F               possess the nearest own unit (board it)
-//   Esc / C         release possession / back to commander view
-//   WASD            move (possessed) or orbit (commander)
-//   Mouse           look (fps / vehicle / ship)
-//   Left-click while possessing on foot   fire
+// The game controller: owns the world (or a network replica of it), the
+// renderer, input, audio routing and the frame loop, and runs the player's
+// state machine:  deploy -> play -> dead -> deploy ...  with a commander view
+// (tactical map + orders) available at any time, and 'attract' for the menu.
+//
+// Controls (play):  WASD move · mouse look · LMB fire · RMB zoom · G/Q ability
+//   Shift sprint/boost · Space jump · F take control of the friendly you aim at
+//   Z squad follow · X squad attack-move to crosshair · V squad free
+//   C commander view · Tab scoreboard · Esc pause
+// Commander:  WASD pan · Q/E rotate · wheel zoom · LMB select / drag box
+//   RMB order move · H hold · F take control · 1/2/3 groups · Enter deploy
 (function (E) {
   'use strict';
+  const LOCAL = 'p1';
 
   class Game {
-    constructor(canvas) {
-      this.canvas = canvas;
-      this.world = null;
-      this.renderer = null;
-      this.keys = new Set();
-      this.running = false;
-      this.acc = new E.Accumulator(30);
-      this.last = 0;
-      this.HUD = null;
-      this._bound = false;
-      this._sel = null;
+    constructor(canvas, settings) {
+      this.canvas = canvas; this.settings = settings || {};
+      this.keys = new Set(); this.mouse = { l: false, r: false, x: 0, y: 0 };
+      this.running = false; this.acc = new E.Accumulator(30);
+      this.renderer = new E.Renderer(canvas, { quality: this.settings.quality || 'auto' });
+      this.hud = new E.HUD(document.getElementById('ui'), this);
+      this.bind();
     }
 
     start(opts) {
       opts = opts || {};
-      this.world = new E.World({ biome: opts.biome, seed: opts.seed, scale: opts.scale, human: opts.human || 'aegis' });
-      this.renderer = new E.Renderer(this.canvas);
-      this.renderer.setPlanet(this.world.planet);
-      this.buildHud();
-      this.bindInput();
-      this.startMusic();
-      this.running = true;
-      this.last = performance.now();
-      this._raf = requestAnimationFrame(this.frame);
+      this.opts = opts; this.role = opts.role || 'sp'; this.net = opts.net || null;
+      this.relay = opts.relay || null;
+      this.pid = opts.pid || (opts.role === 'guest' ? (opts.replica && opts.replica._pid) || LOCAL : LOCAL);
+      if (this.role === 'guest') this.world = opts.replica;
+      else {
+        this.world = new E.World(opts);
+        if (this.role !== 'attract') this.world.addPlayer(this.pid, opts.human || 'aegis', this.settings.name || 'Commander');
+      }
+      this.team = this.role === 'guest' ? opts.human : this.world.human;
+      this.renderer.scene.setQuality(this.settings.quality || 'auto');
+      this.renderer.setWorld(this.world);
+      this.state = this.role === 'attract' ? 'attract' : 'deploy';
+      this.clock = 0; this.paused = false; this.deadAt = 0; this.endAt = 0; this.ended = false; this.selected = [];
+      this.sel = null; this.deployCp = -1; this.squad = [];
+      const home = this.world.cps.find(c => c.home === this.team) || this.world.cps[0];
+      const o = this.renderer.camera.orbit;
+      if (this.role === 'attract') Object.assign(o, { x: 0, y: 20, z: 0, r: 620, h: 170, speed: 0.035, a: 1 });
+      else { Object.assign(o, { x: home.pos.x * 0.55, y: home.pos.y + 10, z: home.pos.z, r: 330, h: 150, speed: 0.04, a: this.team === 'aegis' ? Math.PI : 0 }); Object.assign(this.renderer.camera.cmd, { x: home.pos.x, z: home.pos.z, yaw: this.team === 'aegis' ? Math.PI / 2 : -Math.PI / 2, dist: 300 }); }
+      this.renderer.camera.snap();
+      this.hud.begin(this);
+      this.acc.reset();
+      if (this.role === 'attract') for (let i = 0; i < 900; i++) this.world.tick(1 / 30);  // menu backdrop opens mid-battle
+      this.world.drainEvents();
+      this.running = true; this.last = performance.now();
+      cancelAnimationFrame(this._raf); this._raf = requestAnimationFrame(this.frame);
+      if (E.Music && E.Music.on) { E.Music.setTheme(this.team); }
       E.bus.emit('game:start', this);
       return this;
     }
+    stop() { this.running = false; cancelAnimationFrame(this._raf); this.unlock(); this.hud.clear(); }
 
+    // ── commands (local world, or over the wire for guests) ──
+    cmd(type, a, b, c) {
+      const w = this.world;
+      if (this.role === 'guest') { this.net.send({ t: type, a, b, c }); return; }
+      if (type === 'input') w.setInput(this.pid, a);
+      else if (type === 'possess') w.possess(this.pid, a);
+      else if (type === 'release') w.release(this.pid);
+      else if (type === 'deploy') w.deploy(this.pid, a, b);
+      else if (type === 'order') w.order(this.pid, a, b, c);
+    }
+    unit() { return this.world.unitOf(this.pid); }
+    player() { return this.world.player(this.pid); }
+
+    // ── frame ────────────────────────────────────────────────
     frame = (now) => {
       if (!this.running) return;
-      const dtMs = Math.min(50, now - this.last);
-      this.last = now;
-      const dt = dtMs / 1000;
-      this.pollInput();
-      this.acc.add(dt);
-      this.acc.pump((h) => this.world.tick(h));
-      // drain sim events into FX + audio
-      const events = this.world.drainEvents();
-      if (events.length) { this.renderer.fx.applyEvents(events); if (E.Music && E.Music.on) E.Music.onEvents(events); }
-      if (E.Music) E.Music.setIntensity(this.world.intensity);
-      if (this.world.winner && !this._won) { this._won = true; if (E.Music && E.Music.on) E.Music.victory(this.world.winner); }
-      // report the result once, shortly after the battle is decided
-      if (this.world.winner && !this._endFired) {
-        this._endTimer = (this._endTimer || 0) + dt;
-        if (this._endTimer > 4 && this.onEnd) { this._endFired = true; this.onEnd(this.world.winner === this.world.human); }
-      }
-      this.renderer.fx.syncProjectiles(this.world.projectiles);
-      this.renderer.update(dt, this.world.t, this.world);
-      if (this.HUD) this.HUD.update(this.world, this.renderer);
       this._raf = requestAnimationFrame(this.frame);
+      const dt = Math.min(0.05, Math.max(0.001, (now - this.last) / 1000)); this.last = now;
+      const w = this.world, sim = !(this.paused && this.role === 'sp');
+      this.clock += dt;
+      this.input(dt);
+      if (this.role === 'guest') { /* the remote world advances from host snapshots */ }
+      else if (sim) { this.acc.add(dt); this.acc.pump((h) => w.tick(h)); }
+      const events = w.drainEvents();
+      if (this.net && this.role === 'host') this.net.frame(w, events, now);
+      if (events.length) { this.renderer.applyEvents(events, w); this.audio(events); if (this.state !== 'attract') this.hud.events(events, w); }
+      this.flow(dt);
+      const view = this.view();
+      this.renderer.fx.syncProjectiles(w.projectiles, dt);
+      if (this.state === 'commander') this.renderer.syncSelection(this.selected, w, this.team); else this.renderer.syncSelection(this.squad, w, this.team);
+      const P = this.player(), u = this.unit();
+      const g = this.renderer.scene.grade.uniforms;
+      g.damage.value += ((u && u.kind === 'infantry' ? E.clamp01(1 - u.hp / u.maxHp - 0.35) * 1.3 : 0) + (this.hurt || 0) - g.damage.value) * Math.min(1, dt * 8);
+      this.hurt = Math.max(0, (this.hurt || 0) - dt * 2.5);
+      g.zoom.value = this.renderer.camera.zoom * (u && u.type === 'sniper' ? 1 : 0.3);
+      g.fade.value = Math.max(0, (this.fade || 0)); this.fade = Math.max(0, (this.fade || 0) - dt * 1.6);
+      this.renderer.update(dt, this.clock, w, view);
+      if (E.Music && E.Music.on) E.Music.setIntensity(this.state === 'attract' ? 0.3 : w.intensity);
+      if (this.state !== 'attract') this.hud.update(dt, w, P, u);
     };
 
-    // world point from a screen pixel (ray to ground plane)
-    pick(x, y) {
-      const cam = this.renderer.camera.cam;
-      const nd = { x: (x / window.innerWidth) * 2 - 1, y: -(y / window.innerHeight) * 2 + 1 };
-      const ray = new E.THREE.Raycaster();
-      ray.setFromCamera(nd, cam);
-      // intersect ground plane y=0 (approx; terrain height refined by caller)
-      const origin = ray.ray.origin, dir = ray.ray.direction;
-      if (Math.abs(dir.y) < 1e-5) return null;
-      const t = -origin.y / dir.y;
-      if (t < 0) return null;
-      const px = origin.x + dir.x * t, pz = origin.z + dir.z * t;
-      return { x: px, y: this.world.groundY(px, pz), z: pz };
+    // state transitions that depend on the world
+    flow(dt) {
+      const w = this.world, u = this.unit();
+      if (this.state === 'attract') return;
+      if (w.winner) {
+        if (!this.endAt) { this.endAt = this.clock; this.unlock(); if (E.Music && E.Music.on) E.Music.victory(w.winner); if (this.state === 'play') this.cmd('release'); this.state = 'ended'; const c = w.cps[2]; Object.assign(this.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 20, z: c.pos.z, r: 420, h: 160, speed: 0.06 }); }
+        if (!this.ended && this.clock - this.endAt > 3.5) { this.ended = true; const r = this.result(); this.hud.showResults(r); if (this.onEnd) this.onEnd(r); }
+        return;
+      }
+      if (this.state === 'play' && !u) {
+        this.state = 'dead'; this.deadAt = this.clock; this.hurt = 1.2;
+        const d = this.lastPos || { x: 0, y: 0, z: 0 }; Object.assign(this.renderer.camera.orbit, { x: d.x, y: d.y + 1.5, z: d.z, r: 13, h: 5, speed: 0.3, a: this.renderer.camera.yaw + Math.PI });
+        this.renderer.camera.zoom = 0;
+      } else if (this.state === 'dead' && this.clock - this.deadAt > 3.2) { this.toDeploy(); }
+      else if ((this.state === 'deploy' || this.state === 'commander' || this.state === 'dead') && u) { this.state = 'play'; this.hud.hideDeploy(); this.fade = 0.6; this.renderer.camera.yaw = u.aimYaw; this.renderer.camera.pitch = u.kind === 'fighter' ? u.pitch : (u.kind === 'capital' ? -0.25 : 0); this.renderer.camera.snap(); this.lock(); }
+      if (u) this.lastPos = { x: u.pos.x, y: u.pos.y, z: u.pos.z };
+    }
+    toDeploy() {
+      this.state = 'deploy'; this.unlock();
+      const c = this.world.cps.find(c => c.owner === this.team) || this.world.cps[2];
+      Object.assign(this.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 8, z: c.pos.z, r: 200, h: 110, speed: 0.05 });
+      this.hud.showDeploy();
+    }
+    toCommander() {
+      const u = this.unit(), c = this.renderer.camera.cmd;
+      if (u) { c.x = u.pos.x; c.z = u.pos.z; c.yaw = this.renderer.camera.yaw; this.cmd('release'); }
+      this.state = 'commander'; this.unlock(); this.hud.hideDeploy(); this.hud.toast('COMMAND VIEW — select units, right-click to order, F to take control');
+    }
+    view() {
+      const u = this.unit(), s = this.state;
+      if (s === 'play' && u) return { mode: 'unit', unit: u, zoomFov: u.def.zoom ? 66 / u.def.zoom : 44 };
+      if (s === 'commander') return { mode: 'commander' };
+      return { mode: 'orbit', fov: s === 'dead' ? 60 : 50 };
+    }
+    result() {
+      const w = this.world, p = this.player() || {}, T = w.teams[this.team], O = w.teams[E.opponent(this.team)];
+      return { won: w.winner === this.team, winner: w.winner, time: w.t, score: p.score || 0, kills: p.kills || 0, deaths: p.deaths || 0, captures: p.captures || 0, best: p.best || 0,
+        tickets: T.tickets, enemyTickets: O.tickets, teamKills: T.kills, enemyKills: O.kills, team: this.team };
     }
 
-    pollInput() {
-      const k = this.keys, w = this.world;
-      let ix = 0, iy = 0;
-      if (k.has('w')) ix += 1;
-      if (k.has('s')) ix -= 1;
-      if (k.has('d')) iy += 1;
-      if (k.has('a')) iy -= 1;
-      const boost = k.has('shift') ? 1.8 : 1;
-      w.setInput({ x: ix * boost, y: iy * boost });
-      if (w.mode() === 'commander') {
-        if (k.has('arrowleft')) this.renderer.camera.cmdYaw += 0.02;
-        if (k.has('arrowright')) this.renderer.camera.cmdYaw -= 0.02;
-        if (k.has('arrowup')) this.renderer.camera.cmdDist = Math.max(40, this.renderer.camera.cmdDist - 4);
-        if (k.has('arrowdown')) this.renderer.camera.cmdDist = Math.min(1200, this.renderer.camera.cmdDist + 4);
-        // commander auto-orbits slowly
-        if (!k.has('arrowleft') && !k.has('arrowright')) this.renderer.camera.cmdYaw += 0.0015;
+    // ── input ────────────────────────────────────────────────
+    input(dt) {
+      const k = this.keys, cam = this.renderer.camera, w = this.world, u = this.unit();
+      if (this.paused || this.state === 'attract') return;
+      if (this.state === 'play' && u) {
+        const zoomable = true;
+        cam.zoom += ((this.mouse.r && zoomable ? 1 : 0) - cam.zoom) * Math.min(1, dt * 12);
+        let yaw = cam.yaw, pitch = cam.pitch;
+        const a = cam.aim(w, u, u.kind === 'capital' ? 3000 : 700); this.aimInfo = a;
+        if (u.kind === 'infantry' || u.kind === 'vehicle' || u.kind === 'turret') { yaw = a.yaw; pitch = a.pitch; }
+        const inp = { mx: (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0), mz: (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0), moveYaw: cam.yaw, yaw, pitch,
+          fire: this.mouse.l && (this.locked() || this.freeFire), abil: k.has('g') || k.has('q') || this.mouse.m, sprint: k.has('shift'), jump: k.has(' ') };
+        this.cmd('input', inp);
+      } else if (this.state === 'commander') {
+        const c = cam.cmd, sp = c.dist * 1.1 * dt, fx = Math.sin(c.yaw), fz = Math.cos(c.yaw);
+        const mz = (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0), mx = (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0);
+        c.x = E.clamp(c.x + (fx * mz - fz * mx) * sp, -1400, 1400); c.z = E.clamp(c.z + (fz * mz + fx * mx) * sp, -1100, 1100);
+        if (k.has('q')) c.yaw += dt * 1.4; if (k.has('e')) c.yaw -= dt * 1.4;
       }
     }
-
-    onMouseMove(e) {
-      const cam = this.renderer.camera, w = this.world;
-      if (w.mode() !== 'commander' && document.pointerLockElement === this.canvas) {
-        cam.look(-e.movementX * 0.0022, -e.movementY * 0.0022);
-        w.setLook(cam.lookYaw);
-        this._mx = e.clientX; this._my = e.clientY;
-      }
-    }
-
-    lockPointer() { if (document.pointerLockElement !== this.canvas) this.canvas.requestPointerLock(); }
+    locked() { return document.pointerLockElement === this.canvas; }
+    lock() { if (!this.locked() && this.canvas.requestPointerLock) { try { const p = this.canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) {} } }
     unlock() { if (document.pointerLockElement) document.exitPointerLock(); }
 
-    keydown(e) {
-      const k = e.key.toLowerCase();
-      this.keys.add(k);
-      const w = this.world;
-      if (k === 'f') this.possessNext();
-      if (k === 'escape') { if (document.pointerLockElement) this.unlock(); else { w.release(); w.select([]); } }
-      if (k === 'c') { w.mode() === 'commander' ? this.possessNext() : (w.release(), w.select([])); }
-      if (k === 'v' && w.mode() === 'commander') this.focusSelected();
-      if (k === 'r') this.toggleSelectMode();
-      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
-    }
-    keyup(e) { this.keys.delete(e.key.toLowerCase()); }
-
-    focusSelected() {
-      const sel = this.world.selected;
-      if (sel.length) this.world.focus(sel[0].id);
-    }
-
-    possessNext() {
-      const w = this.world;
-      const mine = w.units.filter(u => u.alive && u.team === w.human);
-      if (!mine.length) return;
-      const ref = w.playerUnit ? w.playerUnit.pos : { x: 0, z: 0 };
-      mine.sort((a, b) => E.distXZ2(ref, a.pos) - E.distXZ2(ref, b.pos));
-      const cur = w.possessedId;
-      const i = mine.findIndex(u => u.id === cur);
-      const next = mine[(i + 1) % mine.length];
-      w.focus(next.id);
-      if (w.mode() === 'fps' || w.mode() === 'fighter') this.lockPointer();
-    }
-
-    onMouseDown(e) {
-      const w = this.world;
-      if (e.button === 0) {
-        if (w.mode() !== 'commander') { // firing
-          w.setInput({ fire: true });
-          this._fireHeld = true;
-          return;
-        }
-        const p = this.pick(e.clientX, e.clientY);
-        if (p) {
-          // box select if shift, else nearest
-          if (this._sel === null) { this._sel = { x0: e.clientX, y0: e.clientY, shift: e.shiftKey }; this._selActive = true; }
-          else {
-            if (e.shiftKey) this.boxSelect(e);
-            else { const u = E.SIM.selectNearest(w, p, 40); w.select(u ? [u] : []); }
-            this._sel = null;
-          }
-        }
-      } else if (e.button === 2) {
-        // right-click: command selection (attack-move) or focus single
-        const p = this.pick(e.clientX, e.clientY);
-        if (p) {
-          if (w.selected.length) w.order(w.selected, 'attack', { pos: p });
-          else { const u = E.SIM.selectNearest(w, p, 40); if (u) { w.select([u]); w.order([u], 'attack', { pos: p }); } }
+    takeControl() {
+      const w = this.world, cam = this.renderer.camera, u = this.unit();
+      let best = null, bs = 1e9;
+      if (this.state === 'commander') { for (const id of this.selected) { const s = w.byId(id); if (s && s.alive && !s.pid) { best = s; break; } } }
+      else if (u) {
+        const o = cam.cam.position, d = E.SIM.dirOf(cam.yaw, cam.pitch);
+        for (const e of w.units) {
+          if (!e.alive || e.team !== this.team || e === u || e.pid) continue;
+          const dx = e.pos.x - o.x, dy = e.pos.y - o.y, dz = e.pos.z - o.z, l = Math.hypot(dx, dy, dz);
+          const ang = Math.acos(E.clamp((dx * d.x + dy * d.y + dz * d.z) / (l || 1), -1, 1));
+          const lim = e.kind === 'capital' ? 0.3 : 0.12, maxD = e.kind === 'capital' ? 3000 : e.kind === 'fighter' ? 900 : 300;
+          if (ang < lim && l < maxD) { const s = ang * 400 + l * (e.kind === 'infantry' ? 1 : 0.2); if (s < bs) { bs = s; best = e; } }
         }
       }
+      if (best) { this.cmd('possess', best.id); this.fade = 0.8; this.hud.toast('NOW CONTROLLING · ' + E.unitName(best.kind, best.type).toUpperCase()); if (E.SFX) E.SFX.play('ui'); }
+      else this.hud.toast('Aim at a friendly unit to take control');
     }
-    onMouseUp(e) {
-      if (this._fireHeld) { this.world.setInput({ fire: false }); this._fireHeld = false; }
-      if (this._selActive && e.button === 0) { this._selActive = false; this._sel = null; }
+    quickControl(kind) {
+      const w = this.world, ref = this.lastPos || { x: 0, y: 0, z: 0 };
+      let best = null, bd = 1e12;
+      for (const e of w.units) if (e.alive && e.team === this.team && !e.pid && e.kind === kind) { const d = E.distXZ2(e.pos, ref) * (e.flag ? 0.1 : 1); if (d < bd) { bd = d; best = e; } }
+      if (best) { this.cmd('possess', best.id); this.fade = 0.8; return true; }
+      return false;
     }
-    boxSelect(e) {
-      const a = this.pick(this._sel ? this._sel.x0 : e.clientX, this._sel ? this._sel.y0 : e.clientY);
-      const b = this.pick(e.clientX, e.clientY);
-      if (a && b) this.world.select(E.SIM.selectBox(this.world, a, b));
-    }
-
-    bindInput() {
-      if (this._bound) return; this._bound = true;
-      window.addEventListener('keydown', (e) => this.keydown(e));
-      window.addEventListener('keyup', (e) => this.keyup(e));
-      window.addEventListener('mousemove', (e) => this.onMouseMove(e));
-      window.addEventListener('mousedown', (e) => this.onMouseDown(e));
-      window.addEventListener('mouseup', (e) => this.onMouseUp(e));
-      window.addEventListener('contextmenu', (e) => e.preventDefault());
-      this.canvas.addEventListener('click', () => { if (this.world.mode() === 'commander') this.lockPointer && this.unlock(); });
-    }
-
-    // Audio needs a user gesture to start. Unlock on the first click/keypress.
-    startMusic() {
-      const unlock = () => {
-        if (E.Music && !E.Music.on) { E.Music.start(this.world.human); E.Music.setIntensity(this.world.intensity); }
-        else if (E.Music && E.Music.resume) E.Music.resume();
-        window.removeEventListener('pointerdown', unlock);
-        window.removeEventListener('keydown', unlock);
-      };
-      window.addEventListener('pointerdown', unlock);
-      window.addEventListener('keydown', unlock);
+    squadOrder(type) {
+      const w = this.world, u = this.unit(); if (!u) return;
+      if (type === 'follow') {
+        const near = w.units.filter(e => e.alive && e.team === this.team && !e.pid && e.kind === 'infantry' && E.distXZ2(e.pos, u.pos) < 70 * 70).sort((a, b) => E.distXZ2(a.pos, u.pos) - E.distXZ2(b.pos, u.pos)).slice(0, 6);
+        this.squad = near.map(e => e.id); this.cmd('order', this.squad, 'follow');
+        this.hud.toast(near.length ? 'SQUAD: FOLLOW ME (' + near.length + ')' : 'No troops nearby');
+      } else if (type === 'attack') {
+        if (!this.squad.length) { this.squadOrder('follow'); }
+        this.cmd('order', this.squad, 'move', this.renderer.camera.aimPoint); this.hud.toast('SQUAD: MOVE TO TARGET');
+      } else { this.cmd('order', this.squad, 'free'); this.squad = []; this.hud.toast('SQUAD: DISMISSED'); }
+      if (E.SFX) E.SFX.play('ui');
     }
 
-    buildHud() {
-      const root = document.getElementById('ui');
-      if (!root) return;
-      root.innerHTML = `
-        <div id="gc-top" class="gc-top"></div>
-        <div class="gc-crosshair" id="gc-cross" style="display:none"></div>
-        <div id="gc-bridge" class="gc-bridge" style="display:none"></div>
-        <div id="gc-help" class="gc-help">
-          <b>Galactic Conquest</b> · Left-click select · Left-drag box · Right-click attack-move · <b>F</b> board · <b>V</b> drive selected · <b>C/Esc</b> release · <b>↑↓←→</b> orbit · WASD move
-        </div>`;
-      this.HUD = {
-        top: document.getElementById('gc-top'),
-        cross: document.getElementById('gc-cross'),
-        bridge: document.getElementById('gc-bridge'),
-        update: (w, r) => {
-          const m = w.mode();
-          const u = w.focusedUnit();
-          this.HUD.cross.style.display = (m === 'fps' || m === 'fighter') ? 'block' : 'none';
-          const isShip = (m === 'ship' || m === 'fighter') && u;
-          this.HUD.bridge.style.display = isShip ? 'block' : 'none';
-          // throttle DOM rebuild to ~12 Hz
-          this._hudT = (this._hudT || 0) + 1;
-          if (this._hudT % 5 !== 0 && isShip === this._wasShip) return;
-          this._wasShip = isShip;
-          if (isShip) this.bridgeHud(w, u, r);
-          const objs = w.objectives;
-          const aegisCap = objs.filter(o => o.owner === 'aegis').length;
-          const verdantCap = objs.filter(o => o.owner === 'verdant').length;
-          this.HUD.top.innerHTML =
-            `<span class="gc-chip gc-${w.planet.biome}">${w.planet.biomeDef.name} · ${w.planet.biomeDef.theme}</span>` +
-            `<span class="gc-chip">You: <b>${w.human === 'aegis' ? 'Concord' : 'Pact'}</b></span>` +
-            `<span class="gc-chip gc-mode">${m.toUpperCase()}${u ? ' · ' + u.type + ' ' + (u.hp | 0) + '/' + u.maxHp : ''}</span>` +
-            `<span class="gc-chip">Obj <b class="aegis">${aegisCap}</b> : <b class="verdant">${verdantCap}</b></span>` +
-            `<span class="gc-chip">${w.selected.length ? w.selected.length + ' selected' : (w.units.length) + ' units'}</span>` +
-            (w.winner ? `<span class="gc-chip" style="border-color:var(--ok)">VICTORY: ${w.winner.toUpperCase()}</span>` : '');
-        },
-        bridgeHud: (w, u, r) => {
-          const f = E.faction(u.faction);
-          const C = E.CAPITALS[u.type] || {};
-          const hpF = E.clamp01(u.hp / u.maxHp);
-          const shF = u.maxShield ? E.clamp01(u.shield / u.maxShield) : 0;
-          const t = r.currentTarget;
-          const tr = t ? Math.round(r.currentTargetDist) : '—';
-          const tName = t ? E.unitName(t.kind, t.type) : '—';
-          const tFaction = t ? (t.team === 'aegis' ? 'Concord' : 'Pact') : '—';
-          const bays = Math.round(u.bays != null ? u.bays : (C.bays || 0));
-          this.HUD.bridge.innerHTML = `
-            <div class="bridge-fac ${u.team}">${f.short} · ${C.name || u.type}</div>
-            <div class="bridge-bars">
-              <div class="bar hp"><i style="width:${(hpF * 100).toFixed(1)}%"></i><span>${(u.hp | 0).toLocaleString()} / ${u.maxHp.toLocaleString()}</span></div>
-              <div class="bar sh"><i style="width:${(shF * 100).toFixed(1)}%"></i><span>${(u.shield | 0).toLocaleString()}</span></div>
-            </div>
-            <div class="bridge-target">
-              <div class="lbl">TARGET</div>
-              <div class="tv">${tName} <b>${tFaction}</b> · ${tr}m</div>
-            </div>
-            <div class="bridge-sub">
-              <div class="lbl">BAYS</div><div class="tv">${bays} ${u.kind === 'fighter' ? '' : 'fighters'}</div>
-              <div class="lbl">SPEED</div><div class="tv">${u.speed} m/s</div>
-            </div>`;
+    keydown(e) {
+      if (e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) return;
+      const k = e.key.toLowerCase();
+      if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' ', 'tab'].includes(k)) e.preventDefault();
+      if (!this.running || this.state === 'attract') return;
+      if (this.keys.has(k)) return;
+      this.keys.add(k);
+      if (k === 'escape') { this.togglePause(); return; }
+      if (this.paused || this.state === 'ended') return;
+      if (k === 'tab') this.hud.scoreboard(true);
+      if (this.state === 'play') {
+        if (k === 'f' || k === 'e') this.takeControl();
+        else if (k === 'c') this.toCommander();
+        else if (k === 'z') this.squadOrder('follow');
+        else if (k === 'x') this.squadOrder('attack');
+        else if (k === 'v') this.squadOrder('free');
+      } else if (this.state === 'commander') {
+        const w = this.world, mine = (kind) => w.units.filter(u => u.alive && u.team === this.team && u.kind === kind && !u.pid).map(u => u.id);
+        if (k === 'f') this.takeControl();
+        else if (k === 'c' || k === 'enter') this.toDeploy();
+        else if (k === '1') this.selected = mine('infantry'); else if (k === '2') this.selected = mine('vehicle'); else if (k === '3') this.selected = mine('fighter');
+        else if (k === 'h' && this.selected.length) { this.cmd('order', this.selected, 'hold'); this.hud.toast('ORDER: HOLD POSITION'); }
+        else if (k === 'v' && this.selected.length) { this.cmd('order', this.selected, 'free'); this.hud.toast('ORDER: FREE FIRE'); }
+      } else if (this.state === 'deploy') {
+        if (k === 'c') this.toCommander();
+        else if (k >= '1' && k <= '4') this.hud.pickClass(+k - 1);
+        else if (k === 'enter' || k === ' ') this.hud.doDeploy();
+      }
+    }
+    keyup(e) { const k = e.key.toLowerCase(); this.keys.delete(k); if (k === 'tab') this.hud.scoreboard(false); }
+    togglePause(force) {
+      if (this.state === 'attract' || this.state === 'ended') return;
+      this.paused = force !== undefined ? force : !this.paused;
+      if (this.paused) { this.unlock(); this.hud.showPause(); } else { this.hud.hidePause(); if (this.state === 'play') this.lock(); }
+    }
+
+    bind() {
+      const on = (t, ev, fn, o) => { t.addEventListener(ev, fn, o); };
+      on(window, 'keydown', (e) => this.keydown(e));
+      on(window, 'keyup', (e) => this.keyup(e));
+      on(window, 'blur', () => { this.keys.clear(); this.mouse.l = this.mouse.r = false; });
+      on(window, 'mousemove', (e) => {
+        this.mouse.x = e.clientX; this.mouse.y = e.clientY;
+        if (!this.running || this.paused) return;
+        if (this.state === 'play' && this.locked()) this.renderer.camera.look(e.movementX, e.movementY * (this.settings.invertY ? -1 : 1), 0.0021 * (this.settings.sens || 1));
+        else if (this.state === 'commander' && this.sel) this.hud.box(this.sel.x, this.sel.y, e.clientX, e.clientY);
+      });
+      on(this.canvas, 'mousedown', (e) => {
+        if (!this.running || this.paused) return;
+        if (this.state === 'play') {
+          if (!this.locked()) { this.lock(); if (!this.freeFire) return; }
+          if (e.button === 0) this.mouse.l = true; else if (e.button === 2) this.mouse.r = true; else if (e.button === 1) { this.mouse.m = true; e.preventDefault(); }
+        } else if (this.state === 'commander') {
+          if (e.button === 0) this.sel = { x: e.clientX, y: e.clientY };
+          else if (e.button === 2) {
+            const p = this.renderer.camera.pick(e.clientX, e.clientY, this.world);
+            if (p && this.selected.length) { this.cmd('order', this.selected, 'move', p); this.renderer.fx.ring(p, 14, E.Props.TEAM_COL[this.team], 0.7, true); this.hud.toast('ORDER: MOVE (' + this.selected.length + ')'); if (E.SFX) E.SFX.play('ui'); }
+          }
         }
-      };
+      });
+      on(window, 'mouseup', (e) => {
+        if (e.button === 0) this.mouse.l = false; else if (e.button === 2) this.mouse.r = false; else this.mouse.m = false;
+        if (this.state === 'commander' && this.sel && e.button === 0) {
+          const s = this.sel, w = this.world, cam = this.renderer.camera, o = { x: 0, y: 0, vis: false }; this.sel = null; this.hud.box();
+          const x0 = Math.min(s.x, e.clientX), x1 = Math.max(s.x, e.clientX), y0 = Math.min(s.y, e.clientY), y1 = Math.max(s.y, e.clientY);
+          const mine = w.units.filter(u => u.alive && u.team === this.team && u.kind !== 'turret' && u.kind !== 'capital');
+          if (x1 - x0 < 6 && y1 - y0 < 6) { let best = null, bd = 40 * 40; for (const u of mine) { cam.project(u.pos, o); const d = (o.x - s.x) * (o.x - s.x) + (o.y - s.y) * (o.y - s.y); if (o.vis && d < bd) { bd = d; best = u; } } this.selected = best ? [best.id] : []; }
+          else this.selected = mine.filter(u => { cam.project(u.pos, o); return o.vis && o.x >= x0 && o.x <= x1 && o.y >= y0 && o.y <= y1; }).map(u => u.id);
+          if (this.selected.length && E.SFX) E.SFX.play('ui');
+        }
+      });
+      on(this.canvas, 'wheel', (e) => { if (this.state === 'commander') { const c = this.renderer.camera.cmd; c.dist = E.clamp(c.dist * (e.deltaY > 0 ? 1.12 : 0.89), 60, 1100); } e.preventDefault(); }, { passive: false });
+      on(window, 'contextmenu', (e) => e.preventDefault());
+      on(document, 'pointerlockchange', () => { if (!this.locked() && this.running && this.state === 'play' && !this.paused && !this.world.winner && !this.noAutoPause) this.togglePause(true); });
+      const unlockAudio = () => { if (E.Music && !E.Music.on && this.settings.audio !== false) { E.Music.start(this.team || 'aegis'); E.Music.setVolume(this.settings.volume == null ? 0.8 : this.settings.volume); } else if (E.Music) E.Music.resume(); };
+      on(window, 'pointerdown', unlockAudio); on(window, 'keydown', unlockAudio);
     }
 
-    stop() { this.running = false; cancelAnimationFrame(this._raf); this.unlock(); }
+    // ── audio routing (distance-attenuated, rate-limited) ────
+    audio(events) {
+      if (!E.Music || !E.Music.on) return;
+      const cam = this.renderer.scene.camera.position, S = E.SFX; let n = 0;
+      const u = this.unit(), uid = u ? u.id : -1;
+      for (const e of events) {
+        if (n > 7) break;
+        if (e.type === 'fire') {
+          const d = E.V3.distance(cam, e.pos), mine = e.uid === uid, W = E.WEAPONS[e.wk];
+          const v = mine ? 0.55 : E.clamp01(1 - d / (W.kind === 'turbo' ? 2600 : 420)) * 0.4;
+          if (v > 0.03 && (mine || this.audioGate(e.wk))) { S.play(W.sfx || 'rifle', null, v); n++; }
+        } else if (e.type === 'impact' && e.splash > 0) { const v = E.clamp01(1 - E.V3.distance(cam, e.pos) / (300 + e.splash * 40)); if (v > 0.03) { S.play('explosion', null, v * 0.9); n++; } }
+        else if (e.type === 'death' && e.kind !== 'infantry') { const v = e.kind === 'capital' ? 1 : E.clamp01(1 - E.V3.distance(cam, e.pos) / 900); if (v > 0.03) { S.play('explosion', null, v); n++; } }
+        else if (e.type === 'capture') { S.play('capture', null, 0.7); n++; }
+        else if (e.type === 'hit' && e.by === this.pid) { S.play(e.kill ? 'kill' : 'hitmark', null, e.kill ? 0.6 : 0.3); n++; }
+        else if (e.type === 'hit' && e.to === this.pid) { S.play(e.sh ? 'shield' : 'hurt', null, 0.5); n++; }
+        else if (e.type === 'strikeWarn') { S.play('alarm', null, 0.5); n++; }
+      }
+    }
+    audioGate(wk) { const t = this.clock, g = this._ag || (this._ag = {}); if (t - (g[wk] || 0) < 0.07) return false; g[wk] = t; return true; }
   }
 
   E.Game = Game;
-  E.boot = function (opts) {
-    const canvas = document.getElementById('view');
-    return new E.Game(canvas).start(opts || {});
-  };
+  E.LOCAL_PID = LOCAL;
 })(window.E = window.E || {});
 
-// ---- js/ui/main.js ----
-// The entry point (runs last in the bundle). Shows the main menu / galactic
-// campaign map; when a battle starts it launches the Game and, when the match
-// ends, returns to the menu and records the result into the campaign.
+// ---- js/ui/hud.js ----
+// The battle HUD: reinforcement bars + command-post strip, unit card (health,
+// shields, weapon heat, ability cooldown), crosshair + hit markers, minimap,
+// kill feed, score popups, announcements, world markers (canvas overlay), and
+// the deploy / pause / scoreboard / results screens. DOM + 2D canvas only.
 (function (E) {
   'use strict';
-  let game = null;
-  let menu = null;
-  const uiRoot = () => document.getElementById('ui');
+  const COL = { aegis: '#ff5a2b', verdant: '#3df0b0', neutral: '#b9c6dd' };
+  const TNAME = { aegis: 'CONCORD', verdant: 'PACT' };
+  const CLASSES = ['trooper', 'heavy', 'sniper', 'medic'];
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-  function start(opts, campaign) {
-    try {
-      if (menu) menu.hide();
-      game = E.boot(opts || {});
-      window.GC.game = game;
-      // record fleet scale for the force
-      if (game.world && opts && opts.fleetScale) game.world.fleetScale = opts.fleetScale;
-      game.onEnd = (won) => {
-        if (campaign) {
-          const res = E.Campaign.applyResult(campaign, won);
-          try { localStorage.setItem(E.LS_KEY, JSON.stringify(campaign)); } catch {}
-          E.bus.emit('campaign:updated', res);
+  class HUD {
+    constructor(root, game) { this.root = root; this.game = game; this.cls = 0; this.feed = []; this.pops = []; this.ann = []; this.dmgDirs = []; }
+
+    begin(game) {
+      const w = game.world;
+      this.clear();
+      const el = document.createElement('div'); el.className = 'hud'; el.id = 'hud';
+      el.innerHTML = `
+        <canvas class="h-cv"></canvas>
+        <div class="h-top">
+          <div class="h-team aegis"><span class="h-tname">CONCORD</span><div class="h-tbar"><i></i></div><b class="h-tk"></b></div>
+          <div class="h-cps">${w.cps.map(c => `<div class="h-cp" data-cp="${c.id}"><span>${c.name[0]}</span><i></i></div>`).join('')}</div>
+          <div class="h-team verdant"><b class="h-tk"></b><div class="h-tbar"><i></i></div><span class="h-tname">PACT</span></div>
+        </div>
+        <div class="h-announce"></div>
+        <div class="h-feed"></div>
+        <div class="h-pops"></div>
+        <div class="h-cross"><i class="d"></i><i class="l"></i><i class="r"></i><i class="t"></i><i class="b"></i><div class="hitm"></div><div class="h-lock"></div></div>
+        <div class="h-scope"></div>
+        <div class="h-capture"><span></span><div class="bar"><i></i></div></div>
+        <div class="h-unit">
+          <div class="h-uname"></div>
+          <div class="h-bar sh"><i></i></div>
+          <div class="h-bar hp"><i></i><span></span></div>
+          <div class="h-weap"><span class="wn"></span><div class="h-heat"><i></i></div></div>
+          <div class="h-abil"><span class="key">G</span><span class="an"></span><div class="cd"><i></i></div></div>
+        </div>
+        <div class="h-mapwrap"><canvas class="h-map" width="220" height="160"></canvas></div>
+        <div class="h-hint"></div>
+        <div class="h-toast"></div>
+        <div class="h-dead"></div>
+        <div class="h-selbox"></div>
+        <div class="h-layer"></div>`;
+      this.root.appendChild(el);
+      this.el = el;
+      const q = (s) => el.querySelector(s);
+      this.cv = q('.h-cv'); this.ctx = this.cv.getContext('2d'); this.map = q('.h-map'); this.mctx = this.map.getContext('2d');
+      this.$ = { tA: q('.h-team.aegis'), tV: q('.h-team.verdant'), cps: [...el.querySelectorAll('.h-cp')], ann: q('.h-announce'), feed: q('.h-feed'), pops: q('.h-pops'), cross: q('.h-cross'), hitm: q('.hitm'), lock: q('.h-lock'),
+        scope: q('.h-scope'), cap: q('.h-capture'), unit: q('.h-unit'), uname: q('.h-uname'), hp: q('.h-bar.hp'), sh: q('.h-bar.sh'), weap: q('.h-weap'), heat: q('.h-heat'), abil: q('.h-abil'), mapwrap: q('.h-mapwrap'),
+        hint: q('.h-hint'), toast: q('.h-toast'), dead: q('.h-dead'), sel: q('.h-selbox'), layer: q('.h-layer') };
+      this.feed = []; this.pops = []; this.ann = []; this.dmgDirs = []; this.annT = 0; this.hitT = 0; this.total = 0; this.layerKind = '';
+      this.mapImg = this.terrainImage(w, 220, 160);
+      this._resize = () => { this.cv.width = window.innerWidth; this.cv.height = window.innerHeight; };
+      window.addEventListener('resize', this._resize); this._resize();
+      el.classList.toggle('attract', game.state === 'attract');
+      if (game.state === 'deploy') this.showDeploy();
+    }
+    clear() { if (this.el) { this.el.remove(); this.el = null; window.removeEventListener('resize', this._resize); } }
+
+    // top-down terrain image for the minimap / deploy map
+    terrainImage(w, W, H) {
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const x = c.getContext('2d'), id = x.createImageData(W, H), d = id.data, T = w.terrain, pal = w.planet.biomeDef.palette, wl = T.waterLevel, wc = (w.planet.biomeDef.water || {}).color || [30, 60, 90];
+      const AX = E.ARENA.x * 1.25, AZ = E.ARENA.z * 1.25;
+      for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+        const wx = (i / (W - 1) * 2 - 1) * AX, wz = (j / (H - 1) * 2 - 1) * AZ, h = T.height(wx, wz), hx = T.height(wx + 14, wz - 14);
+        const t = E.clamp01(E.invLerp(-22, 80, h));
+        let c3 = t < 0.4 ? E.mixC(pal.low, pal.mid, t / 0.4) : E.mixC(pal.mid, pal.high, (t - 0.4) / 0.6);
+        if (h < wl) c3 = E.mixC(wc, [10, 20, 30], E.clamp01((wl - h) / 12));
+        const sh = E.clamp(0.62 + (h - hx) * 0.045, 0.3, 1.05), k = (j * W + i) * 4;
+        d[k] = c3[0] * sh * 0.6; d[k + 1] = c3[1] * sh * 0.62; d[k + 2] = c3[2] * sh * 0.68; d[k + 3] = 255;
+      }
+      x.putImageData(id, 0, 0);
+      return c;
+    }
+    mapXY(p, W, H, o) { o.x = (p.x / (E.ARENA.x * 1.25) * 0.5 + 0.5) * W; o.y = (p.z / (E.ARENA.z * 1.25) * 0.5 + 0.5) * H; return o; }
+    drawMap(ctx, W, H, w, big) {
+      const g = this.game, o = { x: 0, y: 0 }, me = g.unit();
+      ctx.drawImage(this.mapImg, 0, 0, W, H);
+      for (const u of w.units) {
+        if (!u.alive || u.kind === 'turret') continue;
+        this.mapXY(u.pos, W, H, o);
+        ctx.fillStyle = COL[u.team];
+        if (u.kind === 'capital') { ctx.globalAlpha = 0.85; ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(-u.yaw + Math.PI / 2); ctx.fillRect(-9 * (big ? 2 : 1), -2.5, 18 * (big ? 2 : 1), 5); ctx.restore(); ctx.globalAlpha = 1; }
+        else if (u.kind === 'fighter') { ctx.beginPath(); ctx.moveTo(o.x, o.y - 3); ctx.lineTo(o.x + 3, o.y + 3); ctx.lineTo(o.x - 3, o.y + 3); ctx.fill(); }
+        else { const s = u.kind === 'vehicle' ? 2.6 : 1.5; ctx.fillRect(o.x - s, o.y - s, s * 2, s * 2); }
+      }
+      for (const c of w.cps) {
+        this.mapXY(c.pos, W, H, o);
+        const r = big ? 13 : 7.5;
+        ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, E.TAU); ctx.fillStyle = 'rgba(8,12,20,.8)'; ctx.fill();
+        ctx.lineWidth = big ? 3 : 2; ctx.strokeStyle = COL[c.owner || 'neutral']; ctx.stroke();
+        if (Math.abs(c.cap) < 0.999 && Math.abs(c.cap) > 0.01) { ctx.beginPath(); ctx.arc(o.x, o.y, r + 2.5, -Math.PI / 2, -Math.PI / 2 + E.TAU * Math.abs(c.cap)); ctx.strokeStyle = COL[c.cap > 0 ? 'aegis' : 'verdant']; ctx.stroke(); }
+        ctx.fillStyle = '#fff'; ctx.font = `700 ${big ? 13 : 9}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(c.name[0], o.x, o.y + 0.5);
+      }
+      if (me) {
+        this.mapXY(me.pos, W, H, o); ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(-g.renderer.camera.yaw + Math.PI);
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(4.5, 5); ctx.lineTo(0, 2.5); ctx.lineTo(-4.5, 5); ctx.closePath(); ctx.fill(); ctx.restore();
+      } else if (g.state === 'commander') { const c = g.renderer.camera.cmd; this.mapXY(c, W, H, o); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(o.x - 12, o.y - 8, 24, 16); }
+      for (const s of w.strikes || []) { this.mapXY(s.pos, W, H, o); ctx.strokeStyle = '#ff3020'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(o.x, o.y, 5 + (performance.now() / 80 % 4), 0, E.TAU); ctx.stroke(); }
+    }
+
+    // ── per-frame ────────────────────────────────────────────
+    update(dt, w, P, u) {
+      const $ = this.$, g = this.game, st = g.state; if (!this.el) return;
+      const play = st === 'play' && u;
+      this.frameN = (this.frameN || 0) + 1;
+      // tickets + posts
+      if (this.frameN % 6 === 0) {
+        for (const [el, f] of [[$.tA, 'aegis'], [$.tV, 'verdant']]) {
+          const T = w.teams[f]; el.querySelector('.h-tk').textContent = T.tickets; el.querySelector('i').style.width = E.clamp01(T.tickets / T.startTickets) * 100 + '%';
+          el.classList.toggle('low', T.tickets <= 25); el.classList.toggle('mine', f === g.team);
         }
-        // return to the menu
-        setTimeout(() => { if (menu) menu.show(); }, 2500);
-        if (menu) menu.campaign = campaign || menu.campaign;
-        E.bus.emit('game:end', won);
-      };
-      E.bus.emit('game:start', game);
-      return game;
-    } catch (err) {
-      console.error('GC boot failed:', err);
-      window.__GC_ERROR__ = (err && err.stack) || String(err);
-      if (menu) { menu.campaign = campaign || menu.campaign; menu.show(); }
-      return null;
+        w.cps.forEach((c, i) => { const e = $.cps[i]; e.dataset.o = c.owner || 'neutral'; e.classList.toggle('contested', c.contested); e.querySelector('i').style.cssText = `width:${Math.abs(c.cap) * 100}%;background:${COL[c.cap >= 0 ? 'aegis' : 'verdant']}`; });
+        this.drawMap(this.mctx, 220, 160, w, false);
+      }
+      // unit card
+      $.unit.style.display = play ? '' : 'none'; $.cross.style.display = play ? '' : 'none';
+      $.mapwrap.style.display = (st === 'deploy' || st === 'ended') ? 'none' : '';
+      if (play) {
+        const d = u.def, W = E.WEAPONS[d.weapon], A = d.alt ? E.WEAPONS[d.alt] : (u.kind === 'capital' ? E.WEAPONS.orbital : null);
+        if (this._uid !== u.id) { this._uid = u.id; $.uname.innerHTML = `<b>${esc(d.name).toUpperCase()}</b> <span>${TNAME[u.team]}</span>`; $.weap.querySelector('.wn').textContent = u.kind === 'capital' ? 'Main Batteries — hold fire to focus' : W.name; $.abil.style.display = A ? '' : 'none'; if (A) $.abil.querySelector('.an').textContent = A.name; $.sh.style.display = u.maxShield ? '' : 'none'; }
+        $.hp.querySelector('i').style.width = E.clamp01(u.hp / u.maxHp) * 100 + '%'; $.hp.querySelector('span').textContent = Math.ceil(u.hp);
+        $.hp.classList.toggle('crit', u.hp < u.maxHp * 0.3);
+        if (u.maxShield) $.sh.querySelector('i').style.width = E.clamp01(u.shield / u.maxShield) * 100 + '%';
+        const hi = $.heat.querySelector('i'); hi.style.width = E.clamp01(u.heat || 0) * 100 + '%'; $.heat.classList.toggle('hot', !!u.hot); $.heat.style.visibility = W && W.heat ? '' : 'hidden';
+        if (A) { const cd = u.kind === 'capital' ? E.clamp01(w.teams[u.team].strikeT / A.cd) : E.clamp01(u.altT / (A.cd || 1 / A.rate)); $.abil.querySelector('i').style.width = (1 - cd) * 100 + '%'; $.abil.classList.toggle('ready', cd <= 0); }
+        // crosshair bloom + hit marker
+        const spread = 6 + (u.heat || 0) * 14 + Math.min(10, Math.hypot(u.vel.x, u.vel.z) * 0.5) * (u.kind === 'infantry' ? 1 : 0) - g.renderer.camera.zoom * 4;
+        $.cross.style.setProperty('--g', spread.toFixed(1) + 'px');
+        $.cross.classList.toggle('enemy', !!(g.aimInfo && g.aimInfo.target));
+        this.hitT -= dt; $.hitm.style.opacity = Math.max(0, this.hitT * 4);
+        const scope = u.type === 'sniper' && g.renderer.camera.zoom > 0.85; $.scope.style.display = scope ? '' : 'none'; $.cross.classList.toggle('scoped', scope);
+        // capture bar
+        let cp = null; for (const c of w.cps) if (E.distXZ2(u.pos, c.pos) < c.r * c.r && (u.kind === 'infantry' || u.kind === 'vehicle')) cp = c;
+        if (cp && (cp.owner !== u.team || Math.abs(cp.cap) < 0.999)) {
+          $.cap.style.display = ''; const mine = u.team === 'aegis' ? cp.cap : -cp.cap;
+          $.cap.querySelector('span').textContent = cp.contested ? 'CONTESTED — ' + cp.name.toUpperCase() : (mine < 0 ? 'NEUTRALIZING ' : 'CAPTURING ') + cp.name.toUpperCase();
+          const i = $.cap.querySelector('i'); i.style.width = Math.abs(cp.cap) * 100 + '%'; i.style.background = COL[cp.cap >= 0 ? 'aegis' : 'verdant'];
+        } else $.cap.style.display = 'none';
+        if (this.frameN % 20 === 0) $.hint.innerHTML = u.kind === 'fighter' ? '<b>Mouse</b> steer · <b>W/Shift</b> boost · <b>S</b> brake · <b>G</b> ' + (A ? A.name : '') + ' · <b>C</b> command · <b>F</b> switch unit'
+          : u.kind === 'capital' ? '<b>WASD</b> helm · <b>LMB</b> focus batteries · <b>G</b> orbital strike · <b>F</b> switch unit · <b>C</b> command'
+          : '<b>F</b> take control of a friendly · <b>Z/X/V</b> squad follow / move / dismiss · <b>C</b> command view';
+      } else { $.cap.style.display = 'none'; $.scope.style.display = 'none'; $.hint.innerHTML = st === 'commander' ? '<b>LMB</b> select · <b>drag</b> box · <b>RMB</b> move · <b>H</b> hold · <b>1/2/3</b> infantry / armor / air · <b>F</b> take control · <b>Enter</b> deploy' : ''; this._uid = 0; }
+      $.dead.style.display = st === 'dead' ? '' : 'none';
+      // deploy countdown
+      if (st === 'deploy' && this.layerKind === 'deploy' && this.frameN % 6 === 0) this.refreshDeploy(w, P);
+      // announcements
+      this.annT -= dt;
+      if (this.annT <= 0) { if (this.ann.length) { const a = this.ann.shift(); $.ann.innerHTML = `<div class="${a.cls}">${a.text}</div>`; $.ann.classList.remove('show'); void $.ann.offsetWidth; $.ann.classList.add('show'); this.annT = 3.2; } else if (this.annT < -0.4) $.ann.classList.remove('show'); }
+      // feed + pops expiry
+      const now = performance.now();
+      if (this.feed.length && now - this.feed[0].t > 6500) { this.feed.shift().el.remove(); }
+      if (this.pops.length && now - this.pops[0].t > 2200) { this.pops.shift().el.remove(); }
+      this.overlay(dt, w, u, play);
+    }
+
+    // world-anchored markers
+    overlay(dt, w, u, play) {
+      const ctx = this.ctx, g = this.game, cam = g.renderer.camera, W = this.cv.width, H = this.cv.height, o = { x: 0, y: 0, vis: false };
+      ctx.clearRect(0, 0, W, H);
+      if (g.state === 'deploy' || g.state === 'ended' || g.paused) return;
+      const cp3 = cam.cam.position;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (const c of w.cps) {
+        cam.project({ x: c.pos.x, y: c.pos.y + 16, z: c.pos.z }, o);
+        const d = Math.hypot(c.pos.x - cp3.x, c.pos.z - cp3.z);
+        let x = o.x, y = o.y; const off = !o.vis || x < 40 || x > W - 40 || y < 70 || y > H - 60;
+        if (off) { if (!play) continue; const a = Math.atan2(c.pos.x - cp3.x, c.pos.z - cp3.z) - cam.yaw; x = W / 2 - Math.sin(a) * (W / 2 - 60); y = H / 2 - Math.cos(a) * (H / 2 - 90); x = E.clamp(x, 44, W - 44); y = E.clamp(y, 80, H - 70); }
+        const col = COL[c.owner || 'neutral'];
+        ctx.globalAlpha = off ? 0.6 : 0.95; ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = 'rgba(6,10,18,.72)'; ctx.fillRect(-11, -11, 22, 22); ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.strokeRect(-11, -11, 22, 22);
+        if (Math.abs(c.cap) < 0.999) { ctx.fillStyle = COL[c.cap >= 0 ? 'aegis' : 'verdant']; ctx.globalAlpha *= 0.55; const k = Math.abs(c.cap); ctx.fillRect(-11, 11 - 22 * k, 22, 22 * k); }
+        ctx.restore(); ctx.globalAlpha = off ? 0.6 : 1;
+        ctx.fillStyle = '#fff'; ctx.font = '700 13px system-ui'; ctx.fillText(c.name[0], x, y + 1);
+        ctx.font = '600 10px system-ui'; ctx.fillStyle = col; ctx.fillText(Math.round(d) + 'm', x, y + 25);
+      }
+      ctx.globalAlpha = 1;
+      // capital ship plates
+      for (const s of w.units) {
+        if (s.kind !== 'capital' || !s.alive) continue;
+        cam.project({ x: s.pos.x, y: s.pos.y + s.h * 1.6, z: s.pos.z }, o); if (!o.vis || (u && u.id === s.id)) continue;
+        const col = COL[s.team], bw = 90;
+        ctx.fillStyle = 'rgba(6,10,18,.6)'; ctx.fillRect(o.x - bw / 2 - 2, o.y - 5, bw + 4, 10);
+        ctx.fillStyle = '#4aa8ff'; ctx.fillRect(o.x - bw / 2, o.y - 3, bw * E.clamp01(s.shield / (s.maxShield || 1)), 2);
+        ctx.fillStyle = col; ctx.fillRect(o.x - bw / 2, o.y, bw * E.clamp01(s.hp / s.maxHp), 3);
+        ctx.font = '700 10px system-ui'; ctx.fillStyle = col; ctx.fillText((s.team === g.team ? 'ALLIED ' : 'ENEMY ') + s.def.name.toUpperCase(), o.x, o.y - 13);
+      }
+      if (play) {
+        // target info under the crosshair
+        const t = g.aimInfo && g.aimInfo.target;
+        if (t && t.alive && t.kind !== 'capital') {
+          cam.project({ x: t.pos.x, y: t.pos.y + t.h + (t.kind === 'infantry' ? 0.5 : 1.5), z: t.pos.z }, o);
+          if (o.vis) { const bw = 46; ctx.fillStyle = 'rgba(6,10,18,.7)'; ctx.fillRect(o.x - bw / 2 - 1, o.y - 3, bw + 2, 6); ctx.fillStyle = COL[t.team]; ctx.fillRect(o.x - bw / 2, o.y - 2, bw * E.clamp01(t.hp / t.maxHp), 4); }
+        }
+        // friendly tags for nearby allies
+        ctx.font = '600 9px system-ui';
+        for (const a of w.units) {
+          if (!a.alive || a.team !== g.team || a === u || a.kind === 'capital' || a.kind === 'turret') continue;
+          const d2 = E.V3.distance2(a.pos, u.pos); if (d2 > (a.kind === 'infantry' ? 90 * 90 : 500 * 500)) continue;
+          cam.project({ x: a.pos.x, y: a.pos.y + a.h + (a.kind === 'infantry' ? 0.45 : 2), z: a.pos.z }, o); if (!o.vis) continue;
+          ctx.fillStyle = a.pid ? '#fff' : (g.squad.includes(a.id) ? '#ffe680' : 'rgba(120,190,255,.8)');
+          ctx.beginPath(); ctx.moveTo(o.x, o.y + 4); ctx.lineTo(o.x - 4, o.y - 3); ctx.lineTo(o.x + 4, o.y - 3); ctx.fill();
+          if (a.pid && w.players[a.pid]) ctx.fillText(w.players[a.pid].name, o.x, o.y - 10);
+        }
+        // missile lock diamond
+        const lk = (u.def.alt === 'missile' || u.def.alt === 'rocket') ? E.SIM.aimTarget(w, u, u.kind === 'fighter' ? u.pos : E.SIM.eyeOf(u), E.SIM.dirOf(u.kind === 'fighter' ? u.yaw : cam.yaw, u.kind === 'fighter' ? u.pitch : cam.pitch), u.kind === 'fighter' ? 0.3 : 0.12, u.kind === 'fighter' ? 900 : 500, (e) => e.kind !== 'infantry') : null;
+        if (lk) { cam.project(lk.pos, o); if (o.vis) { const s = 16 + Math.sin(performance.now() / 90) * 2; ctx.strokeStyle = u.altT <= 0 ? '#ff4030' : '#ffb040'; ctx.lineWidth = 2; ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(Math.PI / 4); ctx.strokeRect(-s / 2, -s / 2, s, s); ctx.restore(); ctx.font = '700 10px system-ui'; ctx.fillStyle = ctx.strokeStyle; ctx.fillText(u.altT <= 0 ? 'LOCK' : '', o.x, o.y + 22); } }
+        // fighter: where the nose is actually pointing
+        if (u.kind === 'fighter') { const d = E.SIM.dirOf(u.yaw, u.pitch); cam.project({ x: u.pos.x + d.x * 300, y: u.pos.y + d.y * 300, z: u.pos.z + d.z * 300 }, o); if (o.vis) { ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(o.x, o.y, 9, 0, E.TAU); ctx.stroke(); } }
+        // damage direction arcs
+        for (let i = this.dmgDirs.length - 1; i >= 0; i--) {
+          const dd = this.dmgDirs[i]; dd.t -= dt; if (dd.t <= 0) { this.dmgDirs.splice(i, 1); continue; }
+          const a = Math.atan2(dd.x - u.pos.x, dd.z - u.pos.z) - cam.yaw;
+          ctx.strokeStyle = `rgba(255,50,30,${Math.min(1, dd.t * 1.4)})`; ctx.lineWidth = 7; ctx.beginPath(); ctx.arc(W / 2, H / 2, 110, -Math.PI / 2 - a - 0.24, -Math.PI / 2 - a + 0.24); ctx.stroke();
+        }
+      }
+    }
+
+    // ── events ───────────────────────────────────────────────
+    events(events, w) {
+      const g = this.game, me = g.pid, mine = g.team;
+      for (const e of events) {
+        if (e.type === 'death') {
+          if (e.kind === 'turret' && !e.byPid) continue;
+          if (e.kind === 'infantry' && !e.byPid && !e.pid && this.feed.length > 3) continue;
+          const el = document.createElement('div'); el.className = 'h-kill' + (e.byPid === me ? ' me' : '') + (e.pid === me ? ' dead' : '');
+          const W = E.WEAPONS[e.wk];
+          el.innerHTML = `<b class="${e.kteam || ''}">${esc(e.killer)}</b><span>${W ? esc(W.name) : (e.wk === 'crash' ? 'crash' : '')}</span><b class="${e.team}">${esc(e.victim)}</b>`;
+          this.$.feed.appendChild(el); this.feed.push({ el, t: performance.now() }); if (this.feed.length > 5) this.feed.shift().el.remove();
+          if (e.pid === me) this.$.dead.innerHTML = `<div class="k1">YOU WERE KILLED</div><div class="k2">${esc(e.killer)}${W ? ' · ' + esc(W.name) : ''}</div>`;
+        } else if (e.type === 'hit') {
+          if (e.by === me) { this.hitT = 0.3; this.$.hitm.className = 'hitm' + (e.kill ? ' kill' : e.head ? ' head' : e.sh ? ' sh' : ''); }
+          if (e.to === me) { g.hurt = Math.min(1, (g.hurt || 0) + 0.25 + e.dmg / 120); g.renderer.camera.shake(Math.min(0.4, e.dmg / 150)); if (e.from) this.dmgDirs.push({ x: e.from.x, z: e.from.z, t: 1.2 }); }
+        } else if (e.type === 'score' && e.to === me) {
+          this.total += e.pts; const el = document.createElement('div'); el.className = 'h-pop'; el.innerHTML = `<b>+${e.pts}</b> ${esc(e.why)}`;
+          this.$.pops.appendChild(el); this.pops.push({ el, t: performance.now() }); if (this.pops.length > 5) this.pops.shift().el.remove();
+        } else if (e.type === 'capture') { const c = w.cps[e.cp]; this.announce((e.team === mine ? 'WE CAPTURED ' : 'ENEMY CAPTURED ') + c.name.toUpperCase(), e.team); }
+        else if (e.type === 'neutral') { const c = w.cps[e.cp]; this.announce((e.prev === mine ? 'WE LOST ' : 'ENEMY LOST ') + c.name.toUpperCase(), e.prev === mine ? 'bad' : 'good'); }
+        else if (e.type === 'announce') {
+          const ours = e.team === mine;
+          if (e.key === 'capitalDown') this.announce(ours ? 'OUR FLAGSHIP IS LOST' : 'ENEMY CAPITAL SHIP DESTROYED', ours ? 'bad' : 'good');
+          else if (e.key === 'ticketsHalf') this.announce(ours ? 'OUR REINFORCEMENTS AT HALF' : 'ENEMY REINFORCEMENTS AT HALF', ours ? 'bad' : 'good');
+          else if (e.key === 'ticketsLow') this.announce(ours ? 'WE ARE RUNNING OUT OF TROOPS' : 'THE ENEMY IS BREAKING — FINISH THEM', ours ? 'bad' : 'good');
+        } else if (e.type === 'strikeWarn') { const u = g.unit(); if (e.team !== mine && u && E.distXZ2(u.pos, e.pos) < 60 * 60) this.announce('INCOMING ORBITAL STRIKE — MOVE!', 'bad'); else if (e.team === mine) this.toast('Orbital strike inbound'); }
+        else if (e.type === 'overheat' && e.to === me) this.toast('WEAPON OVERHEATED');
+        else if (e.type === 'gameOver') this.announce(e.winner === mine ? 'VICTORY' : 'DEFEAT', e.winner === mine ? 'good big' : 'bad big');
+      }
+    }
+    announce(text, cls) { if (this.ann.length < 4) this.ann.push({ text: esc(text), cls: cls || '' }); }
+    toast(t) { const el = this.$ && this.$.toast; if (!el) return; el.textContent = t; el.classList.remove('show'); void el.offsetWidth; el.classList.add('show'); }
+    box(x0, y0, x1, y1) { const s = this.$.sel; if (x0 === undefined) { s.style.display = 'none'; return; } s.style.cssText = `display:block;left:${Math.min(x0, x1)}px;top:${Math.min(y0, y1)}px;width:${Math.abs(x1 - x0)}px;height:${Math.abs(y1 - y0)}px`; }
+    setLayer(kind, html) { this.layerKind = kind; this.$.layer.innerHTML = html; this.$.layer.className = 'h-layer ' + (kind ? 'on ' + kind : ''); }
+
+    // ── deploy screen ────────────────────────────────────────
+    showDeploy() {
+      const g = this.game, w = g.world;
+      const cards = CLASSES.map((c, i) => { const d = E.INFANTRY[c], W = E.WEAPONS[d.weapon], A = E.WEAPONS[d.alt]; return `<button class="d-class${i === this.cls ? ' on' : ''}" data-i="${i}"><span class="k">${i + 1}</span><b>${d.name}</b><em>${W.name} · ${A.name}</em><p>${d.desc}</p></button>`; }).join('');
+      this.setLayer('deploy', `
+        <div class="d-wrap">
+          <div class="d-col">
+            <div class="d-h">DEPLOY AS</div>${cards}
+          </div>
+          <div class="d-mid">
+            <div class="d-h">SELECT A COMMAND POST <span class="d-sub">${esc(w.planet.biomeDef.name)} · ${esc(w.planet.biomeDef.challenge.name)}</span></div>
+            <div class="d-map"><canvas width="660" height="480"></canvas>${w.cps.map(c => `<button class="d-cp" data-cp="${c.id}">${c.name[0]}</button>`).join('')}</div>
+            <div class="d-row"><button class="gc-btn primary d-go">DEPLOY <span class="k">ENTER</span></button><span class="d-wait"></span></div>
+          </div>
+          <div class="d-col">
+            <div class="d-h">TAKE COMMAND</div>
+            <button class="d-veh" data-k="fighter"><b>Starfighter</b><em></em></button>
+            <button class="d-veh" data-k="vehicle"><b>Armor</b><em></em></button>
+            <button class="d-veh" data-k="capital"><b>Flagship Bridge</b><em></em></button>
+            <button class="d-veh" data-k="cmd"><b>Command View</b><em>Direct the battle from above · C</em></button>
+            <div class="d-tip">Every death costs your side a reinforcement. Hold more posts than the enemy to bleed theirs.</div>
+          </div>
+        </div>`);
+      const L = this.$.layer;
+      L.querySelectorAll('.d-class').forEach(b => b.addEventListener('click', () => this.pickClass(+b.dataset.i)));
+      L.querySelectorAll('.d-cp').forEach(b => b.addEventListener('click', () => { const c = w.cps[+b.dataset.cp]; if (c.owner === g.team) { g.deployCp = c.id; Object.assign(g.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 8, z: c.pos.z }); if (E.SFX) E.SFX.play('ui'); } }));
+      L.querySelector('.d-go').addEventListener('click', () => this.doDeploy());
+      L.querySelectorAll('.d-veh').forEach(b => b.addEventListener('click', () => { const k = b.dataset.k; if (k === 'cmd') g.toCommander(); else if (!g.quickControl(k)) this.toast('None available'); }));
+      this.refreshDeploy(w, g.player());
+    }
+    refreshDeploy(w, P) {
+      const g = this.game, L = this.$.layer, cvs = L.querySelector('.d-map canvas'); if (!cvs) return;
+      this.drawMap(cvs.getContext('2d'), 660, 480, w, true);
+      const owned = w.cps.filter(c => c.owner === g.team);
+      if (!owned.some(c => c.id === g.deployCp)) { // default: the owned post nearest the front
+        let best = null, bd = 1e9; for (const c of owned) for (const o of w.cps) if (o.owner !== g.team) { const d = E.distXZ(c.pos, o.pos); if (d < bd) { bd = d; best = c; } }
+        g.deployCp = best ? best.id : (owned[0] ? owned[0].id : -1);
+      }
+      const o = { x: 0, y: 0 };
+      L.querySelectorAll('.d-cp').forEach(b => { const c = w.cps[+b.dataset.cp]; this.mapXY(c.pos, 100, 100, o); b.style.left = o.x + '%'; b.style.top = o.y + '%'; b.dataset.o = c.owner || 'neutral'; b.classList.toggle('mine', c.owner === g.team); b.classList.toggle('on', c.id === g.deployCp); });
+      const wait = P ? Math.max(0, E.SIM.RESPAWN - (w.t - P.deadT)) : 0, T = w.teams[g.team];
+      L.querySelector('.d-wait').textContent = !owned.length ? 'No command posts — take control of a unit to fight on' : T.tickets <= 0 ? 'No reinforcements left' : wait > 0 ? 'Reinforcing in ' + wait.toFixed(1) + 's' : '';
+      L.querySelector('.d-go').disabled = wait > 0 || !owned.length || T.tickets <= 0;
+      const n = (k) => w.units.filter(u => u.alive && u.team === g.team && u.kind === k && !u.pid).length;
+      L.querySelectorAll('.d-veh').forEach(b => { const k = b.dataset.k; if (k === 'cmd') return; const c = n(k); b.disabled = !c; b.querySelector('em').textContent = c ? c + ' available' : 'none available'; });
+    }
+    pickClass(i) { this.cls = i; if (this.layerKind === 'deploy') this.$.layer.querySelectorAll('.d-class').forEach((b, j) => b.classList.toggle('on', j === i)); if (E.SFX) E.SFX.play('ui'); }
+    doDeploy() { const g = this.game; if (g.deployCp >= 0) g.cmd('deploy', CLASSES[this.cls], g.deployCp); }
+    hideDeploy() { if (this.layerKind === 'deploy') this.setLayer('', ''); }
+
+    // ── pause / settings ─────────────────────────────────────
+    showPause() {
+      const g = this.game, s = g.settings;
+      this.setLayer('pause', `
+        <div class="p-card">
+          <div class="p-title">PAUSED</div>
+          <button class="gc-btn primary p-resume">Resume</button>
+          <div class="p-set">
+            <label>Graphics<select class="p-q">${['auto', 'high', 'medium', 'low'].map(q => `<option value="${q}"${(s.quality || 'auto') === q ? ' selected' : ''}>${q[0].toUpperCase() + q.slice(1)}</option>`).join('')}</select></label>
+            <label>Mouse sensitivity<input type="range" class="p-sens" min="0.3" max="2.5" step="0.05" value="${s.sens || 1}"></label>
+            <label>Volume<input type="range" class="p-vol" min="0" max="1" step="0.05" value="${s.volume == null ? 0.8 : s.volume}"></label>
+            <label class="chk"><input type="checkbox" class="p-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
+          </div>
+          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>C</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
+          <button class="gc-btn p-quit">${g.role === 'sp' ? 'Abandon Battle' : 'Leave Match'}</button>
+        </div>`);
+      const L = this.$.layer, save = () => E.bus.emit('settings:changed', s);
+      L.querySelector('.p-resume').addEventListener('click', () => g.togglePause(false));
+      L.querySelector('.p-q').addEventListener('change', (e) => { s.quality = e.target.value; g.renderer.scene.setQuality(s.quality); save(); });
+      L.querySelector('.p-sens').addEventListener('input', (e) => { s.sens = +e.target.value; save(); });
+      L.querySelector('.p-vol').addEventListener('input', (e) => { s.volume = +e.target.value; if (E.Music) E.Music.setVolume(s.volume); save(); });
+      L.querySelector('.p-inv').addEventListener('change', (e) => { s.invertY = e.target.checked; save(); });
+      L.querySelector('.p-quit').addEventListener('click', () => { g.paused = false; if (g.onQuit) g.onQuit(); });
+    }
+    hidePause() { if (this.layerKind === 'pause') { this.setLayer('', ''); if (this.game.state === 'deploy') this.showDeploy(); } }
+
+    scoreboard(on) {
+      const g = this.game, w = g.world;
+      if (!on) { if (this.layerKind === 'score') this.setLayer('', ''); if (g.state === 'deploy' && !this.layerKind) this.showDeploy(); return; }
+      if (this.layerKind && this.layerKind !== 'deploy') return;
+      const row = (f) => { const T = w.teams[f]; const ps = Object.values(w.players).filter(p => p.team === f).sort((a, b) => b.score - a.score);
+        return `<div class="s-team ${f}"><div class="s-h"><b>${E.faction(f).name.toUpperCase()}</b><span>${T.tickets} reinforcements · ${T.cps} posts · ${T.kills} kills</span></div>
+          <table><tr><th>Player</th><th>Score</th><th>K</th><th>D</th><th>Caps</th></tr>${ps.map(p => `<tr class="${p.id === g.pid ? 'me' : ''}"><td>${esc(p.name)}</td><td>${p.score}</td><td>${p.kills}</td><td>${p.deaths}</td><td>${p.captures}</td></tr>`).join('') || '<tr><td colspan="5" class="dim">AI commander</td></tr>'}</table></div>`; };
+      this.setLayer('score', `<div class="s-card"><div class="p-title">${esc(w.planet.biomeDef.name).toUpperCase()} — ${E.fmtTime(w.t)}</div>${row('aegis')}${row('verdant')}</div>`);
+    }
+
+    // ── results ──────────────────────────────────────────────
+    showResults(r) {
+      const g = this.game, kd = r.deaths ? (r.kills / r.deaths).toFixed(1) : r.kills;
+      const awards = [];
+      if (r.kills >= 20) awards.push('WAR HERO'); if (r.best >= 8) awards.push('UNSTOPPABLE'); if (r.captures >= 3) awards.push('VANGUARD'); if (r.deaths === 0 && r.kills > 0) awards.push('UNTOUCHABLE'); if (r.won && r.tickets > r.enemyTickets + 100) awards.push('DECISIVE VICTORY');
+      this.setLayer('results', `
+        <div class="r-card ${r.won ? 'won' : 'lost'}">
+          <div class="r-title">${r.won ? 'VICTORY' : 'DEFEAT'}</div>
+          <div class="r-sub">${esc(g.world.planet.biomeDef.name)} · ${E.fmtTime(r.time)} · ${E.faction(r.winner).name} holds the field</div>
+          <div class="r-stats">
+            <div><b>${r.score.toLocaleString()}</b><span>Score</span></div><div><b>${r.kills}</b><span>Kills</span></div><div><b>${r.deaths}</b><span>Deaths</span></div>
+            <div><b>${kd}</b><span>K/D</span></div><div><b>${r.captures}</b><span>Posts taken</span></div><div><b>${r.best}</b><span>Best streak</span></div>
+          </div>
+          <div class="r-bars"><span class="${g.team}">${r.tickets}</span><i>reinforcements remaining</i><span class="${E.opponent(g.team)}">${r.enemyTickets}</span></div>
+          <div class="r-awards">${awards.map(a => `<span>${a}</span>`).join('')}</div>
+          <div class="r-extra"></div>
+          <button class="gc-btn primary r-go">Continue</button>
+        </div>`);
+      this.$.layer.querySelector('.r-go').addEventListener('click', () => { if (g.onContinue) g.onContinue(r); });
+    }
+    resultsExtra(html) { const e = this.$ && this.$.layer.querySelector('.r-extra'); if (e) e.innerHTML = html; }
+  }
+
+  E.HUD = HUD;
+})(window.E = window.E || {});
+
+// ---- js/ui/lobby.js ----
+// Local multiplayer lobby: host a battle on this machine (LAN) or join by room
+// code. Uses the zero-dep signaling server (ws://host/ws) to introduce players,
+// then the match runs peer to peer over WebRTC (E.Relay). Host-authoritative:
+// the host runs the only World; guests send commands and render snapshots.
+(function (E) {
+  'use strict';
+
+  function lanUrl() {
+    if (location.protocol === 'http:' || location.protocol === 'https:')
+      return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    return 'ws://localhost:8080/ws';
+  }
+  function pageUrl() {
+    return location.href.split('#')[0].replace(/\/$/, '');
+  }
+
+  class Lobby {
+    constructor(root, menu) { this.root = root; this.menu = menu; this.relay = null; this.session = null; this.game = null; }
+    _game() { this.game = window.GC.game; return this.game; }
+
+    // ── host ───────────────────────────────────────────────────
+    host(opts) {
+      this._msg('Contacting the LAN server…');
+      const relay = new E.Relay();
+      this.relay = relay;
+      const game = this._game();
+      relay.connect(lanUrl()).then(() => { relay.host('Commander'); }).catch((e) => this._err('Could not reach the LAN server: ' + e.message));
+      relay.on('hosted', (m) => {
+        this.code = m.room;
+        const g = this.root.querySelector('.mp-hostbox');
+        g.hidden = false;
+        g.querySelector('.mp-code').textContent = m.room;
+        g.querySelector('.mp-url').textContent = pageUrl();
+        this.menu.hide();
+        game.start(Object.assign({ role: 'host', relay }, opts));
+        this.session = new E.Net.NetSession();
+        this.session.host(game);
+        E.bus.emit('lan:hosted', { code: m.room });
+      });
+      relay.on('sigclose', () => this._err('Lost the LAN server'));
+    }
+
+    // ── join ───────────────────────────────────────────────────
+    join(url, code, name) {
+      this._msg('Contacting the server…');
+      const relay = new E.Relay();
+      this.relay = relay;
+      const game = this._game();
+      relay.connect(E.Relay.fromInput(url)).then(() => { relay.join(code, name); }).catch((e) => this._err('Could not reach server: ' + e.message));
+      relay.on('joined', () => { this._msg('Connected. Waiting for the host to deploy…'); });
+      relay.on('msg', (m) => {
+        if (m.from !== 0) return;
+        let s; try { s = JSON.parse(m.data); } catch { return; }
+        if (s.t === 'meta' && !this.session) {
+          // Rebuild the world locally from the host's seed; the session streams the rest.
+          const remote = new E.Net.RemoteWorld({ biome: s.biome, seed: s.seed, scale: s.scale, faction: s.faction, name });
+          remote._pid = s.pid;
+          const net = { send: (c) => relay.toHost(JSON.stringify(c)) };
+          this.menu.hide();
+          game.start({ role: 'guest', relay, net, replica: remote, pid: s.pid, human: s.faction, biome: s.biome, seed: s.seed, scale: s.scale });
+          this.session = new E.Net.NetSession();
+          this.session.guest(game);
+          this._msg('In battle! You command the ' + (s.faction === 'aegis' ? 'Concord' : 'Pact') + '.');
+          E.bus.emit('lan:joined', { faction: s.faction });
+        }
+      });
+      relay.on('error', (m) => this._err(m.msg || 'error'));
+      relay.on('sigclose', () => this._err('Lost the LAN server'));
+    }
+
+    _msg(text, bad) {
+      const m = this.root.querySelector('.mp-msg');
+      if (m) { m.textContent = text; m.classList.toggle('bad', !!bad); }
+    }
+    _err(msg) {
+      this._msg(msg, true);
+      const b = this.root.querySelector('.mp-leave'); if (b) b.hidden = false;
+    }
+    leave() {
+      if (this.session) { this.session.stop(); this.session = null; }
+      if (this.relay) { try { this.relay.close(); } catch {} this.relay = null; }
+      if (this.game && this.game.stop) this.game.stop();
+      if (this.menu && this.menu.show) this.menu.show();
+      E.bus.emit('lan:leave');
     }
   }
 
+  // The menu's multiplayer screen: choose Host or Join.
+  function mount(root, menu) {
+    root.innerHTML = `
+    <div class="mp-lan">
+      <div class="mp-col">
+        <div class="m-sec">Host a battle</div>
+        <p class="mp-msg">Anyone on your network can join with the room code. Your browser runs the battle; friends see it live.</p>
+        <button class="gc-btn primary mp-host" style="width:100%">Host</button>
+        <div class="mp-hostbox" hidden style="margin-top:12px">
+          <div class="m-sec">Room code</div>
+          <div class="mp-code"></div>
+          <div class="m-sec">Address</div>
+          <div class="mp-url"></div>
+        </div>
+      </div>
+      <div class="mp-sep"><span>or join</span></div>
+      <div class="mp-col">
+        <div class="m-sec">Server address</div>
+        <input class="mp-input mp-jurl" value="${pageUrl()}" placeholder="http://192.168.1.5:8080" />
+        <div class="mp-row2">
+          <input class="mp-input mp-jcode" placeholder="ROOM CODE" style="letter-spacing:4px" />
+          <input class="mp-input mp-jname" placeholder="Callsign" />
+        </div>
+        <button class="gc-btn mp-join" style="width:100%;margin-top:12px">Join</button>
+      </div>
+      <div class="mp-col" style="margin-top:4px">
+        <button class="gc-btn mp-leave" hidden>Leave battle</button>
+      </div>
+    </div>`;
+    const lobby = new Lobby(root, menu);
+    const opts = Object.assign({ biome: 'desert', seed: (E.RNG(1).i(1e9)), human: (menu && menu.profile && menu.profile.human) || 'aegis' }, (menu && menu.mpOpts) || {});
+    root.querySelector('.mp-host').addEventListener('click', () => lobby.host(opts));
+    root.querySelector('.mp-join').addEventListener('click', () => {
+      const url = root.querySelector('.mp-jurl').value.trim();
+      const code = root.querySelector('.mp-jcode').value.trim().toUpperCase();
+      const name = root.querySelector('.mp-jname').value.trim() || 'Commander';
+      if (!code) { root.querySelector('.mp-jcode').style.borderColor = 'var(--danger)'; return; }
+      lobby.join(url, code, name);
+    });
+    root.querySelector('.mp-leave').addEventListener('click', () => lobby.leave());
+  }
+
+  E.LAN = { Lobby, mount, lanUrl, pageUrl };
+  E.Lobby = { mount }; // menu compatibility
+})(window.E = window.E || {});
+
+// ---- js/ui/main.js ----
+// The entry point (runs last in the bundle). Creates the one Game (renderer +
+// HUD) and the Menu, shows the main menu over a live AI battle, launches
+// battles, and folds results back into the career profile and the campaign.
+(function (E) {
+  'use strict';
+  let game = null, menu = null;
+  const ui = () => document.getElementById('ui');
+
+  function loading(text, fn) {
+    let el = document.getElementById('gc-loading');
+    if (!el) { el = document.createElement('div'); el.id = 'gc-loading'; document.body.appendChild(el); }
+    el.innerHTML = `<div><div class="l-title">${text}</div><div class="bar"><i></i></div></div>`;
+    el.style.display = 'grid'; el.classList.remove('out');
+    // two frames so the splash paints before the (synchronous) world build
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try { fn(); } catch (err) { console.error('GC start failed:', err); window.__GC_ERROR__ = (err && err.stack) || String(err); }
+      el.classList.add('out'); setTimeout(() => { el.style.display = 'none'; }, 500);
+    }));
+  }
+
+  function attract() {
+    const biomes = ['desert', 'jungle', 'urban', 'tundra', 'volcanic', 'gas'];
+    const b = window.GC_ATTRACT_BIOME || biomes[(Math.random() * biomes.length) | 0];
+    loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: b, seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); menu.show(); window.__GC_MENU__ = true; });
+  }
+
+  function battle(opts, ctx) {
+    menu.hide();
+    const b = E.biome(opts.biome);
+    loading(`${(opts.system || b.name).toUpperCase()}<span>${b.theme} · ${b.challenge.name}</span>`, () => {
+      game.stop();
+      game.start(Object.assign({ role: 'sp' }, opts));
+      window.__GC_BATTLE__ = true;
+      game.onEnd = (r) => {
+        const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills; menu.saveProfile();
+        let extra = `<div class="r-xp">+${(r.score + (r.won ? 500 : 100)).toLocaleString()} XP · ${E.Campaign.rank(P.xp).name}</div>`;
+        if (ctx && ctx.campaign) {
+          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending);
+          ctx.res = res; menu.saveCampaign();
+          extra += `<div class="r-camp">${res.defending ? (res.won ? `${res.planet} holds.` : `${res.planet} has fallen.`) : (res.won ? `${res.planet} is yours.` : `The assault on ${res.planet} failed.`)} +${res.reward} credits</div>`;
+        }
+        game.hud.resultsExtra(extra);
+      };
+      game.onContinue = () => { const res = ctx && ctx.res; back(() => { if (ctx && ctx.campaign) menu.afterBattle(res || { defending: ctx.defending }); else menu.show(); }); };
+      game.onQuit = () => {
+        if (ctx && ctx.campaign && ctx.defending) { E.Campaign.applyBattle(ctx.campaign, ctx.planet, false, 0, true); menu.saveCampaign(); }
+        back(() => { if (ctx && ctx.campaign) menu.showCampaign(); else menu.show(); });
+      };
+    });
+  }
+  // return to the menu with a fresh attract battle behind it
+  function back(then) {
+    game.stop();
+    loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: ['desert', 'jungle', 'urban', 'tundra'][(Math.random() * 4) | 0], seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); then(); });
+  }
+
   function boot() {
-    menu = new E.Menu(uiRoot());
-    menu.onStart = (opts, campaign) => start(opts, campaign);
-    // A GC_AUTOSTART (biome/seed/human) skips the menu — used by tests and as
-    // a quick-play hook. Otherwise show the main menu / campaign map.
-    if (window.GC_AUTOSTART) {
-      start(Object.assign({ biome: 'desert', seed: 7 }, window.GC_AUTOSTART), null);
-    } else {
-      menu.show();
+    try {
+      menu = new E.Menu(ui());
+      game = new E.Game(document.getElementById('view'), menu.settings);
+      menu.onStart = battle;
+      window.GC.game = game; window.GC.menu = menu; window.GC.battle = battle; window.GC.back = back;
+      if (window.GC_AUTOSTART) battle(Object.assign({ biome: 'desert', seed: 7 }, window.GC_AUTOSTART), null);
+      else attract();
+    } catch (err) {
+      console.error('GC boot failed:', err);
+      window.__GC_ERROR__ = (err && err.stack) || String(err);
+      const el = document.getElementById('gc-loading') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'gc-loading' }));
+      el.style.display = 'grid'; el.innerHTML = '<div><div class="l-title">Could not start<span>This game needs WebGL 2. ' + String(err && err.message || err).replace(/</g, '&lt;') + '</span></div></div>';
     }
   }
 
   window.GC = window.GC || {};
-  window.GC.start = boot;
   window.GC.E = E;
-  window.GC.getGame = () => game;
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(boot));
   else requestAnimationFrame(boot);
 })(window.E = window.E || {});
 
 // ---- js/ui/menus.js ----
-// Main menu + galactic campaign map + post-match overlay. UI only (browser).
-// The menu owns the #ui overlay; when a battle starts it hands the overlay to
-// the Game and returns to render when the match ends. Campaign state persists
-// to localStorage so a player can resume their front.
+// Front end: main menu (over a live "attract" battle), instant action, the
+// galactic campaign map, codex and settings. UI only (browser). The menu owns
+// a #menu layer inside #ui; battles are launched through this.onStart.
 (function (E) {
   'use strict';
-
-  const LS_KEY = 'gc.campaign.v1';
-  const LS_SET = 'gc.settings.v1';
+  const LS_KEY = 'gc.campaign.v2', LS_SET = 'gc.settings.v2', LS_PRO = 'gc.profile.v1';
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const css = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+  const store = { get(k, d) { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+  const planetStyle = (b) => { const p = E.biome(b).palette, S = E.SKY[b] || {}; return `background: radial-gradient(circle at 32% 30%, ${css(E.mixC(p.high, [255, 255, 255], 0.25))}, ${css(p.mid)} 45%, ${css(E.mixC(p.low, [0, 0, 0], 0.55))} 100%); box-shadow: inset -6px -8px 14px rgba(0,0,0,.55), 0 0 18px ${S.fog || '#456'}55;`; };
 
   class Menu {
     constructor(root) {
       this.root = root;
-      this.campaign = this.load() || null;
-      this.settings = this.loadSettings();
-      this.onStart = null;   // set by main.js: (opts) => void
-      this._hidden = false;
+      this.settings = Object.assign({ faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander' }, store.get(LS_SET, {}));
+      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, store.get(LS_PRO, {}));
+      const c = store.get(LS_KEY, null); this.campaign = c && c.v === 2 ? c : null;
+      this.onStart = null; this.el = null; this.sel = -1;
+      E.bus.on('settings:changed', () => this.saveSettings());
     }
+    saveSettings() { store.set(LS_SET, this.settings); }
+    saveCampaign() { if (this.campaign) store.set(LS_KEY, this.campaign); else { try { localStorage.removeItem(LS_KEY); } catch (e) {} } }
+    saveProfile() { store.set(LS_PRO, this.profile); }
+    hide() { if (this.el) { this.el.remove(); this.el = null; } }
+    layer(html, cls) {
+      this.hide();
+      const el = document.createElement('div'); el.className = 'menu ' + (cls || ''); el.innerHTML = html;
+      this.root.appendChild(el); this.el = el;
+      el.querySelectorAll('button').forEach(b => b.addEventListener('mouseenter', () => { if (E.SFX && E.Music.on) E.SFX.play('ui', null, 0.15); }));
+      return el;
+    }
+    q(s) { return this.el.querySelector(s); }
+    on(s, fn) { const e = this.el.querySelector(s); if (e) e.addEventListener('click', fn); }
 
-    load() { try { const s = localStorage.getItem(LS_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
-    save() { try { if (this.campaign) localStorage.setItem(LS_KEY, JSON.stringify(this.campaign)); } catch {} }
-    loadSettings() { try { const s = localStorage.getItem(LS_SET); return Object.assign({ faction: 'aegis' }, s ? JSON.parse(s) : {}); } catch { return { faction: 'aegis' }; } }
-    saveSettings() { try { localStorage.setItem(LS_SET, JSON.stringify(this.settings)); } catch {} }
-
-    hide() { this._hidden = true; this.root.innerHTML = ''; }
-    show() { this._hidden = false; this.render(); }
-
-    // ── main menu ──────────────────────────────────────────────
-    render() {
-      const T = E.faction;
-      this.root.innerHTML = `
-      <div class="menu gc-menu">
-        <div class="menu-card">
-          <div class="menu-title">GALACTIC CONQUEST</div>
-          <div class="menu-sub">A war across the stars, fought on land, in the air, and in the void. Built entirely from code.</div>
-
-          <div class="menu-row">
-            <div class="menu-label">Command</div>
-            <div class="seg" id="gc-fac">
-              <button data-fac="aegis" class="${this.settings.faction === 'aegis' ? 'on' : ''}">Aegis Concord</button>
-              <button data-fac="verdant" class="${this.settings.faction === 'verdant' ? 'on' : ''}">Verdant Pact</button>
-            </div>
-          </div>
-
-          <div class="menu-row">
-            <button class="gc-btn primary gc-campaign" style="flex:1">Galactic Campaign ${this.campaign ? `· ${this.campaign.systems.length - 2} systems` : ''}</button>
-            <button class="gc-btn gc-quick" style="flex:1">Quick Battle</button>
-          </div>
-
-          <div class="menu-row">
-            <button class="gc-btn gc-mp" style="flex:1" disabled>Multiplayer <span class="gc-dim">— coming online</span></button>
-          </div>
-
-          <div class="gc-controls" id="gc-controls">
-            <div class="gc-controls-head">CONTROLS</div>
-            <div>Left-click select · Left-drag box-select · Right-click attack-move</div>
-            <div><b>F</b> board nearest unit · <b>V</b> drive selected · <b>C/Esc</b> release to commander view</div>
-            <div>WASD move · Mouse look (on foot / in a craft) · <b>↑↓←→</b> orbit the commander view · <b>Shift</b> boost</div>
-            <div>Hold to capture objectives · Destroy the enemy HQ to win</div>
-          </div>
+    // ── main ───────────────────────────────────────────────────
+    show() {
+      const c = this.campaign, rk = E.Campaign.rank(this.profile.xp);
+      this.layer(`
+        <div class="m-main">
+          <div class="m-logo"><span>GALACTIC</span><b>CONQUEST</b><i>land · air · space</i></div>
+          <nav class="m-nav">
+            <button class="m-item" data-a="campaign"><b>${c && !c.victory ? 'Continue Campaign' : 'Galactic Campaign'}</b><span>${c && !c.victory ? `Turn ${c.turn} · ${E.Campaign.owned(c, c.playerFaction)} of 10 worlds` : 'Conquer ten worlds, one battle at a time'}</span></button>
+            <button class="m-item" data-a="instant"><b>Instant Action</b><span>Any world, any side, right now</span></button>
+            <button class="m-item" data-a="mp"><b>Multiplayer</b><span>Host or join over LAN / online</span></button>
+            <button class="m-item" data-a="codex"><b>Codex</b><span>Factions, units and how to fight</span></button>
+            <button class="m-item" data-a="settings"><b>Settings</b><span>Graphics, controls, audio</span></button>
+          </nav>
+          <div class="m-career"><div><b>${esc(this.settings.name)}</b> · ${rk.name}</div><div class="bar"><i style="width:${(rk.prog * 100).toFixed(0)}%"></i></div><span>${this.profile.xp.toLocaleString()} XP · ${this.profile.wins}/${this.profile.battles} victories · ${this.profile.kills} kills</span></div>
         </div>
-      </div>`;
-      this.bind();
+        <div class="m-foot">Everything you see and hear is generated from code.</div>`, 'm-root');
+      this.el.querySelectorAll('.m-item').forEach(b => b.addEventListener('click', () => { const a = b.dataset.a; if (a === 'campaign') this.showCampaign(); else if (a === 'instant') this.showInstant(); else if (a === 'mp') this.showMultiplayer(); else if (a === 'codex') this.showCodex(); else this.showSettings(); }));
     }
 
-    bind() {
-      const q = (s) => this.root.querySelector(s);
-      this.root.querySelectorAll('#gc-fac button').forEach(b => b.addEventListener('click', () => {
-        this.settings.faction = b.dataset.fac; this.saveSettings();
-        this.root.querySelectorAll('#gc-fac button').forEach(x => x.classList.toggle('on', x === b));
-      }));
-      const c = q('.gc-campaign'); if (c) c.addEventListener('click', () => this.showCampaign());
-      const qk = q('.gc-quick'); if (qk) qk.addEventListener('click', () => this.quick());
+    factionCards(sel) {
+      return E.FACTION_LIST.map(f => `<button class="m-fac ${f.id}${f.id === sel ? ' on' : ''}" data-fac="${f.id}"><b>${f.name}</b><em>${f.tagline}</em><p>${f.doctrine.summary}</p></button>`).join('');
+    }
+    diffSeg(sel) { return `<div class="seg m-diff">${['easy', 'normal', 'hard'].map(d => `<button data-d="${d}" class="${d === sel ? 'on' : ''}">${d === 'easy' ? 'Recruit' : d === 'normal' ? 'Veteran' : 'Warlord'}</button>`).join('')}</div>`; }
+    bindCommon() {
+      const s = this.settings;
+      this.el.querySelectorAll('.m-fac').forEach(b => b.addEventListener('click', () => { s.faction = b.dataset.fac; this.saveSettings(); this.el.querySelectorAll('.m-fac').forEach(x => x.classList.toggle('on', x === b)); }));
+      this.el.querySelectorAll('.m-diff button').forEach(b => b.addEventListener('click', () => { s.difficulty = b.dataset.d; this.saveSettings(); this.el.querySelectorAll('.m-diff button').forEach(x => x.classList.toggle('on', x === b)); }));
+      this.on('.m-back', () => this.show());
     }
 
-    // ── quick battle: pick a biome, fight AI ───────────────────
-    quick() {
-      const biomes = E.BIOME_LIST;
-      const btn = (id, d) => `<button class="gc-btn gc-biome" data-biome="${id}">${d.theme}<span class="gc-dim"> · ${d.name}</span></button>`;
-      this.root.innerHTML = `
-      <div class="menu gc-menu">
-        <div class="menu-card">
-          <div class="menu-title">QUICK BATTLE</div>
-          <div class="menu-sub">Pick a world. Each biome has an inherent challenge.</div>
-          <div class="gc-biome-grid">
-            ${biomes.map(d => btn(d.id, d)).join('')}
-          </div>
-          <div class="menu-row" style="margin-top:14px"><button class="gc-btn gc-back">Back</button></div>
-        </div>
-      </div>`;
-      this.root.querySelectorAll('.gc-biome').forEach(b => b.addEventListener('click', () => {
-        const r = E.Campaign.quickBattle({ seed: E.RNG(1).i(1e9), human: this.settings.faction });
-        r.biome = b.dataset.biome;
-        r.system = E.biome(b.dataset.biome).name;
-        this.begin(r, null);
-      }));
-      const back = this.root.querySelector('.gc-back'); if (back) back.addEventListener('click', () => this.render());
+    // ── instant action ─────────────────────────────────────────
+    showInstant() {
+      const s = this.settings; this.biome = this.biome || 'desert';
+      this.layer(`
+        <div class="m-panel wide">
+          <div class="m-h"><button class="m-back">‹ Back</button><h1>Instant Action</h1></div>
+          <div class="m-sec">Fight for</div><div class="m-facs">${this.factionCards(s.faction)}</div>
+          <div class="m-sec">Battlefield</div>
+          <div class="m-biomes">${E.BIOME_LIST.map(b => `<button class="m-biome${b.id === this.biome ? ' on' : ''}" data-b="${b.id}"><i style="${planetStyle(b.id)}"></i><b>${b.name}</b><em>${b.theme} · ${b.challenge.name}</em></button>`).join('')}</div>
+          <div class="m-row"><div><div class="m-sec">Difficulty</div>${this.diffSeg(s.difficulty)}</div>
+            <div><div class="m-sec">Fleets</div><div class="seg m-fleet">${[['1', 'Skirmish'], ['1.4', 'Battle'], ['1.8', 'Armada']].map(([v, n]) => `<button data-v="${v}" class="${(this.fleet || '1') === v ? 'on' : ''}">${n}</button>`).join('')}</div></div>
+            <button class="gc-btn primary m-go">Launch Battle</button></div>
+        </div>`);
+      this.bindCommon();
+      this.el.querySelectorAll('.m-biome').forEach(b => b.addEventListener('click', () => { this.biome = b.dataset.b; this.el.querySelectorAll('.m-biome').forEach(x => x.classList.toggle('on', x === b)); }));
+      this.el.querySelectorAll('.m-fleet button').forEach(b => b.addEventListener('click', () => { this.fleet = b.dataset.v; this.el.querySelectorAll('.m-fleet button').forEach(x => x.classList.toggle('on', x === b)); }));
+      this.on('.m-go', () => this.onStart(E.Campaign.quickBattle({ biome: this.biome, human: s.faction, seed: (Math.random() * 1e9) | 0, fleetScale: +(this.fleet || 1), enemyScale: +(this.fleet || 1), difficulty: s.difficulty }), null));
     }
 
-    // ── galactic campaign map ──────────────────────────────────
+    // ── campaign ───────────────────────────────────────────────
     showCampaign() {
-      if (!this.campaign) this.campaign = E.Campaign.newCampaign({ playerFaction: this.settings.faction, seed: E.RNG(1).i(1e9) });
-      const c = this.campaign;
-      const opts = E.Campaign.matchOptions(c);
-      const front = E.Campaign.frontSystem(c);
-      const bdef = E.biome(front.biome);
-      const nodes = c.systems.map((s, i) => {
-        const cls = s.owner === c.playerFaction ? 'aegis' : s.owner === c.enemyFaction ? 'verdant' : 'neutral';
-        const isFront = i === c.frontIndex && !c.victory;
-        return `<div class="gc-node ${cls}${isFront ? ' front' : ''}" title="${s.name}">
-          <div class="gc-node-dot"></div>
-          <div class="gc-node-name">${s.name}</div>
-          <div class="gc-node-biome">${E.biome(s.biome).theme}</div>
-        </div>`;
-      }).join('');
-      this.root.innerHTML = `
-      <div class="menu gc-menu">
-        <div class="menu-card gc-galaxy-card">
-          <div class="menu-title">GALACTIC CAMPAIGN</div>
-          <div class="menu-sub">Drive the war from your home to the enemy's. Capture the front system to advance.</div>
-          <div class="gc-galaxy">${nodes}</div>
-          <div class="gc-galaxy-link"></div>
-          <div class="gc-front">
-            <div><span class="gc-dim">FRONT SYSTEM</span><b> ${front.name}</b></div>
-            <div><span class="gc-dim">WORLD</span> ${bdef.theme} — ${bdef.challenge.name}</div>
-            <div class="gc-front-chal">${bdef.desc}</div>
-            <div><span class="gc-dim">YOUR FLEET</span> ${E.Campaign.fleetScale(c).toFixed(2)}x · Resources ${c.resources}</div>
-          </div>
-          <div class="menu-row" style="margin-top:14px">
-            <button class="gc-btn primary gc-attack" style="flex:1">Deploy to ${front.name}</button>
-            <button class="gc-btn gc-reset">Restart Campaign</button>
-            <button class="gc-btn gc-back">Back</button>
-          </div>
-          ${c.victory ? `<div class="gc-victory">THE ${E.faction(c.victory).name.toUpperCase()} HAS CONQUERED THE GALAXY</div>` : ''}
-        </div>
-      </div>`;
-      const atk = this.root.querySelector('.gc-attack');
-      if (atk) atk.addEventListener('click', () => this.begin(opts, c));
-      const rst = this.root.querySelector('.gc-reset');
-      if (rst) rst.addEventListener('click', () => { this.campaign = E.Campaign.newCampaign({ playerFaction: this.settings.faction, seed: E.RNG(1).i(1e9) }); this.save(); this.showCampaign(); });
-      const back = this.root.querySelector('.gc-back'); if (back) back.addEventListener('click', () => this.render());
+      if (!this.campaign || this.campaign.victory) return this.showNewCampaign();
+      const c = this.campaign, C = E.Campaign, pf = c.playerFaction, ef = c.enemyFaction;
+      const targets = C.attackable(c, pf);
+      if (!targets.includes(this.sel)) this.sel = targets[0] !== undefined ? targets[0] : 0;
+      const links = c.links.map(([a, b]) => { const A = c.planets[a], B = c.planets[b]; const hot = (A.owner === pf) !== (B.owner === pf); return `<line x1="${A.x * 100}" y1="${A.y * 100}" x2="${B.x * 100}" y2="${B.y * 100}" class="${hot ? 'hot' : ''}"/>`; }).join('');
+      const nodes = c.planets.map(p => `<button class="g-planet ${p.owner || 'free'}${targets.includes(p.id) ? ' target' : ''}${p.id === this.sel ? ' on' : ''}${c.pending && c.pending.planet === p.id ? ' siege' : ''}" data-p="${p.id}" style="left:${p.x * 100}%;top:${p.y * 100}%">
+          <i style="${planetStyle(p.biome)}width:${p.home ? 54 : 38}px;height:${p.home ? 54 : 38}px"></i><b>${esc(p.name)}</b><em>${p.home ? 'Home system' : E.biome(p.biome).theme}</em></button>`).join('');
+      const up = Object.entries(C.UPGRADES).map(([k, U]) => { const lv = c.upgrades[pf][k], max = lv >= U.levels.length - 1; return `<button class="g-up" data-u="${k}" ${max || c.credits[pf] < U.cost[lv + 1] ? 'disabled' : ''}><b>${U.name}: ${U.levels[lv]}</b><em>${max ? 'Maximum' : `→ ${U.levels[lv + 1]} · ${U.cost[lv + 1]} cr`}</em></button>`; }).join('');
+      const pk = Object.keys(C.perks(c, pf)).map(k => `<span title="${C.PERKS[k].desc}">${C.PERKS[k].name}</span>`).join('') || '<span class="dim">No planetary perks yet</span>';
+      this.layer(`
+        <div class="g-wrap">
+          <div class="g-map"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${links}</svg>${nodes}</div>
+          <aside class="g-side">
+            <div class="m-h"><button class="m-back">‹ Menu</button><h1>Galactic Campaign</h1></div>
+            <div class="g-stat"><div><b>${c.turn}</b><span>Turn</span></div><div><b>${c.credits[pf]}</b><span>Credits (+${C.income(c, pf)})</span></div><div><b class="${pf}">${C.owned(c, pf)}</b><span>Yours</span></div><div><b class="${ef}">${C.owned(c, ef)}</b><span>Theirs</span></div></div>
+            <div class="g-info"></div>
+            <div class="m-sec">Fleet</div><div class="g-ups">${up}</div>
+            <div class="m-sec">Planetary perks</div><div class="g-perks">${pk}</div>
+            <div class="m-sec">War log</div><div class="g-log">${c.log.slice(0, 5).map(l => `<div class="${l.good ? 'good' : 'bad'}">T${l.turn} · ${esc(l.text)}</div>`).join('') || '<div class="dim">The war begins.</div>'}</div>
+            <button class="gc-btn g-new">Abandon campaign</button>
+          </aside>
+          ${c.pending ? `<div class="g-modal"><div class="p-card"><div class="p-title bad">UNDER ATTACK</div><p>${E.faction(ef).name} is assaulting <b>${esc(c.planets[c.pending.planet].name)}</b>. Take command of the defence, or leave it to the garrison.</p>
+            <button class="gc-btn primary g-defend">Defend in person</button><button class="gc-btn g-auto">Auto-resolve</button></div></div>` : ''}
+        </div>`, 'g-root');
+      this.bindCommon();
+      const info = () => {
+        const p = c.planets[this.sel], b = E.biome(p.biome), can = targets.includes(p.id);
+        this.q('.g-info').innerHTML = `<div class="g-pname ${p.owner || 'free'}">${esc(p.name)}<span>${p.owner ? E.faction(p.owner).short : 'Unclaimed'}</span></div>
+          <div class="g-pdesc">${b.desc}</div>
+          <div class="g-kv"><span>Hazard</span><b>${b.challenge.name}</b></div><div class="g-kv"><span>Income</span><b>${p.value + (p.perk === 'trade' ? 60 : 0)} cr / turn</b></div>
+          ${p.perk ? `<div class="g-kv"><span>Perk</span><b>${C.PERKS[p.perk].name}</b></div><div class="g-pdesc dim">${C.PERKS[p.perk].desc}</div>` : '<div class="g-kv"><span>Capital</span><b>Take it to win the war</b></div>'}
+          <button class="gc-btn primary g-attack" ${can && !c.pending ? '' : 'disabled'}>${can ? 'Assault ' + esc(p.name) : p.owner === pf ? 'Held by you' : 'Out of reach'}</button>`;
+        this.on('.g-attack', () => this.onStart(C.matchOptions(c, p.id, false), { campaign: c, planet: p.id, defending: false }));
+      };
+      this.el.querySelectorAll('.g-planet').forEach(b => b.addEventListener('click', () => { this.sel = +b.dataset.p; this.el.querySelectorAll('.g-planet').forEach(x => x.classList.toggle('on', x === b)); info(); }));
+      this.el.querySelectorAll('.g-up').forEach(b => b.addEventListener('click', () => { if (C.buy(c, b.dataset.u)) { this.saveCampaign(); this.showCampaign(); } }));
+      this.on('.g-new', () => { if (confirm('Abandon this campaign?')) { this.campaign = null; this.saveCampaign(); this.showNewCampaign(); } });
+      this.on('.g-defend', () => this.onStart(C.matchOptions(c, c.pending.planet, true), { campaign: c, planet: c.pending.planet, defending: true }));
+      this.on('.g-auto', () => { const r = C.autoResolve(c, c.pending.planet); this.saveCampaign(); this.afterBattle(r); });
+      info();
+    }
+    showNewCampaign() {
+      const s = this.settings, old = this.campaign && this.campaign.victory ? this.campaign : null;
+      this.layer(`
+        <div class="m-panel">
+          <div class="m-h"><button class="m-back">‹ Back</button><h1>New Campaign</h1></div>
+          ${old ? `<div class="g-end ${old.victory === old.playerFaction ? 'good' : 'bad'}">${old.victory === old.playerFaction ? 'THE GALAXY IS YOURS' : 'YOUR HOME SYSTEM HAS FALLEN'}<span>${old.wins} victories in ${old.battles} battles over ${old.turn} turns</span></div>` : ''}
+          <p class="m-lead">Ten worlds lie between two capitals. Take the enemy home system to end the war. Each world you hold pays credits and lends a perk to every battle.</p>
+          <div class="m-sec">Your faction</div><div class="m-facs">${this.factionCards(s.faction)}</div>
+          <div class="m-row"><div><div class="m-sec">Difficulty</div>${this.diffSeg(s.difficulty)}</div><button class="gc-btn primary m-go">Begin the War</button></div>
+        </div>`);
+      this.bindCommon();
+      this.on('.m-go', () => { this.campaign = E.Campaign.newCampaign({ seed: (Math.random() * 1e9) | 0, playerFaction: s.faction, difficulty: s.difficulty }); this.sel = -1; this.saveCampaign(); this.showCampaign(); });
+    }
+    // called after a campaign battle (played or auto-resolved): run the enemy's turn
+    afterBattle(res) {
+      const c = this.campaign; if (!c) return this.show();
+      if (!c.victory && !res.defending) E.Campaign.enemyTurn(c);
+      this.saveCampaign();
+      this.showCampaign();
     }
 
-    // begin a battle: opts is match options, c is the campaign (or null for quick)
-    begin(opts, c) {
-      if (this.onStart) this.onStart(opts, c);
+    // ── multiplayer / codex / settings ─────────────────────────
+    showMultiplayer() {
+      this.layer(`<div class="m-panel"><div class="m-h"><button class="m-back">‹ Back</button><h1>Multiplayer</h1></div><div class="mp-body"></div></div>`);
+      this.bindCommon();
+      if (E.Lobby) E.Lobby.mount(this.q('.mp-body'), this); else this.q('.mp-body').textContent = 'Multiplayer needs the game to be served by the Galactic Conquest server (npm start).';
+    }
+    showCodex() {
+      const stat = (k, v) => `<span><i>${k}</i>${v}</span>`;
+      const unit = (d, kind) => { const W = E.WEAPONS[d.weapon], A = d.alt && E.WEAPONS[d.alt]; return `<div class="c-unit"><b>${d.name}</b><em>${kind}</em><p>${d.desc || ''}</p><div class="c-stats">${stat('Hull', d.hp)}${d.shield ? stat('Shield', d.shield) : ''}${stat('Speed', d.speed)}${W ? stat('Weapon', W.name) : ''}${A ? stat('Ability', A.name) : ''}</div></div>`; };
+      this.layer(`
+        <div class="m-panel wide scroll">
+          <div class="m-h"><button class="m-back">‹ Back</button><h1>Codex</h1></div>
+          <div class="m-sec">How a battle is won</div>
+          <p class="m-lead">Each side has a pool of <b>reinforcements</b>. Every death spends one; holding more <b>command posts</b> than the enemy drains theirs. Stand inside a post's ring to capture it. Destroying the enemy <b>capital ship</b> costs them 25 at a stroke. Run them out and the world is yours.</p>
+          <p class="m-lead">You are never stuck in one body: press <b>F</b> while aiming at any friendly soldier, tank, fighter or the flagship itself to take control of it. Press <b>C</b> for the command view to order your army around the map.</p>
+          <div class="m-sec">Factions</div>
+          <div class="c-facs">${E.FACTION_LIST.map(f => `<div class="c-fac ${f.id}"><b>${f.name}</b><em>${f.tagline}</em><p>${f.culture.desc}</p><p class="dim">${f.culture.values}</p></div>`).join('')}</div>
+          <div class="m-sec">Infantry</div><div class="c-grid">${Object.values(E.INFANTRY).map(d => unit(d, 'Infantry')).join('')}</div>
+          <div class="m-sec">Armor</div><div class="c-grid">${Object.values(E.VEHICLES).map(d => unit(d, 'Hover vehicle')).join('')}</div>
+          <div class="m-sec">Starfighters</div><div class="c-grid">${Object.values(E.FIGHTERS).map(d => unit(d, 'Starfighter')).join('')}</div>
+          <div class="m-sec">Capital ships</div><div class="c-grid">${Object.values(E.CAPITALS).map(d => `<div class="c-unit"><b>${d.name}</b><em>Capital ship · ${d.len} m</em><p>${d.desc}</p><div class="c-stats">${stat('Hull', d.hp)}${stat('Shield', d.shield)}${stat('Batteries', d.main + ' + ' + d.side * 2)}</div></div>`).join('')}</div>
+          <div class="m-sec">Worlds</div><div class="c-grid">${E.BIOME_LIST.map(b => `<div class="c-unit"><b>${b.name}</b><em>${b.theme} · ${b.challenge.name}</em><p>${b.desc}</p></div>`).join('')}</div>
+        </div>`);
+      this.bindCommon();
+    }
+    showSettings() {
+      const s = this.settings;
+      this.layer(`
+        <div class="m-panel">
+          <div class="m-h"><button class="m-back">‹ Back</button><h1>Settings</h1></div>
+          <div class="p-set">
+            <label>Callsign<input type="text" class="s-name" maxlength="16" value="${esc(s.name)}"></label>
+            <label>Graphics<select class="s-q">${['auto', 'high', 'medium', 'low'].map(q => `<option value="${q}"${s.quality === q ? ' selected' : ''}>${q[0].toUpperCase() + q.slice(1)}</option>`).join('')}</select></label>
+            <label>Mouse sensitivity<input type="range" class="s-sens" min="0.3" max="2.5" step="0.05" value="${s.sens}"></label>
+            <label>Volume<input type="range" class="s-vol" min="0" max="1" step="0.05" value="${s.volume}"></label>
+            <label class="chk"><input type="checkbox" class="s-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
+          </div>
+          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>C</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
+          <button class="gc-btn s-reset">Reset career &amp; campaign</button>
+        </div>`);
+      this.bindCommon();
+      const g = window.GC && window.GC.game;
+      this.q('.s-name').addEventListener('input', (e) => { s.name = e.target.value.trim() || 'Commander'; this.saveSettings(); });
+      this.q('.s-q').addEventListener('change', (e) => { s.quality = e.target.value; this.saveSettings(); if (g) g.renderer.scene.setQuality(s.quality); });
+      this.q('.s-sens').addEventListener('input', (e) => { s.sens = +e.target.value; this.saveSettings(); });
+      this.q('.s-vol').addEventListener('input', (e) => { s.volume = +e.target.value; this.saveSettings(); if (E.Music) E.Music.setVolume(s.volume); });
+      this.q('.s-inv').addEventListener('change', (e) => { s.invertY = e.target.checked; this.saveSettings(); });
+      this.on('.s-reset', () => { if (confirm('Erase your career and campaign?')) { this.profile = { xp: 0, battles: 0, wins: 0, kills: 0 }; this.campaign = null; this.saveProfile(); this.saveCampaign(); this.show(); } });
     }
   }
 

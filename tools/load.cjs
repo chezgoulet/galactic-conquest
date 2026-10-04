@@ -7,7 +7,7 @@
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const ROOT = path.join(__dirname, '..');
 
-module.exports = function load(files) {
+module.exports = function load(files, extra) {
   const ctx = {
     console, Math, JSON, Date, setTimeout, clearTimeout, setInterval, clearInterval,
     crypto: globalThis.crypto, performance: globalThis.performance,
@@ -19,6 +19,7 @@ module.exports = function load(files) {
   ctx.window = ctx;
   ctx.self = ctx;
   ctx.requestAnimationFrame = cb => setTimeout(() => cb(Date.now()), 16);
+  if (extra) Object.assign(ctx, extra);
   vm.createContext(ctx);
   for (const f of files) vm.runInContext(fs.readFileSync(path.join(ROOT, f), 'utf8'), ctx, { filename: f });
   return ctx.E;

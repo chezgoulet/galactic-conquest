@@ -25,7 +25,7 @@
   function pick(r, arr) { let tot = 0; for (const [, w] of arr) tot += w; let x = r() * tot; for (const [v, w] of arr) { x -= w; if (x <= 0) return v; } return arr[0][0]; }
   function theme(factionId) { const f = E.faction(factionId); return f.music; }
 
-  const M = { on: false, faction: 'aegis', I: 0.2, victory: false };
+  const M = { on: false, faction: 'aegis', I: 0.2, won: false, vol: 0.8 };
   let c, out, master, strings, brass, timb, bass, bell, rev, dly, noiseBuf;
 
   function hall(sec) {
@@ -64,7 +64,7 @@
     noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate); const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     M.setTheme(factionId || 'aegis', true);
-    out.gain.setTargetAtTime(1, c.currentTime, 2);
+    out.gain.setTargetAtTime(M.vol, c.currentTime, 1.2);
     M._step = 0; M._nextT = c.currentTime + 0.12;
     M._timer = setInterval(tick, 25);
   };
@@ -79,7 +79,7 @@
     M.r = rng(th.motif * 7919);
     M.motif = makeMotif(rng(th.motif * 7919 + 3), 4);
     M.deg = 0; M.chord = chordOf(0); M.chordBars = 0;
-    M.section = 'drift'; M.sectBars = 0; M.victory = false;
+    M.section = 'drift'; M.sectBars = 0; M.won = false;
     M.impactT = 0;
   };
 
@@ -180,7 +180,7 @@
     // section logic (per 4 bars)
     if (step % 64 === 0) {
       M.sectBars = 0;
-      if (M.victory) M.section = 'fanfare';
+      if (M.won) M.section = 'fanfare';
       else if (I > 0.66) M.section = 'battle';
       else if (I > 0.34) M.section = 'pulse';
       else M.section = 'drift';
@@ -229,7 +229,8 @@
 
   // ── intensity + victory ──────────────────────────────────────
   M.setIntensity = function (v) { M.I = E.clamp01(v); };
-  M.victory = function (factionId) { M.victory = true; M.setTheme(factionId || M.faction, true); M.section = 'fanfare'; M.I = 1; };
+  M.victory = function (factionId) { M.setTheme(factionId || M.faction, true); M.won = true; M.section = 'fanfare'; M.I = 1; };
+  M.setVolume = function (v) { M.vol = v; if (M.on && out) out.gain.setTargetAtTime(v, c.currentTime, 0.1); };
 
   // ── SFX (synthesized) ────────────────────────────────────────
   const SFX = {
@@ -293,6 +294,21 @@
           const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(300, t); f.frequency.linearRampToValueAtTime(1200, t + 0.4);
           const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.3, t); g.gain.linearRampToValueAtTime(0.5, t + 0.3); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
           ns.start(t); ns.stop(t + 0.55); break;
+        }
+        case 'hitmark': case 'kill': {
+          const o = c.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(kind === 'kill' ? 1250 : 1900, t); o.frequency.exponentialRampToValueAtTime(kind === 'kill' ? 620 : 1500, t + 0.09);
+          const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.3, t); g.gain.exponentialRampToValueAtTime(0.001, t + (kind === 'kill' ? 0.22 : 0.06)); o.start(t); o.stop(t + 0.25); break;
+        }
+        case 'hurt': {
+          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500;
+          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.16); ns.start(t); ns.stop(t + 0.18); break;
+        }
+        case 'capture': {
+          [0, 4, 7, 12].forEach((s, i) => { const o = c.createOscillator(); o.type = 'triangle'; o.frequency.value = 440 * Math.pow(2, s / 12); const g = c.createGain(); o.connect(g); g.connect(out2); g.connect(M.revIn);
+            const a = t + i * 0.09; g.gain.setValueAtTime(0.0001, a); g.gain.linearRampToValueAtTime(0.22, a + 0.02); g.gain.exponentialRampToValueAtTime(0.001, a + 0.5); o.start(a); o.stop(a + 0.55); }); break;
+        }
+        case 'alarm': {
+          for (let i = 0; i < 3; i++) { const o = c.createOscillator(); o.type = 'square'; const a = t + i * 0.28; o.frequency.setValueAtTime(880, a); o.frequency.linearRampToValueAtTime(660, a + 0.2); const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.12, a); g.gain.exponentialRampToValueAtTime(0.001, a + 0.24); o.start(a); o.stop(a + 0.26); } break;
         }
         default: break;
       }

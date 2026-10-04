@@ -10,60 +10,69 @@ const E = load([
 
 const HZ = 30, DT = 1 / HZ;
 
-function run(seed, frames) {
-  const w = new E.World({ biome: 'tundra', seed, scale: 1, human: 'aegis' });
-  const startCount = w.units.length;
-  for (let i = 0; i < frames; i++) w.tick(DT);
-  return { w, startCount };
-}
-
-test('world builds a full force and objectives', () => {
+test('world builds a full order of battle and command posts', () => {
   const w = new E.World({ biome: 'desert', seed: 42 });
   assert.ok(w.units.length >= 20, 'has units');
-  assert.ok(w.objectives.length >= 6, 'has objectives');
-  const hq = w.objectives.filter(o => o.role === 'hq');
-  assert.strictEqual(hq.length, 2, 'two HQs');
-  assert.ok(w.units.some(u => u.kind === 'capital'), 'has a capital ship');
-  assert.ok(w.units.some(u => u.kind === 'fighter'), 'has fighters');
-  assert.ok(w.units.some(u => u.kind === 'vehicle'), 'has vehicles');
+  assert.strictEqual(w.cps.length, 5, 'five command posts');
+  assert.strictEqual(w.cps.filter(c => c.home).length, 2, 'two HQ posts');
+  const have = (k) => w.units.some(u => u.kind === k);
+  assert.ok(have('infantry'), 'has infantry');
+  assert.ok(have('vehicle'), 'has vehicles');
+  assert.ok(have('fighter'), 'has fighters');
+  assert.ok(have('capital'), 'has capital ships');
+  assert.strictEqual(w.human, 'aegis', 'default human faction');
+  assert.ok(w.teams.aegis && w.teams.verdant, 'both teams present');
+  assert.ok(w.teams.aegis.tickets > 0, 'has reinforcement tickets');
 });
 
 test('sim is deterministic (same seed -> same outcomes)', () => {
-  const a = run(99, 600);
-  const b = run(99, 600);
+  const mk = (seed) => {
+    const w = new E.World({ biome: 'jungle', seed, scale: 1, human: 'aegis' });
+    for (let i = 0; i < HZ * 20; i++) w.tick(DT);
+    return w;
+  };
   const snap = (w) => w.units.map(u => [u.id, u.alive ? 1 : 0, Math.round(u.pos.x), Math.round(u.pos.z), Math.round(u.hp)]).join('|');
-  assert.strictEqual(snap(a.w), snap(b.w), 'identical unit positions/health after 600 frames');
+  assert.strictEqual(snap(mk(99)), snap(mk(99)), 'identical unit positions/health after 20s');
 });
 
-test('combat occurs and units take damage / die', () => {
+test('combat occurs and kills are recorded', () => {
   const w = new E.World({ biome: 'jungle', seed: 7, human: 'aegis' });
-  // run 70 seconds (forces meet mid-map and fight)
   for (let i = 0; i < HZ * 70; i++) w.tick(DT);
-  const aegisDead = w.units.filter(u => u.team === 'aegis' && !u.alive).length;
-  const verdantDead = w.units.filter(u => u.team === 'verdant' && !u.alive).length;
-  const anyDead = aegisDead + verdantDead;
-  assert.ok(anyDead > 0, `expected combat kills, got ${anyDead}`);
-  assert.ok(w.stats.kills.aegis + w.stats.kills.verdant > 0, 'kill stats recorded');
+  assert.ok(w.teams.aegis.kills + w.teams.verdant.kills > 0, 'both sides traded kills');
 });
 
-test('objectives can be captured and tracked', () => {
+test('command posts are captured and tracked', () => {
   const w = new E.World({ biome: 'tundra', seed: 3, human: 'aegis' });
-  const before = w.objectives.map(o => o.owner).join(',');
   for (let i = 0; i < HZ * 60; i++) w.tick(DT);
-  const captured = w.objectives.filter(o => o.owner && o.progress >= 1).length;
-  assert.ok(captured > 0, `objectives captured: ${captured}`);
-  assert.strictEqual(w.winner === null || typeof w.winner === 'string', true);
+  const contested = w.cps.filter(c => Math.abs(c.cap) > 0.01).length;
+  const owned = w.cps.filter(c => c.owner).length;
+  assert.ok(owned > 0, `posts owned: ${owned}`);
+  assert.ok(contested + owned >= 2, 'posts are being fought over');
+  assert.ok(w.winner === null || typeof w.winner === 'string');
 });
 
-test('win condition: capturing enemy HQ ends the match', () => {
-  // Force a win: teleport aegis units onto the verdant HQ and hold.
+test('wiping a side that holds no posts ends the match', () => {
   const w = new E.World({ biome: 'desert', seed: 5, human: 'aegis' });
-  const enemyHQ = w.objectives.find(o => o.role === 'hq' && o.owner === 'verdant');
-  assert.ok(enemyHQ, 'enemy HQ exists');
-  // spawn a big aegis force right on top of the enemy HQ
-  for (let i = 0; i < 20; i++) w.unit('infantry', 'aegis', 'rifle', 'rifle', { x: enemyHQ.pos.x + (i % 3) - 1, z: enemyHQ.pos.z + ((i / 3) | 0) });
-  for (let i = 0; i < HZ * 20; i++) w.tick(DT);
-  assert.strictEqual(w.winner, 'aegis', 'aegis wins by destroying/capturing enemy HQ, got ' + w.winner);
+  for (const c of w.cps) c.owner = 'aegis';              // aegis holds the board
+  for (const u of w.units) if (u.team === 'verdant' && (u.kind === 'infantry' || u.kind === 'vehicle')) u.alive = false;
+  for (let i = 0; i < HZ * 3; i++) w.tick(DT);
+  assert.strictEqual(w.winner, 'aegis', 'aegis wins when verdant is wiped with no posts');
+});
+
+test('player verbs: spawn, possess, deploy, order', () => {
+  const w = new E.World({ biome: 'tundra', seed: 11, human: 'aegis' });
+  const u = E.SIM.spawnUnit(w, 'infantry', 'trooper', 'aegis', { x: 0, z: 0 });
+  w.addPlayer('p1', 'aegis', 'Cmd');
+  assert.ok(E.SIM.possess(w, 'p1', u.id), 'possess works');
+  assert.strictEqual(w.unitOf('p1').id, u.id, 'unitOf reflects possession');
+  E.SIM.release(w, 'p1');
+  const home = w.cps.find(c => c.home === 'aegis');
+  const d = E.SIM.deploy(w, 'p1', 'trooper', home.id);
+  assert.ok(d && d.kind === 'infantry', 'deploys an infantry unit');
+  assert.strictEqual(w.unitOf('p1').id, d.id, 'auto-possesses the deployed unit');
+  const ids = [u.id];
+  E.SIM.order(w, 'p1', ids, 'hold');
+  assert.ok(u.order && u.order.type === 'hold', 'order applied');
 });
 
 test('intensity signal tracks combat (0..1)', () => {
