@@ -8,3 +8,4 @@ apps/play/dist/
 /data/
 server/run/
 test/shots/
+.claude/worktrees/

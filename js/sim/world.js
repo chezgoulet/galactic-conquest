@@ -45,7 +45,7 @@
           tickets: Math.round(E.FORCE.tickets * (0.75 + s * 0.25) * enemyT * (b.ticketMul || 1) + (b.reserves ? 40 : 0)), startTickets: 0,
           infCap: Math.round(E.FORCE.infantry * (0.8 + s * 0.2)),
           waveT: 4, vehT: { skiff: 20, tank: 35 }, airT: 10, bleedT: 0, strikeT: b.orbital ? 25 : 60,
-          kills: 0, deaths: 0, captures: 0, cps: 0,
+          kills: 0, deaths: 0, captures: 0, cps: 0, fleetHp: opts.fleetHp && opts.fleetHp[f] ? opts.fleetHp[f].slice() : null,
           fleet: opts.fleet && opts.fleet[f] ? opts.fleet[f].slice() : [s > 1.7 ? 'dreadnought' : s > 1.3 ? 'carrier' : E.FORCE.capital].concat(b.escort ? ['cruiser'] : []),
         };
         this.teams[f].startTickets = this.teams[f].tickets;

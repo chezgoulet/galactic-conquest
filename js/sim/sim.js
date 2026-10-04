@@ -22,8 +22,10 @@
       T.fleet.forEach((type, i) => {
         const a = (f === 'aegis' ? Math.PI : 0) + i * 0.42, R = S.ORBIT_R + i * 190;
         S.spawnUnit(w, 'capital', type, f, { x: Math.cos(a) * R, y: S.CAP_ALT + i * 90, z: Math.sin(a) * R }, { yaw: Math.atan2(-Math.sin(a), Math.cos(a)), orbitR: R, alt: S.CAP_ALT + i * 90, flag: i === 0 });
+        const hp = T.fleetHp && T.fleetHp[i];   // campaign damage carried into the battle
+        if (hp < 1) { const cu = w.units[w.units.length - 1]; cu.hp = Math.max(1, Math.round(cu.maxHp * hp)); cu.shield = Math.round(cu.maxShield * hp); }
       });
-      T.airCap = E.DOCTRINE[f].fighters + (T.bonus.airwing ? 2 : 0);
+      T.airCap = (T.bonus.wing !== undefined ? T.bonus.wing : E.DOCTRINE[f].fighters) + (T.bonus.airwing ? 2 : 0);
       const cap = w.units.find(u => u.kind === 'capital' && u.team === f);
       for (let i = 0; i < T.airCap; i++) S.launchFighter(w, f, cap, i);
     }

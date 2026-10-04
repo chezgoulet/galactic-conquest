@@ -14,7 +14,7 @@
       this.root = root;
       this.settings = Object.assign({ faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander' }, store.get(LS_SET, {}));
       this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, store.get(LS_PRO, {}));
-      const c = store.get(LS_KEY, null); this.campaign = c && c.v === 2 ? c : null;
+      const c = store.get(LS_KEY, null); this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.onStart = null; this.el = null; this.sel = -1;
       E.bus.on('settings:changed', () => this.saveSettings());
     }
