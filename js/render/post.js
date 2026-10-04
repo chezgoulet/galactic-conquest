@@ -116,19 +116,20 @@
       const depthN = sp.getTextureNode('depth'), normalN = sp.getTextureNode('normal'), velN = sp.getTextureNode('velocity');
       let color = sp.getTextureNode('output');
 
+      const skyMask = Fn(() => X.perspectiveDepthToViewZ(depthN.sample(uv()).x, float(cam.near), float(cam.far)).negate().greaterThan(float(cam.far).mul(0.985)).select(float(0), float(1)))();
       // ── ambient occlusion (applied to the lit colour; screen-space approximation of indirect shadowing) ──
       if (Q.ao) {
         const aoP = track(XX.ao(depthN, normalN, cam));
         aoP.resolutionScale = Q.ao.scale; aoP.samples.value = Q.ao.samples; aoP.radius.value = 0.6; aoP.thickness.value = 1.5; aoP.distanceExponent.value = 1.2; aoP.distanceFallOff.value = 1.0; aoP.scale.value = 1.1;
         const aoT = aoP.getTextureNode().r;
-        color = vec4(color.rgb.mul(mix(float(1), aoT, u.aoI)), color.a);
+        color = vec4(color.rgb.mul(mix(float(1), aoT, u.aoI.mul(skyMask))), color.a);
       }
       // ── screen-space reflections (SSR): metals, glass canopies, water ──
       if (Q.ssr) {
         const mr = sp.getTextureNode('metalrough');
         const ssrP = track(XX.ssr(color, depthN, normalN, { metalnessNode: mr.r, roughnessNode: mr.g, camera: cam, reflectNonMetals: true }));
         ssrP.resolutionScale = Q.ssr.scale; ssrP.quality.value = Q.ssr.quality; ssrP.maxDistance.value = 600; ssrP.thickness.value = 2.0; ssrP.intensity.value = 1.0;
-        color = vec4(color.rgb.add(ssrP.getTextureNode().rgb.mul(u.ssrI).mul(0.9)), color.a);
+        color = vec4(color.rgb.add(ssrP.getTextureNode().rgb.mul(u.ssrI).mul(0.9).mul(skyMask)), color.a);
       }
       // ── atmosphere: fog / clouds / shafts ──
       const A = Q.atmo;

@@ -119,8 +119,8 @@
             const pp = ro.add(rd.mul(tt));
             const h = clamp(pp.y.sub(lo).div(thick), 0, 1);
             const prof = smoothstep(0, 0.18, h).mul(smoothstep(1.0, 0.55, h));
-            const q = pp.add(A.wind);
-            const base = vol.sample(q.mul(1 / 5200)).x, det = vol.sample(q.mul(1 / 1100)).y.mul(0.5).add(vol.sample(q.mul(1 / 380)).z.mul(0.5));
+            const q0 = pp.add(A.wind), q = q0.add(vol.sample(q0.mul(1 / 2300)).xzy.sub(0.5).mul(1400));
+            const q2 = vec3(q.z, q.y, q.x.negate()).mul(1 / 3370).add(vec3(0.37, 0.11, 0.61)), base = vol.sample(q.mul(1 / 5200)).x.mul(0.6).add(vol.sample(q2).x.mul(0.4)), det = vol.sample(q.mul(1 / 1100)).y.mul(0.5).add(vol.sample(q.mul(1 / 380)).z.mul(0.5));
             const shape = base.mul(0.78).add(det.mul(0.22).mul(float(1).sub(base.mul(0.4))));
             const dens = clamp(shape.sub(thr).mul(3.2), 0, 1).mul(prof).mul(A.cloudDensity);
             If(dens.greaterThan(0.0005), () => {

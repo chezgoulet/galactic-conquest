@@ -47,8 +47,11 @@
     const { Fn, float, vec2, vec3, vec4, dot, normalize, length, exp, max, min, sqrt, pow, mix, smoothstep, select, positionLocal, floor, fract, sin, clamp, atan, abs, cameraPosition } = X;
     const { R, Ratm, Hr, Hm } = PLANET;
     const STEPS = 10;
-    const raySphere = (o, d, r) => {
-      const b = dot(o, d), c = dot(o, o).sub(r * r), disc = b.mul(b).sub(c);
+    // ray (origin on the +y axis at distance L from the planet centre) vs sphere of radius r, written as a
+    // difference of squares so float32 holds up at planetary magnitudes
+    const raySphere = (L, d, r) => {
+      const b = L.mul(d.y), perp = L.mul(length(d.xz));
+      const disc = float(r).sub(perp).mul(float(r).add(perp));
       const s = sqrt(max(disc, 0));
       return { t0: b.negate().sub(s), t1: b.negate().add(s), hit: disc.greaterThan(0) };
     };
@@ -64,8 +67,8 @@
       const alt = max(U.altitude, 0.5);
       const o = vec3(0, alt.add(R), 0);
       const sd = U.sunDir;
-      const air = float(1).sub(U.airless);
-      const atm = raySphere(o, d, Ratm), pl = raySphere(o, d, R);
+      const air = float(1).sub(U.airless).mul(float(1).sub(smoothstep(1200, 2800, alt).mul(0.93)));
+      const L0 = alt.add(R), atm = raySphere(L0, d, Ratm), pl = raySphere(L0, d, R);
       const hitP = pl.hit.and(pl.t0.greaterThan(0));
       const tmax = select(hitP, pl.t0, max(atm.t1, 0.0)).toVar();
       const tau = vec3(0).toVar(), sum = vec3(0).toVar();

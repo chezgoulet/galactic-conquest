@@ -3076,8 +3076,8 @@
             const pp = ro.add(rd.mul(tt));
             const h = clamp(pp.y.sub(lo).div(thick), 0, 1);
             const prof = smoothstep(0, 0.18, h).mul(smoothstep(1.0, 0.55, h));
-            const q = pp.add(A.wind);
-            const base = vol.sample(q.mul(1 / 5200)).x, det = vol.sample(q.mul(1 / 1100)).y.mul(0.5).add(vol.sample(q.mul(1 / 380)).z.mul(0.5));
+            const q0 = pp.add(A.wind), q = q0.add(vol.sample(q0.mul(1 / 2300)).xzy.sub(0.5).mul(1400));
+            const q2 = vec3(q.z, q.y, q.x.negate()).mul(1 / 3370).add(vec3(0.37, 0.11, 0.61)), base = vol.sample(q.mul(1 / 5200)).x.mul(0.6).add(vol.sample(q2).x.mul(0.4)), det = vol.sample(q.mul(1 / 1100)).y.mul(0.5).add(vol.sample(q.mul(1 / 380)).z.mul(0.5));
             const shape = base.mul(0.78).add(det.mul(0.22).mul(float(1).sub(base.mul(0.4))));
             const dens = clamp(shape.sub(thr).mul(3.2), 0, 1).mul(prof).mul(A.cloudDensity);
             If(dens.greaterThan(0.0005), () => {
@@ -4460,19 +4460,20 @@
       const depthN = sp.getTextureNode('depth'), normalN = sp.getTextureNode('normal'), velN = sp.getTextureNode('velocity');
       let color = sp.getTextureNode('output');
 
+      const skyMask = Fn(() => X.perspectiveDepthToViewZ(depthN.sample(uv()).x, float(cam.near), float(cam.far)).negate().greaterThan(float(cam.far).mul(0.985)).select(float(0), float(1)))();
       // ── ambient occlusion (applied to the lit colour; screen-space approximation of indirect shadowing) ──
       if (Q.ao) {
         const aoP = track(XX.ao(depthN, normalN, cam));
         aoP.resolutionScale = Q.ao.scale; aoP.samples.value = Q.ao.samples; aoP.radius.value = 0.6; aoP.thickness.value = 1.5; aoP.distanceExponent.value = 1.2; aoP.distanceFallOff.value = 1.0; aoP.scale.value = 1.1;
         const aoT = aoP.getTextureNode().r;
-        color = vec4(color.rgb.mul(mix(float(1), aoT, u.aoI)), color.a);
+        color = vec4(color.rgb.mul(mix(float(1), aoT, u.aoI.mul(skyMask))), color.a);
       }
       // ── screen-space reflections (SSR): metals, glass canopies, water ──
       if (Q.ssr) {
         const mr = sp.getTextureNode('metalrough');
         const ssrP = track(XX.ssr(color, depthN, normalN, { metalnessNode: mr.r, roughnessNode: mr.g, camera: cam, reflectNonMetals: true }));
         ssrP.resolutionScale = Q.ssr.scale; ssrP.quality.value = Q.ssr.quality; ssrP.maxDistance.value = 600; ssrP.thickness.value = 2.0; ssrP.intensity.value = 1.0;
-        color = vec4(color.rgb.add(ssrP.getTextureNode().rgb.mul(u.ssrI).mul(0.9)), color.a);
+        color = vec4(color.rgb.add(ssrP.getTextureNode().rgb.mul(u.ssrI).mul(0.9).mul(skyMask)), color.a);
       }
       // ── atmosphere: fog / clouds / shafts ──
       const A = Q.atmo;
@@ -4848,8 +4849,8 @@
   //  csm         shadow cascades x map size    ao/ssr  {scale: pass res, samples/quality}
   //  atmo        {fog, clouds: march steps (0 = off), shafts: steps (0 = off)}
   const QUALITY = {
-    low:    { name: 'low',    res: 0.6, resMin: 0.5, dpr: 1,   csm: { n: 2, size: 1024 }, taa: true, ao: null, ssr: null, bloom: true, motionBlur: 0, dof: false, ca: false, grain: false, atmo: { fog: true, clouds: 6, shafts: 0 },   particles: 0.4, shadows: 1024, msaa: 0 },
-    medium: { name: 'medium', res: 0.75, resMin: 0.55, dpr: 1,  csm: { n: 3, size: 1024 }, taa: true, ao: { scale: 0.5, samples: 8 }, ssr: null, bloom: true, motionBlur: 0, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 8, shafts: 12 },   particles: 0.7, shadows: 1024, msaa: 0 },
+    low:    { name: 'low',    res: 0.6, resMin: 0.5, dpr: 1,   csm: { n: 2, size: 1024 }, taa: true, ao: null, ssr: null, bloom: true, motionBlur: 0, dof: false, ca: false, grain: false, atmo: { fog: true, clouds: 10, shafts: 0 },   particles: 0.4, shadows: 1024, msaa: 0 },
+    medium: { name: 'medium', res: 0.75, resMin: 0.55, dpr: 1,  csm: { n: 3, size: 1024 }, taa: true, ao: { scale: 0.5, samples: 8 }, ssr: null, bloom: true, motionBlur: 0, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 12, shafts: 12 },   particles: 0.7, shadows: 1024, msaa: 0 },
     high:   { name: 'high',   res: 1.0, resMin: 0.62, dpr: 1.5, csm: { n: 3, size: 2048 }, taa: true, ao: { scale: 0.75, samples: 12 }, ssr: { scale: 0.5, quality: 0.5 }, bloom: true, motionBlur: 8, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 14, shafts: 24 }, particles: 1, shadows: 2048, msaa: 0 },
     ultra:  { name: 'ultra',  res: 1.0, resMin: 0.75, dpr: 2,   csm: { n: 4, size: 2048 }, taa: true, ao: { scale: 1, samples: 16 }, ssr: { scale: 0.75, quality: 0.8 }, bloom: true, motionBlur: 12, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 20, shafts: 32 }, particles: 1, shadows: 4096, msaa: 0 },
   };
@@ -5150,8 +5151,11 @@
     const { Fn, float, vec2, vec3, vec4, dot, normalize, length, exp, max, min, sqrt, pow, mix, smoothstep, select, positionLocal, floor, fract, sin, clamp, atan, abs, cameraPosition } = X;
     const { R, Ratm, Hr, Hm } = PLANET;
     const STEPS = 10;
-    const raySphere = (o, d, r) => {
-      const b = dot(o, d), c = dot(o, o).sub(r * r), disc = b.mul(b).sub(c);
+    // ray (origin on the +y axis at distance L from the planet centre) vs sphere of radius r, written as a
+    // difference of squares so float32 holds up at planetary magnitudes
+    const raySphere = (L, d, r) => {
+      const b = L.mul(d.y), perp = L.mul(length(d.xz));
+      const disc = float(r).sub(perp).mul(float(r).add(perp));
       const s = sqrt(max(disc, 0));
       return { t0: b.negate().sub(s), t1: b.negate().add(s), hit: disc.greaterThan(0) };
     };
@@ -5167,8 +5171,8 @@
       const alt = max(U.altitude, 0.5);
       const o = vec3(0, alt.add(R), 0);
       const sd = U.sunDir;
-      const air = float(1).sub(U.airless);
-      const atm = raySphere(o, d, Ratm), pl = raySphere(o, d, R);
+      const air = float(1).sub(U.airless).mul(float(1).sub(smoothstep(1200, 2800, alt).mul(0.93)));
+      const L0 = alt.add(R), atm = raySphere(L0, d, Ratm), pl = raySphere(L0, d, R);
       const hitP = pl.hit.and(pl.t0.greaterThan(0));
       const tmax = select(hitP, pl.t0, max(atm.t1, 0.0)).toVar();
       const tau = vec3(0).toVar(), sum = vec3(0).toVar();

@@ -15,8 +15,8 @@
   //  csm         shadow cascades x map size    ao/ssr  {scale: pass res, samples/quality}
   //  atmo        {fog, clouds: march steps (0 = off), shafts: steps (0 = off)}
   const QUALITY = {
-    low:    { name: 'low',    res: 0.6, resMin: 0.5, dpr: 1,   csm: { n: 2, size: 1024 }, taa: true, ao: null, ssr: null, bloom: true, motionBlur: 0, dof: false, ca: false, grain: false, atmo: { fog: true, clouds: 6, shafts: 0 },   particles: 0.4, shadows: 1024, msaa: 0 },
-    medium: { name: 'medium', res: 0.75, resMin: 0.55, dpr: 1,  csm: { n: 3, size: 1024 }, taa: true, ao: { scale: 0.5, samples: 8 }, ssr: null, bloom: true, motionBlur: 0, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 8, shafts: 12 },   particles: 0.7, shadows: 1024, msaa: 0 },
+    low:    { name: 'low',    res: 0.6, resMin: 0.5, dpr: 1,   csm: { n: 2, size: 1024 }, taa: true, ao: null, ssr: null, bloom: true, motionBlur: 0, dof: false, ca: false, grain: false, atmo: { fog: true, clouds: 10, shafts: 0 },   particles: 0.4, shadows: 1024, msaa: 0 },
+    medium: { name: 'medium', res: 0.75, resMin: 0.55, dpr: 1,  csm: { n: 3, size: 1024 }, taa: true, ao: { scale: 0.5, samples: 8 }, ssr: null, bloom: true, motionBlur: 0, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 12, shafts: 12 },   particles: 0.7, shadows: 1024, msaa: 0 },
     high:   { name: 'high',   res: 1.0, resMin: 0.62, dpr: 1.5, csm: { n: 3, size: 2048 }, taa: true, ao: { scale: 0.75, samples: 12 }, ssr: { scale: 0.5, quality: 0.5 }, bloom: true, motionBlur: 8, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 14, shafts: 24 }, particles: 1, shadows: 2048, msaa: 0 },
     ultra:  { name: 'ultra',  res: 1.0, resMin: 0.75, dpr: 2,   csm: { n: 4, size: 2048 }, taa: true, ao: { scale: 1, samples: 16 }, ssr: { scale: 0.75, quality: 0.8 }, bloom: true, motionBlur: 12, dof: true, ca: true, grain: true, atmo: { fog: true, clouds: 20, shafts: 32 }, particles: 1, shadows: 4096, msaa: 0 },
   };
