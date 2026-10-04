@@ -3,8 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const load = require('../tools/load.cjs');
 const E = load([
-  'js/core/util.js', 'js/core/rng.js', 'js/core/vec3d.js', 'js/core/events.js', 'js/core/loop.js', 'js/core/noise.js',
-  'js/data/factions.js', 'js/data/biomes.js', 'js/data/units.js',
+  ...load.files(['core', 'data']),
   ...load.files(['sim']),
 ]);
 

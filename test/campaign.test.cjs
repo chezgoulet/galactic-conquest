@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const load = require('../tools/load.cjs');
-const E = load(['js/core/util.js', 'js/core/rng.js', 'js/data/factions.js', 'js/data/biomes.js', 'js/data/units.js', 'js/data/galaxy.js']);
+const E = load(['js/core/util.js', 'js/core/rng.js', ...load.files(['data'])]);
 
 test('campaign builds a valid 10-system galaxy', () => {
   const c = E.Campaign.newCampaign({ seed: 7, playerFaction: 'aegis' });

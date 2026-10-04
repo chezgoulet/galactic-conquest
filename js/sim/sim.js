@@ -35,7 +35,7 @@
   function control(w, u, dt) {
     u.fireT = Math.max(0, u.fireT - dt); u.altT -= dt; u.hitT += dt;
     if (u.heat > 0) { u.heat = Math.max(0, u.heat - (u.hot ? 0.5 : 0.36) * dt); if (u.hot && u.heat < 0.2) u.hot = false; }
-    const p = u.pid ? w.players[u.pid] : null, c = S.ctl[u.kind];
+    const p = u.pid ? w.players[u.pid] : null, c = (u.mode && S.modes[u.mode]) || S.ctl[u.kind];
     if (p) { c.player(w, u, p, dt); return; }
     if (u.pid) u.pid = null;
     c.ai(w, u, dt);

@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 www/
 .pglite/
@@ -7,3 +7,4 @@ www/
 apps/play/dist/
 /data/
 server/run/
+test/shots/

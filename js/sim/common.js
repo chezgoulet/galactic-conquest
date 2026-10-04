@@ -20,6 +20,14 @@
   function enemyOf(t) { return t === 'aegis' ? 'verdant' : 'aegis'; }
   function nameOf(w, u) { return u.pid && w.players[u.pid] ? w.players[u.pid].name : E.unitName(u.kind, u.type); }
 
+  // ── the three domains share one sky, split by altitude (meters above datum) ──
+  // ground .. cloud deck .. thin upper air .. space. Capital ships hold station
+  // at ALT.orbit; fighters fly the whole column. density() is 1 at the surface
+  // and 0 from ALT.space up — drag, lift and sound all scale with it.
+  const ALT = { cloudLo: 700, cloudHi: 1000, space: 2600, orbit: 3200, ceiling: 4400 };
+  function density(y) { return E.clamp01(1 - y / ALT.space); }
+  function inSpace(y) { return y >= ALT.space; }
+
   // ── unit construction ────────────────────────────────────────
   function spawnUnit(w, kind, type, team, pos, extra) {
     const def = E.unitDef(kind, type), D = E.DOCTRINE[team], B = w.teams[team].bonus || {};
@@ -61,9 +69,14 @@
   // S.ctl[kind]   = { ai(w, u, dt), player(w, u, p, dt) }   per-kind control (land/air/space register)
   // S.verbs[name] = fn(w, pid, a, b)                        player commands beyond the built-in ones
   // S.systems     = [fn(w, dt)]                             extra per-tick world systems, run in order
+  // S.modes[name] = { ai, player }                          overrides S.ctl for units with u.mode === name
+  // S.obstacles   = [{ trace(w, p, ax, ay, az, sx, sy, sz, maxT) -> { t, surf, hit(w, p, pos) } | null,
+  //                    blocks(w, a, b) -> bool }]           world geometry shots and sightlines stop on
+  // optional S.ctl[kind] hooks (see combat.js): damage, hull, nearMiss, death
   // S.net.unit[kind] = { pack(u) -> array, apply(u, array) }   extra per-unit state guests need
   // S.net.world[key] = { pack(w) -> any,   apply(w, data) }    extra world state guests need
   S.ctl = S.ctl || {}; S.verbs = S.verbs || {}; S.systems = S.systems || [];
+  S.modes = S.modes || {}; S.obstacles = S.obstacles || [];
   S.net = S.net || { unit: {}, world: {} };
   function packUnit(u) { const n = S.net.unit[u.kind]; return n ? n.pack(u) : 0; }
   function unpackUnit(u, d) { const n = S.net.unit[u.kind]; if (n && d) n.apply(u, d); }
@@ -71,5 +84,5 @@
   function unpackWorld(w, o) { if (o) for (const k in S.net.world) if (o[k] !== undefined) S.net.world[k].apply(w, o[k]); }
   function verb(w, pid, name, a, b) { const f = S.verbs[name]; return f && w.players[pid] ? f(w, pid, a, b) : null; }
 
-  Object.assign(S, { packUnit, unpackUnit, packWorld, unpackWorld, verb, dirOf, angDiff, turnTo, isGroundKind, centerOf, eyeOf, enemyOf, nameOf, spawnUnit, ring, pickClass, clampArena });
+  Object.assign(S, { ALT, density, inSpace, packUnit, unpackUnit, packWorld, unpackWorld, verb, dirOf, angDiff, turnTo, isGroundKind, centerOf, eyeOf, enemyOf, nameOf, spawnUnit, ring, pickClass, clampArena });
 })(window.E = window.E || {});

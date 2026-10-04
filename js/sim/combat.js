@@ -74,6 +74,13 @@
   }
   const lockable = (e) => e.kind !== 'infantry';
 
+  // a clear sightline: over the terrain and past every obstacle
+  function los(w, a, b) {
+    if (!w.terrain.los(a, b)) return false;
+    for (let j = 0; j < S.obstacles.length; j++) if (S.obstacles[j].blocks(w, a, b)) return false;
+    return true;
+  }
+
   function leadPoint(u, e, W, o) {
     S.centerOf(e, o);
     const d = V.distance(u.pos, o), t = W.speed ? d / W.speed : 0;
@@ -93,10 +100,16 @@
     let d = amount * ((W.vs && W.vs[e.armor] !== undefined) ? W.vs[e.armor] : 1);
     if (head) d *= 1.8;
     if (e.pid && !src.owner) d *= w.cfg.enemyDmg;
-    if (d <= 0) return;
+    // per-kind hooks: damage() sees the hit before shields (facing armor, shield
+    // arcs); hull() sees what got through (subsystems). Each returns the amount
+    // that carries on.
+    const C = S.ctl[e.kind];
+    if (C.damage) d = C.damage(w, e, d, src, at, head);
+    if (!(d > 0)) return;
     e.hitT = 0;
     let sh = 0;
     if (e.shield > 0) { sh = Math.min(e.shield, d); e.shield -= sh; d -= sh; }
+    if (C.hull && d > 0) d = Math.max(0, C.hull(w, e, d, src, at));
     e.hp -= d;
     const dead = e.hp <= 0;
     if (src.owner || e.pid) {
@@ -126,6 +139,7 @@
     }
     if (e.pid && w.players[e.pid]) { const p = w.players[e.pid]; p.deaths++; p.streak = 0; p.unitId = 0; p.deadT = w.t; e.pid = null; }
     if (e.kind === 'capital') w.events.push({ type: 'announce', key: 'capitalDown', team: e.team });
+    const C = S.ctl[e.kind]; if (C.death) C.death(w, e, src);
   }
 
   function explode(w, p, pos, direct) {
@@ -146,7 +160,8 @@
       const p = P[i];
       if (p.seek && p.tid) {
         const t = w.umap.get(p.tid);
-        if (t && t.alive) {
+        if (t && t.jamT > w.t) p.tid = 0; // decoyed (countermeasures): the lock is lost for good
+        else if (t && t.alive) {
           S.centerOf(t, tmpA);
           const sp = Math.hypot(p.vel.x, p.vel.y, p.vel.z) || 1;
           let wx = tmpA.x - p.pos.x, wy = tmpA.y - p.pos.y, wz = tmpA.z - p.pos.z; const l = Math.hypot(wx, wy, wz) || 1;
@@ -185,13 +200,19 @@
         const qx = sx * t - cx, qz = sz * t - cz;
         let qy = sy * t - cy;
         if (e.kind === 'infantry') { const top = e.h - 0.25; qy = qy < 0 ? qy : qy > top ? qy - top : 0; }
-        if (qx * qx + qy * qy + qz * qz < rad * rad && t < ht) {
-          hit = e; ht = t;
-          head = e.kind === 'infantry' && p.kind === 'bolt' && (ay + sy * t) > e.pos.y + e.h * 0.8;
-        }
+        const q2 = qx * qx + qy * qy + qz * qz;
+        if (q2 < rad * rad) {
+          if (t < ht) { hit = e; ht = t; head = e.kind === 'infantry' && p.kind === 'bolt' && (ay + sy * t) > e.pos.y + e.h * 0.8; }
+        } else if (q2 < (rad + 3) * (rad + 3)) { const c = S.ctl[e.kind]; if (c.nearMiss) c.nearMiss(w, e, p); }
       }
+      // world geometry (cover, structures) nearer than any unit stops the shot
+      let obs = null;
+      for (let j = 0; j < S.obstacles.length; j++) { const o = S.obstacles[j].trace(w, p, ax, ay, az, sx, sy, sz, ht); if (o && o.t <= ht) { obs = o; ht = o.t; hit = null; } }
       let dead = false;
-      if (hit) {
+      if (obs) {
+        p.pos.x = ax + sx * ht; p.pos.y = ay + sy * ht; p.pos.z = az + sz * ht;
+        surf = obs.surf || 'ground'; obs.hit(w, p, p.pos); explode(w, p, p.pos, null); dead = true;
+      } else if (hit) {
         tmpD.x = ax + sx * ht; tmpD.y = ay + sy * ht; tmpD.z = az + sz * ht;
         surf = hit.shield > 0 ? 'shield' : 'unit';
         applyDamage(w, hit, p.dmg, p, tmpD, head);
@@ -231,5 +252,5 @@
     }
   }
 
-  Object.assign(S, { muzzle, shoot, firePrimary, fireAlt, aimTarget, leadPoint, score, applyDamage, kill, explode, updateProjectiles, sustain, lockable });
+  Object.assign(S, { los, muzzle, shoot, firePrimary, fireAlt, aimTarget, leadPoint, score, applyDamage, kill, explode, updateProjectiles, sustain, lockable });
 })(window.E = window.E || {});

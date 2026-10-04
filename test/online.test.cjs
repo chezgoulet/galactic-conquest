@@ -48,8 +48,7 @@ test('online: game client end-to-end against the real service', async () => {
   svc = { close: async () => { await app.close(); await db.close(); } };
 
   const E = load([
-    'js/core/util.js', 'js/core/rng.js', 'js/core/vec3d.js', 'js/core/events.js', 'js/core/loop.js', 'js/core/noise.js',
-    'js/data/factions.js', 'js/data/biomes.js', 'js/data/units.js',
+  ...load.files(['core', 'data']),
     ...load.files(['sim']),
     'js/net/net.js', 'js/net/relay.js', 'js/net/online.js',
   ], {

@@ -30,7 +30,7 @@
       let s = pf * 1000 / (d + 60);
       if (e.id === u.ai.tid) s *= 1.3;
       if (s <= bs) continue;
-      if (u.kind !== 'fighter' && e.kind !== 'fighter' && !w.terrain.los(tmpA, S.centerOf(e, tmpB))) continue;
+      if (u.kind !== 'fighter' && e.kind !== 'fighter' && !S.los(w, tmpA, S.centerOf(e, tmpB))) continue;
       bs = s; best = e;
     }
     return best;
