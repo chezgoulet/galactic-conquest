@@ -53,6 +53,7 @@
     if (kind === 'capital') S.buildGuns(u);
     w.units.push(u); w.umap.set(u.id, u);
     w.events.push({ type: 'spawn', uid: u.id });
+    if (S.onSpawn) S.onSpawn(w, u); // land: infantry state, perks, squads
     return u;
   }
 
