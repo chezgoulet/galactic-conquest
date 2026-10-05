@@ -31,11 +31,11 @@
   };
 
   const DEFAULTS = {
-    exposure: 1.0, sat: 1.0, contrast: 1.0, lift: [0, 0, 0], gamma: [1, 1, 1], gain: [1, 1, 1],
-    vignette: 0.32, grain: 0.018, aberration: 0.012, motionBlur: 0.0,
-    bloom: { strength: 0.5, radius: 0.55, threshold: 1.0 },
+    exposure: 0.92, sat: 1.0, contrast: 1.0, lift: [0, 0, 0], gamma: [1, 1, 1], gain: [1, 1, 1],
+    vignette: 0.2, grain: 0.012, aberration: 0.003, motionBlur: 0.0, sharpen: 0.55, shimmer: 0,
+    bloom: { strength: 0.16, radius: 0.5, threshold: 1.5 },
     dof: { on: false, focus: 60, range: 80, bokeh: 3 },
-    ao: { intensity: 1.0 }, ssr: { intensity: 1.0 }, shafts: 0.3,
+    ao: { intensity: 1.0 }, ssr: { intensity: 1.0 }, shafts: 0.08,
   };
 
   class Post {
@@ -54,7 +54,7 @@
         vig: uniform(0), grain: uniform(0), ca: uniform(0), mb: uniform(0),
         bloomS: uniform(0.5), bloomR: uniform(0.55), bloomT: uniform(1.0),
         dofFocus: uniform(60), dofRange: uniform(80), dofBokeh: uniform(3),
-        aoI: uniform(1), ssrI: uniform(1), time: uniform(0), damage: uniform(0), fade: uniform(0), zoom: uniform(0),
+        aoI: uniform(1), ssrI: uniform(1), sharp: uniform(0.5), shim: uniform(0), px: uniform(new T.Vector2(1 / 960, 1 / 540)), time: uniform(0), damage: uniform(0), fade: uniform(0), zoom: uniform(0),
       };
       this.apply();
     }
@@ -77,7 +77,7 @@
       u.lift.value.set(L[0] + P.lift[0], L[1] + P.lift[1], L[2] + P.lift[2]);
       u.gamma.value.set(G[0] * P.gamma[0], G[1] * P.gamma[1], G[2] * P.gamma[2]);
       u.gain.value.set(N[0] * P.gain[0], N[1] * P.gain[1], N[2] * P.gain[2]);
-      u.vig.value = P.vignette; u.grain.value = P.grain; u.ca.value = P.aberration; u.mb.value = P.motionBlur;
+      u.sharp.value = P.sharpen; u.shim.value = P.shimmer; u.vig.value = P.vignette; u.grain.value = P.grain; u.ca.value = P.aberration; u.mb.value = P.motionBlur;
       u.bloomS.value = P.bloom.strength; u.bloomR.value = P.bloom.radius; u.bloomT.value = P.bloom.threshold;
       u.dofFocus.value = P.dof.focus; u.dofRange.value = P.dof.range; u.dofBokeh.value = P.dof.bokeh;
       u.aoI.value = P.ao.intensity; u.ssrI.value = P.ssr.intensity;
@@ -140,7 +140,7 @@
       const beauty = track(rtt(color, null, null, { resolutionScale: scale }));
       this.beauty = beauty;
       let out;
-      if (Q.taa) out = track(XX.taau(beauty, depthN, velN, cam));
+      if (Q.taa) { const tn = XX.taau(beauty, depthN, velN, cam); tn.currentFrameWeight = scale >= 0.9 ? 0.11 : 0.07; tn.edgeDepthDiff = 0.0006; out = track(tn); }
       else out = beauty;
       // ── depth of field ──
       if (P.dof.on && Q.dof) out = track(XX.dof(out, sp.getViewZNode(), u.dofFocus, u.dofRange, u.dofBokeh));
@@ -156,7 +156,15 @@
         const p = uv();
         const c = p.sub(0.5), r2 = dot(c, c);
         const ab = c.mul(r2).mul(u.ca);
-        const col = (Q.ca ? vec3(hdr.sample(p.add(ab)).r, hdr.sample(p).g, hdr.sample(p.sub(ab)).b) : hdr.sample(p).rgb).toVar();
+        // heat / re-entry shimmer: a screen-space wobble that fades toward the middle of the frame
+        const wob = vec2(sin(p.y.mul(70.0).add(u.time.mul(23.0))), sin(p.x.mul(55.0).add(u.time.mul(19.0)))).mul(u.shim.mul(0.0035)).mul(smoothstep(0.05, 0.4, r2));
+        const q = p.add(wob);
+        const col = (Q.ca ? vec3(hdr.sample(q.add(ab)).r, hdr.sample(q).g, hdr.sample(q.sub(ab)).b) : hdr.sample(q).rgb).toVar();
+        // contrast-limited unsharp mask: restores the crispness the temporal resolve softens
+        const e = u.px, n0 = hdr.sample(q.add(vec2(e.x, 0))).rgb, n1 = hdr.sample(q.sub(vec2(e.x, 0))).rgb, n2 = hdr.sample(q.add(vec2(0, e.y))).rgb, n3 = hdr.sample(q.sub(vec2(0, e.y))).rgb;
+        const lo = min(min(n0, n1), min(n2, n3)), hi = max(max(n0, n1), max(n2, n3));
+        const sharp = col.add(col.sub(n0.add(n1).add(n2).add(n3).mul(0.25)).mul(u.sharp));
+        col.assign(clamp(sharp, lo.min(col).mul(0.92), hi.max(col).mul(1.08)));
         if (bloomN) col.addAssign(bloomN.rgb);
         const tm = toneMapping(T.ACESFilmicToneMapping, u.exposure, col).rgb;
         const srgb = convertColorSpace(tm, T.LinearSRGBColorSpace, T.SRGBColorSpace).toVar();
@@ -175,7 +183,10 @@
       this.pipeline.needsUpdate = true;
     }
 
-    render() { this.pipeline.render(); }
+    render() {
+      const S = this.S; this.u.px.value.set(1 / Math.max(1, S._W * S._dpr), 1 / Math.max(1, S._H * S._dpr));
+      this.pipeline.render();
+    }
     dispose() { for (const n of this._nodes) { try { n.dispose && n.dispose(); } catch (e) { /* ignore */ } } this.pipeline.dispose && this.pipeline.dispose(); }
   }
 
