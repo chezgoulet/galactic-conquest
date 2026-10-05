@@ -6,22 +6,27 @@
   'use strict';
 
   function mulberry32(a) {
-    return function () {
+    const fn = function () {
       a |= 0; a = (a + 0x6D2B79F5) | 0;
       let t = Math.imul(a ^ (a >>> 15), 1 | a);
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+    // live stream state, so a match can be saved and resumed bit-for-bit
+    fn.getState = () => a >>> 0;
+    fn.setState = (v) => { a = v >>> 0; };
+    return fn;
   }
 
   // Factory: E.RNG(seed) -> deterministic RNG. No `new`; matches E.RNG(seed)
-  // call sites everywhere in the codebase.
+  // call sites everywhere in the codebase. `state`/`set` read and restore the
+  // exact stream position (not just the original seed).
   function RNG(seed) {
     let s = seed >>> 0;
     const f = mulberry32(s);
     return {
-      get state() { return s; },
-      set(seed) { s = seed >>> 0; /* note: cannot rebind mulberry stream here */ return this; },
+      get state() { return f.getState(); },
+      set(seed) { s = seed >>> 0; f.setState(s); return this; },
       next: () => f(),                       // [0,1)
       f: (a, b) => a + (b - a) * f(),
       i: (n) => (f() * n) | 0,               // [0,n)
