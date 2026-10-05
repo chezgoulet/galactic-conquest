@@ -141,7 +141,7 @@
       this.sunDir.copy(a.sunDir);
       this.sun.color.copy(a.sunColor); this.sun.intensity = a.sunI;
       this.hemi.color.copy(a.skyColor); this.hemi.groundColor.copy(a.groundColor); this.hemi.intensity = a.ambI;
-      this.post.P.bloom.strength = a.bloom || 0.5;
+      this.post.P.bloom.strength = a.bloom || 0.16;
       this.post.setBiome(a.biome);
       this.post.apply();
     }

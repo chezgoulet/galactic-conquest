@@ -190,8 +190,8 @@
     scene.scene.add(group);
 
     const atmosphere = {
-      fogColor: hex(S.fog), sunColor: hex(S.sunCol), sunDir, sunI: S.sunI, skyColor: hex(S.hor).lerp(hex(S.top), 0.45), groundColor: new T.Color().setRGB(lowC[0] / 255, lowC[1] / 255, lowC[2] / 255, T.SRGBColorSpace).multiplyScalar(0.5),
-      ambI: S.amb, density: 2.0 / ((biome.challenge && biome.challenge.fog) || 3000), heightK: S.space > 0.5 ? 0.02 : 0.0045, base: 0, bloom: S.bloom,
+      fogColor: hex(S.fog), sunColor: hex(S.sunCol), sunDir, sunI: S.sunI * 0.7, skyColor: hex(S.hor).lerp(hex(S.top), 0.45), groundColor: new T.Color().setRGB(lowC[0] / 255, lowC[1] / 255, lowC[2] / 255, T.SRGBColorSpace).multiplyScalar(0.5),
+      ambI: S.amb * 0.8, density: 2.0 / ((biome.challenge && biome.challenge.fog) || 3000), heightK: S.space > 0.5 ? 0.02 : 0.0045, base: 0, bloom: S.bloom * 0.3,
       biome: planet.biome, cloud: S.cloud, cloudCol: hex(S.cloudCol), cloudDark: hex(S.cloudDark), airless: S.space >= 1 ? 1 : 0, spaceBase: S.space,
     };
     return {

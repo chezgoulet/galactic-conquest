@@ -10,7 +10,7 @@
   const shade = (c, k) => [E.clamp(c[0] * k, 0, 255), E.clamp(c[1] * k, 0, 255), E.clamp(c[2] * k, 0, 255)];
 
   class Builder {
-    constructor() { this.pos = []; this.nor = []; this.col = []; this.fx = []; this._m = new E.THREE.Matrix4(); this._e = new E.THREE.Euler(); this._q = new E.THREE.Quaternion(); }
+    constructor(sc) { this.sc = sc || 0; this.pos = []; this.nor = []; this.col = []; this.fx = []; this._m = new E.THREE.Matrix4(); this._e = new E.THREE.Euler(); this._q = new E.THREE.Quaternion(); }
 
     // add any BufferGeometry, transformed, with a flat colour
     add(geo, x, y, z, color, o) {
@@ -22,7 +22,7 @@
       g.applyMatrix4(this._m);
       if (!o.smooth) g.computeVertexNormals();
       const p = g.attributes.position.array, n = g.attributes.normal.array, c = lin(color);
-      const emi = o.emi || 0, mode = o.mode === undefined ? 1 : o.mode;
+      const emi = o.emi || 0, mode = (o.mode === undefined ? 1 : o.mode) + 16 * (o.sc === undefined ? this.sc : o.sc);
       for (let i = 0; i < p.length; i += 3) {
         this.pos.push(p[i], p[i + 1], p[i + 2]); this.nor.push(n[i], n[i + 1], n[i + 2]);
         this.col.push(c[0], c[1], c[2]); this.fx.push(emi, mode);

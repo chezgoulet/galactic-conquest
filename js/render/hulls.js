@@ -170,6 +170,26 @@
       }
       b.box(0.5, 0.06, 2.4, 0, 0.62 * k, -1.2, acc, { mode: 0 });
     }
+    if (type === 'gunship') {
+      // VTOL lander: slab fuselage, troop bay doors, wing lift-fan pods, chin gun
+      b.box(2.2, 1.5, 4.6, 0, -0.1, -0.3, c1, { taper: [0.88, 0.92] });
+      b.box(1.6, 0.14, 2.4, 0, 0.7, -0.6, c3, { mode: 2 });
+      for (const s of [-1, 1]) {
+        b.box(0.14, 1.1, 2.6, s * 1.12, -0.1, -0.5, acc, { mode: 0 });                        // troop bay door seam
+        b.cyl(0.85, 0.85, 1.5, 12, s * 3.0, 0.15, -0.5, c2, { mode: 1 });
+        b.cyl(0.7, 0.7, 0.1, 12, s * 3.0, 0.92, -0.5, eng, { emi: 6, mode: 0 });
+        b.cyl(0.7, 0.7, 0.1, 12, s * 3.0, -0.62, -0.5, eng, { emi: 5, mode: 0 });
+        b.box(1.5, 0.12, 1.2, s * 1.8, 0.1, -0.5, c3, { mode: 2 });
+      }
+      b.cyl(0.08, 0.08, 1.5, 6, 0, -0.78, 2.6, dark, { rx: Math.PI / 2, mode: 0 }); b.sphere(0.4, 0, -0.62, 1.9, c2, { sz: 1.4 });
+      b.box(0.1, 0.1, 0.1, 0, -0.78, 3.4, P.glow, { emi: 5, mode: 0 });
+    } else if (type === 'strike') {
+      // torpedo craft: needle nose, canards, an underslung torpedo
+      b.cyl(0.38, 0.38, 3.8, 10, 0, -0.75, 0.5, c3, { rx: Math.PI / 2 }); b.cone(0.38, 1.0, 10, 0, -0.75, 2.9, acc, { rx: Math.PI / 2 }); b.box(0.9, 0.05, 0.8, 0, -0.75, -1.3, c2, { mode: 0 });
+      for (const s of [-1, 1]) { b.box(1.8, 0.08, 0.9, s * 1.3, 0.05, 2.3, c3, { taper: [0.5, 0.5], ry: s * 0.3, mode: 2 }); b.box(0.1, 0.9, 1.4, s * 2.6, 0.45, -2.6, c2, { rz: -s * 0.2, taper: [1, 0.4], shear: -0.5, mode: 2 }); }
+    } else if (type === 'interceptor') {
+      for (const s of [-1, 1]) { b.box(0.06, 0.06, 1.8, s * 4.6 * k, -0.08, 0.2, P.glow, { emi: 3, mode: 0 }); b.box(0.12, 0.9, 1.3, s * 1.35, 0.55, -3.1, c2, { rz: -s * 0.55, taper: [1, 0.4], mode: 2 }); }
+    }
     b.sphere(0.5 * k, 0, 0.42 * k, 1.1 * k, P.canopies, { sx: 0.85, sy: 0.7, sz: 2.0, emi: 0.2, mode: 0 });
     if (bomber) b.box(1.1, 0.5, 3.4, 0, -0.75, -0.3, c2, { taper: [0.8, 0.8] });
     return b.build();
@@ -177,12 +197,21 @@
   function makeFighter(F, type) {
     const T = E.THREE, root = new T.Group(), body = new T.Group(); root.add(body);
     body.add(mesh(cached('fig:' + F.id + ':' + type, () => fighterGeo(F, type))));
-    return { root, body };
+    // engine glow (sprite + exhaust cone) tied to throttle / afterburner by the renderer
+    const org = F.hull.style === 'organic', c = F.palette.engine, k = type === 'bomber' ? 1.25 : 1;
+    const col = new T.Color(c[0] / 255 * 1.2, c[1] / 255 * 1.2, c[2] / 255 * 1.2), flames = [], glows = [];
+    const nz = org ? [[0, 0]] : type === 'gunship' ? [[-3.0, -0.5], [3.0, -0.5]] : [[-0.62 * k, 0], [0.62 * k, 0]];
+    const zb = org ? -3.9 * k : type === 'gunship' ? -2.8 : -4.7 * k;
+    for (const [x, y] of nz) {
+      const g = new T.Sprite(E.Mat.sprite({ map: E.ArtStruct.glowTex(), color: col, additive: true })); g.position.set(x, y, zb); body.add(g); glows.push(g);
+      const f = new T.Mesh(new T.ConeGeometry(0.34 * k, 1, 10, 1, true).rotateX(-Math.PI / 2).translate(0, 0, -0.5), E.Mat.emissive({ color: col, additive: true, opacity: 0.45, side: 'double' })); f.position.set(x, y, zb); body.add(f); flames.push(f);
+    }
+    return { root, body, glows, flames, wing: type === 'bomber' ? 5.2 : type === 'gunship' ? 3.8 : 4.6 };
   }
 
   // ── CAPITAL SHIPS ───────────────────────────────────────────
   function capitalGeo(F, type) {
-    const P = F.palette, org = F.hull.style === 'organic', d = E.CAPITALS[type], b = B();
+    const P = F.palette, org = F.hull.style === 'organic', d = E.CAPITALS[type], b = new E.Geo.Builder(2);
     const L = d.len, H = d.h * 1.25, W = d.h * 2.5, rng = E.RNG(E.hashStr(F.id + type));
     const c1 = P.hull, c2 = P.hullDark, c3 = P.hullLight, acc = P.accent, eng = P.engine, glow = P.glow, dark = sh(P.hullDark, 0.55);
     const big = type === 'dreadnought', carrier = type === 'carrier';
@@ -257,10 +286,11 @@
 
   function makeUnit(u) {
     const F = E.faction(u.team);
-    if (u.kind === 'infantry') return makeInfantry(F, u.type);
+    if (u.kind === 'infantry') { const rig = E.ArtInfantry.make(F, E.INFANTRY[u.type] ? u.type : 'trooper'); rig.rig = rig; return rig; }
     if (u.kind === 'vehicle') return makeVehicle(F, u.type);
     if (u.kind === 'fighter') return makeFighter(F, u.type);
     if (u.kind === 'capital') return makeCapital(F, u.type);
+    if (E.ArtStruct && E.TURRETS[u.type]) { const m = E.ArtStruct.makeStructure(F, u.type); return m; }
     return makeTurret(F);
   }
 

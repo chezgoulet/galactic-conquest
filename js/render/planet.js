@@ -7,20 +7,29 @@
 (function (E) {
   'use strict';
 
+  // per-biome ground look. kind selects the micro-detail layer in E.Mat.terrain; rip/ripF/ripDir drive wind ripples or
+  // drifts, rock/rock2 + strata the cliff bands, wl is filled in with the sim's water level.
   const LOOK = {
-    tundra:   { rock: '#5c6470', tint: [1.12, 1.12, 1.15], rockAt: 0.3, bump: 0.5, rough: 0.6 },
-    desert:   { rock: '#9a6a44', tint: [1.1, 0.96, 0.82], rockAt: 0.34, bump: 0.55, rough: 0.95 },
-    jungle:   { rock: '#4f4a3c', tint: [0.72, 0.95, 0.6], rockAt: 0.42, bump: 0.7, rough: 0.9 },
-    urban:    { rock: '#55585f', tint: [0.8, 0.8, 0.82], rockAt: 0.3, bump: 0.6, rough: 0.85 },
-    volcanic: { rock: '#1c1512', tint: [0.6, 0.5, 0.45], rockAt: 0.3, bump: 1.0, rough: 0.8, lava: '#ff4a10', lavaLevel: -5 },
-    ocean:    { rock: '#4c5a55', tint: [0.9, 1.05, 0.85], rockAt: 0.38, bump: 0.6, rough: 0.85 },
-    cratered: { rock: '#6a6e78', tint: [0.86, 0.86, 0.9], rockAt: 0.36, bump: 0.9, rough: 0.95 },
-    gas:      { rock: '#2e2238', tint: [1.15, 0.85, 1.2], rockAt: 0.32, bump: 0.8, rough: 0.8, lava: '#b040ff', lavaLevel: -9 },
+    tundra:   { kind: 'snow',     rock: '#5c6470', rock2: '#8791a1', tint: [1.06, 1.08, 1.12], rockAt: 0.3,  bump: 0.55, rough: 0.55, rip: 0.22, ripF: 1.5, ripDir: 0.4, strata: 0.5, strataF: 1.1 },
+    desert:   { kind: 'sand',     rock: '#8a5c3c', rock2: '#c2915e', tint: [1.1, 0.96, 0.84],  rockAt: 0.34, bump: 0.5,  rough: 0.95, rip: 0.55, ripF: 2.5, ripDir: 0.7, strata: 0.95, strataF: 1.9 },
+    jungle:   { kind: 'mud',      rock: '#4a4538', rock2: '#6d6450', tint: [0.8, 0.98, 0.66],  rockAt: 0.42, bump: 0.7,  rough: 0.85, rip: 0.0, strata: 0.5, strataF: 1.3 },
+    urban:    { kind: 'concrete', rock: '#53565d', rock2: '#74767d', tint: [0.86, 0.86, 0.88], rockAt: 0.3,  bump: 0.5,  rough: 0.85, rip: 0.0, strata: 0.6, strataF: 2.2 },
+    volcanic: { kind: 'ash',      rock: '#1c1512', rock2: '#3a2a22', tint: [0.7, 0.58, 0.5],   rockAt: 0.3,  bump: 1.0,  rough: 0.8, rip: 0.3, ripF: 1.8, ripDir: 1.2, lava: '#ff4a10', lavaLevel: -5 },
+    ocean:    { kind: 'sand',     rock: '#4c5a55', rock2: '#7d8f86', tint: [0.95, 1.05, 0.88], rockAt: 0.38, bump: 0.5,  rough: 0.8,  rip: 0.4, ripF: 3.0, ripDir: 0.2 },
+    cratered: { kind: 'regolith', rock: '#5f636d', rock2: '#8b8f99', tint: [0.9, 0.9, 0.94],   rockAt: 0.36, bump: 0.9,  rough: 0.95, rip: 0.3, ripF: 1.4, ripDir: 1.0 },
+    gas:      { kind: 'ash',      rock: '#2e2238', rock2: '#5a4468', tint: [1.1, 0.88, 1.15],  rockAt: 0.32, bump: 0.8,  rough: 0.8, rip: 0.2, lava: '#b040ff', lavaLevel: -9 },
   };
 
-  function groundMaterial(biomeId) {
-    const L = LOOK[biomeId] || LOOK.desert;
-    return E.Mat.terrain(biomeId, Object.assign({ lava: null }, L));
+  function groundMaterial(biomeId, terrain) {
+    const L = Object.assign({ lava: null }, LOOK[biomeId] || LOOK.desert);
+    if (terrain) {
+      L.wl = terrain.waterLevel;
+      // dirt roads between the command posts, in order: the lines the battle follows
+      const c = terrain.layout.cps, roads = [];
+      for (let i = 0; i < c.length - 1; i++) roads.push([c[i].x, c[i].z, c[i + 1].x, c[i + 1].z]);
+      L.roads = roads;
+    }
+    return E.Mat.terrain(biomeId, L);
   }
 
   function colorAt(terrain, biome, noise, x, z, h, out) {
@@ -37,7 +46,7 @@
   function buildTerrain(scene, terrain, biome, quality) {
     const T = E.THREE, G = terrain.grid, group = new T.Group();
     const noise = E.Noise(terrain.planet.seed ^ 0x77), c3 = [0, 0, 0];
-    const mat = groundMaterial(terrain.biome);
+    const mat = groundMaterial(terrain.biome, terrain);
 
     // ── arena: the sim's height grid, vertex for vertex ──
     const st = quality === 'low' ? 2 : 1, NX = Math.floor((G.GW - 1) / st) + 1, NZ = Math.floor((G.GH - 1) / st) + 1;
