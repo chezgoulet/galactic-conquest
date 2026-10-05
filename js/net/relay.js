@@ -65,6 +65,7 @@
     start(rated) { this.raw({ op: 'start', rated: !!rated }); }
     queue(mode) { this.raw({ op: 'queue', mode: mode || 'team' }); }
     unqueue(mode) { this.raw({ op: 'unqueue', mode: mode || 'team' }); }
+    browse() { this.raw({ op: 'lobbies' }); }
     hostOpen() { const p = this.peers.get(0); return !!(p && p.dc && p.dc.readyState === 'open'); }
 
     onSignal(m) {
@@ -79,6 +80,7 @@
         case 'peer': if (this.role === 'host') this.makePeer(m.id, m.name, true); break;
         case 'ready': this.emit('ready', m); break;
         case 'ticket': this.emit('ticket', m); break;
+        case 'lobbies': this.emit('lobbies', m); break;
         case 'signal': this.onPeerSignal(m.from, m.data); break;
         case 'left': this.dropPeer(m.id); break;
         case 'closed': this.emit('closed', m); break;
