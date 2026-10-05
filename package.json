@@ -12,6 +12,7 @@
     "build": "node tools/build.cjs && node tools/build-web.cjs",
     "test": "node test/load-check.cjs && node --test test/*.test.cjs",
     "test:ui": "node test/ui.smoke.cjs",
+    "perf": "node tools/perf.cjs",
     "test:online": "npm run test -w apps/play",
     "play:dev": "npm run dev -w apps/play",
     "play:test": "npm test -w apps/play",

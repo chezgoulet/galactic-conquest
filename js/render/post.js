@@ -32,8 +32,8 @@
 
   const DEFAULTS = {
     exposure: 0.92, sat: 1.0, contrast: 1.0, lift: [0, 0, 0], gamma: [1, 1, 1], gain: [1, 1, 1],
-    vignette: 0.2, grain: 0.012, aberration: 0.003, motionBlur: 0.0, sharpen: 0.55, shimmer: 0,
-    bloom: { strength: 0.16, radius: 0.5, threshold: 1.5 },
+    vignette: 0.2, grain: 0.008, aberration: 0.003, motionBlur: 0.0, sharpen: 0.55, shimmer: 0,
+    bloom: { strength: 0.13, radius: 0.5, threshold: 2.0 },
     dof: { on: false, focus: 60, range: 80, bokeh: 3 },
     ao: { intensity: 1.0 }, ssr: { intensity: 1.0 }, shafts: 0.08,
   };

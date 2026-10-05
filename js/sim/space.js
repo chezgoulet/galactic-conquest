@@ -279,7 +279,7 @@
       for (let k = 0; k < caps.length; k++) {
         const c = caps[k], d2 = V.distance2(c.pos, p.pos), env = 450 + c.def.r;
         if (d2 > env * env) continue;
-        const npd = c.def.pd * (c.sys.bridge.alive ? 1 : 0.5) * weaponMul(c);
+        const npd = c.def.pd * (c.sys.bridge.alive ? 1 : 0.5) * weaponMul(c) * (p.wk === 'ptorp' ? 0.5 : 1);   // proton torpedoes are harder to intercept
         if (w.rng.next() < 1 - Math.exp(-0.12 * npd * dt)) {
           c.pdKills++;
           w.events.push({ type: 'pdIntercept', uid: c.id, team: c.team, wk: p.wk, pos: V.clone(p.pos), by: p.uid });

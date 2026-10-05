@@ -4,7 +4,7 @@
 (function (E) {
   'use strict';
   const COMMON = [
-    ['F', 'Take control of the friendly you aim at'], ['M', 'Command view'], ['Tab', 'Scoreboard'], ['Esc', 'Pause and settings'], ['F1', 'This reference'],
+    ['F', 'Take control of the friendly you aim at'], ['M', 'Command view'], ['P', 'First / third person view (infantry)'], ['Tab', 'Scoreboard'], ['Esc', 'Pause and settings'], ['F1', 'This reference'],
   ];
   const CALL = [['Y', 'Call air support on the point you aim at (bomber or gunship)'], ['U', 'Call a gunship strike on the aim point']];
   const SQUAD = [['Z', 'Squad: follow me'], ['X', 'Squad: move to the aim point'], ['V', 'Squad: dismiss']];

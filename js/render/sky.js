@@ -93,7 +93,7 @@
       let col = sum.mul(S.sunI).mul(U.sunColor).mul(0.9).toVar();
       // ground-level multiple-scatter haze: the horizon lifts toward the biome's palette colour
       const hz = pow(float(1).sub(abs(d.y)), 3).mul(exp(alt.negate().div(Hr * 1.4))).mul(air);
-      col.addAssign(S.hor.mul(hz).mul(0.35));
+      col.addAssign(S.hor.mul(hz).mul(0.22));
       // the planet below: shaded surface seen through the atmosphere
       const pp = o.add(d.mul(pl.t0));
       const pn = normalize(pp);
@@ -113,7 +113,7 @@
       // sun disc + halo (attenuated by the atmosphere, hidden by the planet)
       const sdot = max(dot(d, sd), 0.0);
       const sunTr = exp(betaR.mul(exp(alt.negate().div(Hr)).mul(Hr)).add(betaM.mul(exp(alt.negate().div(Hm)).mul(Hm))).mul(air).mul(float(1).div(max(sd.y, 0.04))).negate().mul(1.0));
-      const disc = smoothstep(0.9994, 0.9998, sdot).mul(30.0).add(pow(sdot, 400.0).mul(3.0)).add(pow(sdot, 40.0).mul(0.25));
+      const disc = smoothstep(0.9994, 0.9998, sdot).mul(7.0).add(pow(sdot, 400.0).mul(1.4)).add(pow(sdot, 40.0).mul(0.14));
       const sunVis = select(hitP, float(0), float(1));
       col.addAssign(U.sunColor.mul(sunTr).mul(disc).mul(sunVis));
       return vec4(col, 1.0);
@@ -152,15 +152,25 @@
   function makeSky(scene, planet, biome) {
     const T = E.THREE, S = SKY[planet.biome] || SKY.desert, SUn = skyUniforms();
     const group = new T.Group();
-    const sunDir = new T.Vector3(S.sun[0], S.sun[1], S.sun[2]).normalize();
+    // time of day varies per battle seed: rotate the biome's sun about the pole and dip/raise it
+    const tod = ((planet.seed % 997) / 997) - 0.5;                 // -0.5 .. 0.5
+    const baseSun = new T.Vector3(S.sun[0], S.sun[1], S.sun[2]).normalize();
+    const az = tod * 1.1, el = tod * 0.16;
+    const sunDir = new T.Vector3(
+      baseSun.x * Math.cos(az) - baseSun.z * Math.sin(az),
+      E.clamp(baseSun.y + el, 0.34, 0.98),
+      baseSun.x * Math.sin(az) + baseSun.z * Math.cos(az)
+    ).normalize();
+    // warmer light low on the horizon (kept shallow: never a full backlight)
+    const sunCol = hex(S.sunCol).lerp(new T.Color(1.0, 0.66, 0.4), E.clamp(0.6 - sunDir.y, 0, 1) * 0.3);
     // per-biome scattering tint: the Rayleigh colour follows the palette's zenith colour
     const tc = hex(S.top), mx = Math.max(tc.r, tc.g, tc.b, 1e-3);
     const tint = [Math.max(tc.r / mx, 0.06) * 0.2, Math.max(tc.g / mx, 0.06) * 0.45, Math.max(tc.b / mx, 0.06)];
     const lowC = biome.palette.low, ground = new T.Color().setRGB(lowC[0] / 255, lowC[1] / 255, lowC[2] / 255, T.SRGBColorSpace);
     const setBiome = () => {
-      const k = 0.55 * (S.space >= 1 ? 1 : 1);
+      const k = 0.55;
       SUn.betaR.value.set(tint[0] * k, tint[1] * k, tint[2] * k);
-      SUn.hor.value.copy(hex(S.hor)); SUn.sunI.value = S.sunI * 7.5; SUn.ground.value.copy(ground);
+      SUn.hor.value.copy(hex(S.hor)); SUn.sunI.value = S.sunI * 5.0; SUn.ground.value.copy(ground);
       SUn.seed.value = (planet.seed % 1000) * 0.37;
       SUn.nebA.value.copy(hex(E.rgbStr(E.hsl2rgb((planet.seed % 97) / 97, 0.7, 0.45))));
       SUn.nebB.value.copy(hex(E.rgbStr(E.hsl2rgb(((planet.seed % 97) / 97 + 0.35) % 1, 0.8, 0.4))));
@@ -190,7 +200,7 @@
     scene.scene.add(group);
 
     const atmosphere = {
-      fogColor: hex(S.fog), sunColor: hex(S.sunCol), sunDir, sunI: S.sunI * 0.7, skyColor: hex(S.hor).lerp(hex(S.top), 0.45), groundColor: new T.Color().setRGB(lowC[0] / 255, lowC[1] / 255, lowC[2] / 255, T.SRGBColorSpace).multiplyScalar(0.5),
+      fogColor: hex(S.fog), sunColor: sunCol, sunDir, sunI: S.sunI * 0.7, skyColor: hex(S.hor).lerp(hex(S.top), 0.45), groundColor: new T.Color().setRGB(lowC[0] / 255, lowC[1] / 255, lowC[2] / 255, T.SRGBColorSpace).multiplyScalar(0.5),
       ambI: S.amb * 0.8, density: 2.0 / ((biome.challenge && biome.challenge.fog) || 3000), heightK: S.space > 0.5 ? 0.02 : 0.0045, base: 0, bloom: S.bloom * 0.3,
       biome: planet.biome, cloud: S.cloud, cloudCol: hex(S.cloudCol), cloudDark: hex(S.cloudDark), airless: S.space >= 1 ? 1 : 0, spaceBase: S.space,
     };

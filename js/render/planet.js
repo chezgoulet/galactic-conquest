@@ -72,6 +72,8 @@
       let h = terrain.exact(x, z);
       colorAt(terrain, biome, noise, x, z, h, c3);
       if (x > x1 && x < x2 && z > z1 && z < z2) h -= 40;   // tuck under the arena mesh
+      // curve the far field onto the planet sphere (E.PLANET.R): blended in beyond the arena so the seam stays flush
+      h -= E.clamp01((Math.hypot(x, z) - 1600) / 2600) * (x * x + z * z) / (2 * (E.PLANET ? E.PLANET.R : 40000));
       op[k] = x; op[k + 1] = h; op[k + 2] = z; oc[k] = c3[0]; oc[k + 1] = c3[1]; oc[k + 2] = c3[2];
     }
     for (let iz = 0; iz < R; iz++) for (let ix = 0; ix < R; ix++) { const a = iz * M + ix, b = a + 1, c = a + M, d = c + 1; oi.push(a, c, b, b, c, d); }

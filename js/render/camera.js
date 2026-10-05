@@ -27,6 +27,7 @@
     }
     shake(p) { this.trauma = Math.min(1, this.trauma + p); }
     snap() { this._snap = true; }
+    toggleFpv() { this.fpv = !this.fpv; this.snap(); }
 
     // view: { mode, pos {x,y,z} (smoothed unit position), unit, zoomFov }
     // centre of the fighting: mean position of living ground units (falls back to the middle post)
@@ -38,7 +39,7 @@
     }
     update(dt, t, view) {
       const cam = this.cam, T = E.THREE;
-      const prevMode = this._lastMode; this._lastMode = prevMode;
+      const prevMode = this._lastMode;
       let px, py, pz, lx, ly, lz, fov = 62, stiff = 14;
       const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
       const dx = sy * cp, dy = sp, dz = cy * cp;       // look direction
@@ -65,7 +66,7 @@
         lx = px + dx * 200; ly = py + dy * 200; lz = pz + dz * 200;
       } else if (view.mode === 'commander') {
         const c = this.cmd;
-        if (this._lastMode !== 'commander' && this.front) { c.x = this.front.x; c.z = this.front.z; c.dist = Math.min(c.dist, 340); c.pitch = 0.86; this._snap = true; }
+        if (prevMode !== 'commander' && this.front) { c.x = this.front.x; c.z = this.front.z; c.dist = Math.min(c.dist, 340); c.pitch = 0.7; this._snap = true; }
         const cpz = Math.cos(c.pitch), gy = this.terrain ? this.terrain.height(c.x, c.z) : 0;
         px = c.x - Math.sin(c.yaw) * cpz * c.dist; py = gy + Math.sin(c.pitch) * c.dist; pz = c.z - Math.cos(c.yaw) * cpz * c.dist;
         lx = c.x; ly = gy; lz = c.z; fov = 50; stiff = 9;

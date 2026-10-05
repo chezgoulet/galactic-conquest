@@ -51,6 +51,6 @@
     retreatHull: 0.35, retreatHullFlag: 0.22,
     braceTime: 6, braceCd: 30, braceMul: 0.45,
     coreTime: 25,
-    boardCrew: 6, boardTime: 80,
+    boardCrew: 6, boardTime: 95,
   };
 })(window.E = window.E || {});

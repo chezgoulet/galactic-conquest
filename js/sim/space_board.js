@@ -258,8 +258,8 @@
         const nd = op.nodes[name], N = NODES[name]; if (nd.done) continue;
         let na = 0, nf = 0;
         for (const u of op.units) { if (!u.alive) continue; const b = u.board; if (b.deck === N.deck && Math.hypot(b.x - N.x, b.z - N.z) < NODE_R) { if (b.side === 'att') na++; else nf++; } }
-        if (na > 0 && nf === 0) nd.p = Math.min(1, nd.p + 0.05 * Math.min(na, 3) * dt);
-        else if (nf > 0) nd.p = Math.max(0, nd.p - 0.06 * nf * dt);
+        if (na > 0 && nf === 0) nd.p = Math.min(1, nd.p + 0.08 * Math.min(na, 3) * dt);
+        else if (nf > 0) nd.p = Math.max(0, nd.p - 0.04 * nf * dt);
         else nd.p = Math.max(0, nd.p - 0.015 * dt);
         if (nd.p >= 1) {
           nd.done = true;

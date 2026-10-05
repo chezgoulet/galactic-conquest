@@ -222,6 +222,7 @@
         else if (k === 'v') this.squadOrder('free');
         else if (k === 'y') this.callAir('any');
         else if (k === 'u') this.callAir('gunship');
+        else if (k === 'p') { const c = this.renderer.camera; c.toggleFpv(); this.hud.toast(c.fpv ? 'FIRST PERSON VIEW' : 'THIRD PERSON VIEW'); }
         else this.unitKey(k);
       } else if (this.state === 'commander') {
         const w = this.world, mine = (kind) => w.units.filter(u => u.alive && u.team === this.team && u.kind === kind && !u.pid).map(u => u.id);

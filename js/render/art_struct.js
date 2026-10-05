@@ -247,7 +247,6 @@
         b.kind = 'hold'; b.life = 0.0001; b.m.visible = true; b.m.material.userData.col.value.setRGB(0.3, 2.6, 1.6); b.m.material.userData.amp.value = 0.9 + 0.2 * Math.sin(t * 40); this.orient(b.m, a, tp, 0.09);
         this.R.fx.add.emit(tp.x + (Math.random() - 0.5) * 0.8, tp.y + (Math.random() - 0.5) * 0.8, tp.z + (Math.random() - 0.5) * 0.8, 0, 2, 0, 0.4, 0.3, 0.05, 0.6, 3, 1.6, 1, 1, 6);
       }
-      for (const b of this.beams) if (b.kind === 'hold' && !(b._f === this._frame)) { /* released below */ }
       for (let i = slot; i < free.length; i++) { const b = free[i]; if (b.kind === 'hold') { b.kind = ''; b.m.visible = false; } }
     }
     objectives(world, t, dt) {

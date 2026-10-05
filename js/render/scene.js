@@ -221,11 +221,11 @@
         A.density.value = a.density * (1 - E.smoothstep(300, 1400, alt) * 0.75);
         // ground bounce low down; hard single-source light with planet-shine in space
         const sm = 1 - Math.pow(k, 0.6);
-        this.hemi.intensity = a.ambI * (0.12 + 0.88 * Math.pow(k, 0.7)) + 0.16 * sm * (1 - airless * 0.5);
+        this.hemi.intensity = a.ambI * (0.12 + 0.88 * Math.pow(k, 0.7)) + 0.30 * sm * (1 - airless * 0.5);
         this.sun.intensity = a.sunI * (1 + 0.45 * sm);
         if (sm > 0.05) { this._shine = this._shine || new (E.THREE.Color)(); this._shine.copy(a.groundColor).multiplyScalar(2); this.hemi.groundColor.copy(a.groundColor).lerp(this._shine, sm); this.hemi.color.copy(a.skyColor).lerp(new (E.THREE.Color)(0.02, 0.03, 0.07), sm); }
         else { this.hemi.color.copy(a.skyColor); this.hemi.groundColor.copy(a.groundColor); }
-        this.scene.environmentIntensity = 0.75 * (0.18 + 0.82 * k) + 0.25 * sm * 0.6;
+        this.scene.environmentIntensity = 0.75 * (0.24 + 0.76 * k) + 0.34 * sm * 0.6;
         const key = alt > 1750 || airless ? 'space' : 'ground';
         if (key !== this._envKey && this._env[key]) { this._envKey = key; this.scene.environment = this._env[key]; E.Mat.setEnv(this._env[key]); }
       }

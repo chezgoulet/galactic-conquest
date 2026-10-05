@@ -127,10 +127,6 @@
             const hpf = u.hp / (u.maxHp || 1);
             if (hpf < 0.5 && d2 < 1500 * 1500 && this.fx.rng.next() < dt * 20 * (1 - hpf)) { this.fx.smoke.emit(r.x - fx * 2, r.y - fy * 2, r.z - fz * 2, 0, 1, 0, 2.2, 0.8, 3.5, 0.08, 0.08, 0.08, 0.55, 0.5, -0.4); if (hpf < 0.25) this.fx.add.emit(r.x - fx * 2, r.y - fy * 2, r.z - fz * 2, 0, 0, 0, 0.3, 1.2, 0.4, 3, 1.2, 0.3, 0.9, 0, 0); }
           }
-          if (false) { // legacy engine streak
-            const c = E.faction(u.team).palette.engine, fx = Math.sin(u.yaw) * Math.cos(u.pitch), fy = Math.sin(u.pitch), fz = Math.cos(u.yaw) * Math.cos(u.pitch), b = u.r * 0.95;
-            this.fx.add.emit(r.x - fx * b, r.y - fy * b, r.z - fz * b, -fx * 8, -fy * 8, -fz * 8, 0.22 + u.spd * 0.0012, 1.5, 0.3, c[0] / 255 * 2.2, c[1] / 255 * 2.2, c[2] / 255 * 2.2, 1, 0, 0);
-          }
         } else if (u.kind === 'capital') {
           this._e.set(0, u.yaw, -u.roll); g.quaternion.setFromEuler(this._e);
           // battle damage: fires and smoke along the hull as health drops
@@ -216,13 +212,13 @@
       this.updateDead(dt);
       for (let i = 0; i < this.posts.length; i++) E.Props.updatePost(this.posts[i], world.cps[i], t, dt);
       if (view.unit) { const r = this.models.get(view.unit.id); view.pos = r ? r : view.unit.pos; }
+      if (view.mode === 'commander') this.camera.setFront(world);
+      else this.camera.front = null;
       this.camera.update(dt, t, view);
       const cam = S.camera;
       this.fx.update(dt, t, cam);
       this.fx.updateArt(dt, t, world);
       this.localTeam = view.unit ? view.unit.team : null;
-      if (view.mode === 'commander' && !this.camera.front) this.camera.setFront(world);
-      else if (view.mode !== 'commander') this.camera.front = null;
       if (this.cover) this.cover.sync(world);
       if (this.overlay) this.overlay.update(dt, t, world, cam.position);
       if (this.space) this.space.update(dt, t, world);

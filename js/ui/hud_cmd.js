@@ -10,7 +10,7 @@
   P.cmdBegin = function () {
     const calls = this.$.cmd.querySelector('.cm-calls');
     calls.innerHTML = `
-      <div class="cm-h">CALL-INS <span class="cm-arm"></span></div>
+      <div class="cm-h">CALL-INS <span class="cm-tog">▾</span> <span class="cm-arm"></span></div>
       <div class="cm-grp"><label>AIR SUPPORT</label>
         <button class="cbtn" data-c="cas:bomber"><b>Bomber run</b><em></em></button>
         <button class="cbtn" data-c="cas:gunship"><b>Gunship strike</b><em></em></button>
@@ -22,20 +22,28 @@
         <button class="cbtn" data-c="board"><b>Board target</b><em></em></button>
         <button class="cbtn" data-c="retreat"><b>Retreat</b><em></em></button>
         <div class="cb-pw"><span>POWER</span>${['balanced', 'shields', 'weapons', 'engines'].map((n, i) => `<button class="pwb" data-p="${i}">${n}</button>`).join('')}</div></div>`;
-    calls.addEventListener('click', (ev) => {
-      const b = ev.target.closest('button'); if (!b) return; const g = this.game;
-      if (b.dataset.p !== undefined) { g.cmd('verb', 'power', +b.dataset.p); if (E.SFX) E.SFX.play('select'); return; }
-      const c = b.dataset.c; if (!c) return;
-      if (c.startsWith('cas:') || c === 'strike') { this.armed = this.armed && this.armed.id === c ? null : { id: c, kind: c === 'strike' ? 'strike' : 'cas', role: c.split(':')[1] }; this.toast(this.armed ? 'CLICK THE MAP TO MARK THE TARGET' : 'CANCELLED'); if (E.SFX) E.SFX.play('select'); return; }
-      this.armed = null;
-      if (c === 'wing') g.cmd('verb', 'launch'); else if (c === 'brace') g.cmd('verb', 'brace'); else if (c === 'retreat') g.cmd('verb', 'retreat'); else if (c === 'board') { const S = E.SIM.spaceState(g.world, g.team); g.cmd('verb', 'board', S && S.targetId); }
-      if (E.SFX) E.SFX.play('confirm');
-    });
-    this.$.cmd.querySelector('.cm-sel').addEventListener('click', (ev) => {
-      const b = ev.target.closest('button'); if (!b) return; const g = this.game; if (!g.selected.length && b.dataset.o !== 'take') { this.toast('SELECT UNITS FIRST'); return; }
-      if (b.dataset.o === 'hold') { g.cmd('order', g.selected, 'hold'); this.toast('ORDER: HOLD POSITION'); } else if (b.dataset.o === 'free') { g.cmd('order', g.selected, 'free'); this.toast('ORDER: FREE FIRE'); } else if (b.dataset.o === 'take') g.takeControl();
-      if (E.SFX) E.SFX.play('confirm');
-    });
+    // the call-in panel starts folded so it does not cover the tactical view; the header toggles it
+    const ch = calls.querySelector('.cm-h');
+    ch.style.cursor = 'pointer'; ch.title = 'Show / hide call-ins';
+    ch.addEventListener('click', () => { calls.classList.toggle('collapsed'); if (E.SFX) E.SFX.play('ui'); });
+    calls.classList.add('collapsed');
+    if (!calls._wired) {
+      calls._wired = true;
+      calls.addEventListener('click', (ev) => {
+        const b = ev.target.closest('button'); if (!b) return; const g = this.game;
+        if (b.dataset.p !== undefined) { g.cmd('verb', 'power', +b.dataset.p); if (E.SFX) E.SFX.play('select'); return; }
+        const c = b.dataset.c; if (!c) return;
+        if (c.startsWith('cas:') || c === 'strike') { this.armed = this.armed && this.armed.id === c ? null : { id: c, kind: c === 'strike' ? 'strike' : 'cas', role: c.split(':')[1] }; this.toast(this.armed ? 'CLICK THE MAP TO MARK THE TARGET' : 'CANCELLED'); if (E.SFX) E.SFX.play('select'); return; }
+        this.armed = null;
+        if (c === 'wing') g.cmd('verb', 'launch'); else if (c === 'brace') g.cmd('verb', 'brace'); else if (c === 'retreat') g.cmd('verb', 'retreat'); else if (c === 'board') { const S = E.SIM.spaceState(g.world, g.team); g.cmd('verb', 'board', S && S.targetId); }
+        if (E.SFX) E.SFX.play('confirm');
+      });
+      this.$.cmd.querySelector('.cm-sel').addEventListener('click', (ev) => {
+        const b = ev.target.closest('button'); if (!b) return; const g = this.game; if (!g.selected.length && b.dataset.o !== 'take') { this.toast('SELECT UNITS FIRST'); return; }
+        if (b.dataset.o === 'hold') { g.cmd('order', g.selected, 'hold'); this.toast('ORDER: HOLD POSITION'); } else if (b.dataset.o === 'free') { g.cmd('order', g.selected, 'free'); this.toast('ORDER: FREE FIRE'); } else if (b.dataset.o === 'take') g.takeControl();
+        if (E.SFX) E.SFX.play('confirm');
+      });
+    }
   };
 
   P.cmdUpdate = function (dt, w) {

@@ -342,7 +342,8 @@
       }
       // mines we can see
       if (play) for (const m of w.mines || []) { if (!(m.team === team || m.seen)) continue; cam.project(m, o); if (!o.vis) continue; const d = Math.hypot(m.x - cp3.x, m.z - cp3.z); if (d > 70) continue; ctx.strokeStyle = m.team === team ? '#ffd04a' : '#ff3a2a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(o.x, o.y, R * 0.55, 0, E.TAU); ctx.stroke(); ctx.beginPath(); ctx.moveTo(o.x - R * 0.35, o.y); ctx.lineTo(o.x + R * 0.35, o.y); ctx.moveTo(o.x, o.y - R * 0.35); ctx.lineTo(o.x, o.y + R * 0.35); ctx.stroke(); if (m.team !== team) { ctx.fillStyle = '#ff3a2a'; ctx.font = `700 ${R * 0.55}px system-ui`; ctx.fillText('MINE', o.x, o.y - R * 0.95); } }
-      // capital ship plates (hollow frame = enemy)
+      // capital ship plates (hollow frame = enemy); labels stagger so distant contacts never stack
+      const capLabels = [];
       for (const s of w.units) {
         if (s.kind !== 'capital' || !s.alive) continue;
         cam.project({ x: s.pos.x, y: s.pos.y + s.h * 1.6, z: s.pos.z }, o); if (!o.vis || (u && u.id === s.id)) continue;
@@ -351,7 +352,10 @@
         ctx.fillStyle = '#4aa8ff'; ctx.fillRect(o.x - bw / 2, o.y - 3, bw * E.clamp01(s.shield / (s.maxShield || 1)), 2.5);
         ctx.fillStyle = col; ctx.fillRect(o.x - bw / 2, o.y, bw * E.clamp01(s.hp / s.maxHp), 3.5);
         if (tgt) { ctx.strokeStyle = '#ffd04a'; ctx.lineWidth = 2; ctx.strokeRect(o.x - bw / 2 - 5, o.y - 22, bw + 10, 36); }
-        ctx.font = `700 ${R * 0.68}px system-ui`; ctx.fillStyle = fr ? '#fff' : col; ctx.fillText((fr ? '▪ ALLIED ' : '▫ ENEMY ') + s.def.name.toUpperCase() + (s.retreat ? ' · RETREATING' : '') + (s.captured ? ' · CAPTURED' : ''), o.x, o.y - R * 0.95);
+        let ly = o.y - R * 0.95;
+        while (capLabels.some(d => Math.abs(d.x - o.x) < bw && Math.abs(d.y - ly) < R * 0.82)) ly -= R * 0.86;
+        capLabels.push({ x: o.x, y: ly });
+        ctx.font = `700 ${R * 0.68}px system-ui`; ctx.fillStyle = fr ? '#fff' : col; ctx.fillText((fr ? '▪ ALLIED ' : '▫ ENEMY ') + s.def.name.toUpperCase() + (s.retreat ? ' · RETREATING' : '') + (s.captured ? ' · CAPTURED' : ''), o.x, ly);
       }
       if (play) {
         const t = g.aimInfo && g.aimInfo.target;
@@ -415,6 +419,10 @@
           else if (k === 'shipCaptured') this.announce(o ? 'A SHIP WAS CAPTURED BY THE ENEMY' : 'WE HAVE CAPTURED AN ENEMY SHIP', o ? 'bad' : 'good');
           else if (k === 'shipRetreated') this.announce(o ? 'ONE OF OUR SHIPS HAS WITHDRAWN' : 'AN ENEMY SHIP HAS WITHDRAWN', o ? 'bad' : 'good');
           else if (k === 'fleetVictory') this.announce(o ? 'ORBITAL SUPREMACY — THE FLEET HOLDS THE HIGH GROUND' : 'THE ENEMY FLEET HOLDS ORBIT', o ? 'good' : 'bad');
+          else if (k === 'spaceStage1' || k === 'spaceStage2' || k === 'spaceStage3') this.announce(e.name ? String(e.name).toUpperCase() : 'FLEET ENGAGEMENT — STAGE ' + k.slice(-1), 'info');
+          else if (k === 'uplinkOnline') this.announce('A CONTESTED UPLINK IS ONLINE', 'info');
+          else if (k === 'shieldgenDown') this.announce(o ? 'OUR SHIELD GENERATOR IS DOWN' : 'ENEMY SHIELD GENERATOR DOWN', o ? 'bad' : 'good');
+          else if (k === 'objectiveWon') this.announce(o ? 'WE SECURED AN OBJECTIVE' : 'THE ENEMY SECURED AN OBJECTIVE', o ? 'good' : 'bad');
         } else if (t === 'stageChange') this.announce(`${ours(e.team) ? 'OUR' : 'ENEMY'} FLEET: ${String(e.name || '').toUpperCase()}`, ours(e.team) ? 'good' : 'bad');
         else if (t === 'shipDestroyed') this.announce((ours(e.team) ? 'WE LOST THE ' : 'ENEMY LOST THE ') + nm(e.uid).toUpperCase(), ours(e.team) ? 'bad' : 'good');
         else if (t === 'shipRetreating' && ours(e.team)) this.toast(nm(e.uid).toUpperCase() + ' IS RETREATING');

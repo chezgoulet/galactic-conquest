@@ -16,7 +16,7 @@
     const T = E.THREE, { uniform } = T.TSL;
     U = {
       fogColor: uniform(new T.Color(0.6, 0.7, 0.8)), sunColor: uniform(new T.Color(1, 0.9, 0.7)), sunDir: uniform(new T.Vector3(0, 1, 0)),
-      density: uniform(0.0006), heightK: uniform(0.006), base: uniform(0), maxFog: uniform(0.96),
+      density: uniform(0.0006), heightK: uniform(0.006), base: uniform(0), maxFog: uniform(0.88),
       cloudLo: uniform(700), cloudHi: uniform(1000), cover: uniform(0.4), cloudDensity: uniform(0.045),
       cloudCol: uniform(new T.Color(1, 1, 1)), cloudDark: uniform(new T.Color(0.5, 0.55, 0.65)), wind: uniform(new T.Vector3()),
       shaft: uniform(0.5), camPos: uniform(new T.Vector3()), frame: uniform(0), airless: uniform(0),

@@ -12,8 +12,7 @@
   const TAU = Math.PI * 2;
 
   function chunkGeo() {
-    const T = E.THREE, g = T.mergeGeometries ? null : null;
-    const b = new E.Geo.Builder(0), r = E.RNG(31);
+    const b = new E.Geo.Builder(0);
     b.box(1, 0.6, 0.8, 0, 0, 0, [255, 255, 255], { taper: [0.8, 0.7], mode: 0 });
     return b.build();
   }
@@ -229,6 +228,11 @@
           if (this.overlay) this.overlay.event(e, world); break;
         case 'objDone': if (e.success) { const o = (world.objs || []).find(x => x.id === e.id); if (o && o.pos) this.ring(o.pos, 40, [1, 0.9, 0.5], 1.2, true); } break;
         case 'coverBreak': case 'coverStage': if (this.cover && e.type === 'coverBreak') this.cover.breakFx(this, e); else if (e.type === 'coverStage' && near(e.pos, 300)) { this.debris(e.pos, 4, [140, 134, 120], 3.5, 0.4, { grav: 16, size: 0.1, life: 2 }); this.puff(e.pos, 2, this.dustCol, 1.0, 0.9, 0.8, 1.4); } break;
+        case 'offensive': if (e.pos && near(e.pos, 3600)) { const c = E.TEAM_BOLT[e.team] || HOT; this.ring(e.pos, 70, c, 1.6, true); this.light(e.pos, c, 120, 180); this.puff({ x: e.pos.x, y: e.pos.y + 2, z: e.pos.z }, 6, this.dustCol, 3, 1.6, 0.6, 4); } break;
+        case 'airComplete': { const u = world.umap && world.umap.get(e.uid); if (u && near(u.pos, 1500)) this.puff(u.pos, 2, [0.9, 0.92, 0.96], 3, 1.4, 0.2, 1.6); break; }
+        case 'lockAcquired': { const u = world.umap && world.umap.get(e.uid); if (u && near(u.pos, 1200)) { this.flash(u.pos, 3.2, [1, 0.35, 0.2], 0.14); } break; }
+        case 'lockLost': break;
+        case 'fizzle': { const u = (world.unitOf && world.unitOf(e.pid)) || (world.umap && world.umap.get(e.pid)); if (u) this.puff({ x: u.pos.x, y: u.pos.y + (u.h || 1), z: u.pos.z }, 1.5, [0.45, 0.45, 0.45], 0.8, 0.5, 0.2, 0.8); break; }
         default: if (this.space) this.space.event(e, world); break;
       }
     }

@@ -187,16 +187,16 @@
     const lit = step(float(0.5).add(deck.mul(0.22)), N.hash21(wid.add(7.0))).mul(step(0.18, deck));
     const wshape = step(wf.y, 0.2).mul(step(wf.x, 0.33));
     const isWin = step(2.5, mode);
-    const winFade = smoothstep(wcell.x.mul(0.7), wcell.x.mul(0.2), fp);
-    const avg = float(0.09);   // mean lit fraction of the window shape
+    const winFade = smoothstep(wcell.x.mul(1.1), wcell.x.mul(0.35), fp);
+    const avg = float(0.42);   // mean lit fraction of the window shape (keeps hulls reading as lit cities at range)
     const wcol = mix(vec3(1.0, 0.82, 0.55), mix(vec3(0.7, 0.9, 1.0), vec3(1.0, 0.65, 0.35), step(0.5, N.hash21(wid.add(31.0)))), step(0.8, N.hash21(wid.add(19.0))));
-    const win = wcol.mul(lit.mul(wshape).mul(winFade).add(avg.mul(float(1).sub(winFade)))).mul(isWin).mul(1.5);
+    const win = wcol.mul(lit.mul(wshape).mul(winFade).add(avg.mul(float(1).sub(winFade)))).mul(isWin).mul(2.4);
     // deep recessed windows read as dark glass when unlit
     const m = pbr({
       metalness: 0.55, roughness: 0.5, name: 'hull',
       colorNode: vertexColor(0).mul(tone).mul(seamDark).mul(mix(float(1), weather, panels)),
       roughnessNode: clamp(float(0.5).add(pf.id.sub(0.5).mul(0.3).mul(panels)).add(float(1).sub(weather).mul(0.4).mul(panels)), 0.1, 1.0),
-      emissiveNode: vertexColor(0).mul(fx.x).add(win),
+      emissiveNode: vertexColor(0).mul(fx.x.add(0.05)).add(win),
     });
     hullMat = m;
     return m;

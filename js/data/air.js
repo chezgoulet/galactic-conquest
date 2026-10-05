@@ -16,11 +16,11 @@
   Object.assign(E.WEAPONS = E.WEAPONS || {}, {
     // ── air ──
     laser:    { name: 'Wing Lasers',      kind: 'bolt', dmg: 24, rate: 9,   speed: 560, range: 720, spread: 0.008, heat: 0.035, scale: 1.6, vs: { heavy: 0.45, cap: 0.22 }, sfx: 'lance' },
-    missile:  { name: 'Hunter Missile',   kind: 'missile', dmg: 280, speed: 210, range: 900, seek: 2.6, splash: 9, cd: 5, vs: { inf: 0.6, cap: 1.5 }, sfx: 'missile' },
+    missile:  { name: 'Hunter Missile',   kind: 'missile', dmg: 280, speed: 210, range: 900, seek: 2.6, splash: 9, cd: 5, vs: { inf: 0.6, cap: 1.8 }, sfx: 'missile' },
     bomb:     { name: 'Plasma Bomb',      kind: 'bomb', dmg: 520, speed: 0, grav: 32, splash: 26, cd: 1.1, vs: { cap: 1.6, heavy: 1.25 }, sfx: 'launch' },
-    chin:     { name: 'Chin Cannon',      kind: 'bolt', dmg: 15, rate: 11,  speed: 430, range: 560, spread: 0.016, heat: 0.028, scale: 1.3, vs: { heavy: 0.5, cap: 0.08, inf: 1.3 }, sfx: 'pulse' },
-    pod:      { name: 'Rocket Pod',       kind: 'rocket', dmg: 75, speed: 240, range: 650, spread: 0.02, splash: 8, cd: 0.3, scale: 1.4, vs: { inf: 1.15, heavy: 0.85, cap: 0.3 }, sfx: 'launch' },
-    ptorp:    { name: 'Proton Torpedo',   kind: 'missile', dmg: 620, speed: 175, range: 1500, seek: 1.1, splash: 18, cd: 6, scale: 2.2, vs: { cap: 1.8, heavy: 1.0 }, sfx: 'missile' },
+    chin:     { name: 'Chin Cannon',      kind: 'bolt', dmg: 22, rate: 11,  speed: 430, range: 560, spread: 0.016, heat: 0.028, scale: 1.3, vs: { heavy: 0.5, cap: 0.08, inf: 1.3 }, sfx: 'pulse' },
+    pod:      { name: 'Rocket Pod',       kind: 'rocket', dmg: 92, speed: 240, range: 650, spread: 0.02, splash: 8, cd: 0.3, scale: 1.4, vs: { inf: 1.15, heavy: 0.85, cap: 0.3 }, sfx: 'launch' },
+    ptorp:    { name: 'Proton Torpedo',   kind: 'missile', dmg: 900, speed: 175, range: 1500, seek: 1.1, splash: 18, cd: 6, scale: 2.2, vs: { cap: 2.3, heavy: 1.0 }, sfx: 'missile' },
   });
 
   // Tunables shared by the flight model and the air AI (sim/air*.js).
@@ -46,7 +46,7 @@
                    r: 6.5, h: 3.4, weapon: 'chin', alt: 'pod', ord: 16, rearm: 3, cm: 4, armor: 'light', cost: 3, vtol: true, carry: 6, arc: 1.35,
                    desc: 'VTOL gunship. Slow and tough; chin cannon and rocket pods for close air support, and a hold for six troops.' },
     strike:      { name: 'Reaver', role: 'strike', hp: 330, shield: 140, speed: 135, boost: 215, minSpeed: 60, stall: 55, corner: 120, turn: 1.5, roll: 2.6, accel: 46, gmax: 0.9,
-                   r: 4.6, h: 2.6, weapon: 'laser', alt: 'ptorp', ord: 2, rearm: 18, cm: 3, armor: 'light', cost: 3, lockCone: 0.45, lockTime: 0.9,
+                   r: 4.6, h: 2.6, weapon: 'laser', alt: 'ptorp', ord: 3, rearm: 15, cm: 3, armor: 'light', cost: 3, lockCone: 0.45, lockTime: 0.9,
                    desc: 'Fast strike craft. Proton torpedoes for capital-ship and subsystem runs.' },
   };
 })(window.E = window.E || {});

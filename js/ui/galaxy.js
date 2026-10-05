@@ -245,7 +245,7 @@
         <div class="odds ${pct >= 60 ? 'good' : pct >= 40 ? 'mid' : 'bad'}"><b>${seen ? pct + '%' : '~' + pct + '%'}</b><span>${seen ? 'chance to win' : 'estimate'}</span><div class="om"><i style="width:${pct}%"></i></div></div></div>
         <div class="cmps"><div class="cmp hd"><label></label><div>YOU</div><div>THEM</div></div>${row('SPACE', a.space, d.space, f1)}${row('AIR', a.air, d.air, f0)}${row('LAND', a.land, d.land, f1)}</div>
         <div class="flags">${flags}</div>
-        <div class="fc-btns"><button class="gc-btn primary go-assault" ${ass.type === 'none' ? 'aria-disabled="true" class="gc-btn off"' : ''} ${ass.type === 'none' ? 'disabled' : ''}>${p.owner ? 'Assault' : 'Invade'} <span class="k">A</span></button><button class="gc-btn go-blockade" ${blk.type === 'none' ? 'disabled' : ''}>Blockade <span class="k">B</span></button><button class="gc-btn go-cancel">Cancel <span class="k">Esc</span></button></div>
+        <div class="fc-btns"><button class="gc-btn ${ass.type === 'none' ? 'off' : 'primary'} go-assault" ${ass.type === 'none' ? 'disabled aria-disabled="true"' : ''}>${p.owner ? 'Assault' : 'Invade'} <span class="k">A</span></button><button class="gc-btn go-blockade" ${blk.type === 'none' ? 'disabled' : ''}>Blockade <span class="k">B</span></button><button class="gc-btn go-cancel">Cancel <span class="k">Esc</span></button></div>
         <div class="fc-why">${ass.type === 'none' ? esc(ass.reason) : ''}${ass.type === 'none' && blk.type === 'none' ? ' · ' : ''}${blk.type === 'none' ? 'Blockade: ' + esc(blk.reason) : ''}</div>`;
     }
 

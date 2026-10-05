@@ -135,6 +135,11 @@
             else if (e.key === 'ticketsHalf' || e.key === 'ticketsLow') D.play('alarm', e.team === mine ? 0.7 : 0.35);
             else if (e.key === 'fleetVictory') D.play('capture', 0.8);
             else if (e.key === 'bridgeLost') { D.play('klaxon', 0.9); M.alert(1.5); }
+            else if (e.key === 'spaceStage1' || e.key === 'spaceStage2' || e.key === 'spaceStage3') D.play('call', 0.8);
+            else if (e.key === 'shieldgenDown') D.play('boom2', 0.9);
+            else if (e.key === 'objectiveWon') D.play(e.team === mine ? 'capture' : 'lost', 0.7);
+            else if (e.key === 'uplinkOnline') D.play('locked', 0.6);
+            else D.play('beep', 0.4);
             break;
           case 'strikeWarn': D.play('orbital', 1, { pos: { x: e.pos.x, y: e.pos.y + 300, z: e.pos.z } }); if (e.team !== mine && u && E.distXZ2(u.pos, e.pos) < 90 * 90) { D.play('klaxon', 0.8, { interior: true }); M.alert(2); } break;
           case 'strikeBlocked': case 'strikeDenied': D.play('deny', 0.8); break;
