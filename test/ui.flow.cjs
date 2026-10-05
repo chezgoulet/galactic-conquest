@@ -123,7 +123,7 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     await page.click('.g-menu'); await page.waitForSelector('.m-item[data-a="controls"]');
     await page.click('.m-item[data-a="controls"]'); await page.waitForSelector('.ct-tbl');
     await page.click('.ct-tab[data-k="capital"]'); await page.waitForTimeout(200); await shot('30-controls.png');
-    ok((await page.$$('.ct-tab')).length === 7, 'controls reference lists every unit kind');
+    ok((await page.$$('.ct-tab')).length === 8, 'controls reference lists every unit kind and the gamepad');
     const fatal = errors.filter(e => !/favicon|manifest|404/.test(e));
     ok(fatal.length === 0, 'no page console errors ' + JSON.stringify(fatal));
     console.log('ui.flow ok');
