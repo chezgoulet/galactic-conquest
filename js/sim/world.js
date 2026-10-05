@@ -35,7 +35,9 @@
       this.players = {};
       this.diff = opts.difficulty || 'normal';
       const D = DIFF[this.diff] || DIFF.normal;
-      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat, fog: !!opts.fog };
+      const M = (E.MODES && E.MODES[opts.mode]) || (E.MODES && E.MODES.conquest) || { ticketMul: 1, bleed: true, bleedMul: 1 };
+      this.mode = M.id || 'conquest';
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat, fog: !!opts.fog, mode: this.mode, bleed: M.bleed, bleedMul: M.bleedMul || 1 };
       // per-side scale + campaign bonuses
       const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
       const bon = (f) => (opts.bonus && opts.bonus[f]) || {};
@@ -45,7 +47,7 @@
         const enemyT = (f !== this.human && !opts.pvp) ? D.enemyTickets : 1;
         this.teams[f] = {
           id: f, scale: s, bonus: b,
-          tickets: Math.round(E.FORCE.tickets * (0.75 + s * 0.25) * enemyT * (b.ticketMul || 1) + (b.reserves ? 40 : 0)), startTickets: 0,
+          tickets: Math.round((E.FORCE.tickets * (0.75 + s * 0.25) * enemyT * (b.ticketMul || 1) + (b.reserves ? 40 : 0)) * M.ticketMul), startTickets: 0,
           infCap: Math.round(E.FORCE.infantry * (0.8 + s * 0.2)),
           waveT: 4, vehT: { skiff: 20, tank: 35 }, airT: 10, bleedT: 0, strikeT: b.orbital ? 25 : 60,
           kills: 0, deaths: 0, captures: 0, cps: 0, fleetHp: opts.fleetHp && opts.fleetHp[f] ? opts.fleetHp[f].slice() : null,

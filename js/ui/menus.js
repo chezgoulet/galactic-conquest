@@ -92,13 +92,16 @@
           <div class="m-sec">Battlefield</div>
           <div class="m-biomes">${E.BIOME_LIST.map(b => `<button class="m-biome${b.id === this.biome ? ' on' : ''}" data-b="${b.id}"><i style="${planetStyle(b.id)}"></i><b>${b.name}</b><em>${b.theme} · ${b.challenge.name}</em></button>`).join('')}</div>
           <div class="m-row"><div><div class="m-sec">Difficulty</div>${this.diffSeg(s.difficulty)}</div>
+            <div><div class="m-sec">Mode</div><div class="seg m-mode">${E.MODE_LIST.map(m => `<button data-m="${m.id}" class="${(this.mode || 'conquest') === m.id ? 'on' : ''}" title="${m.desc}">${m.name}</button>`).join('')}</div></div>
             <div><div class="m-sec">Fleets</div><div class="seg m-fleet">${[['1', 'Skirmish'], ['1.4', 'Battle'], ['1.8', 'Armada']].map(([v, n]) => `<button data-v="${v}" class="${(this.fleet || '1') === v ? 'on' : ''}">${n}</button>`).join('')}</div></div>
             <button class="gc-btn primary m-go">Launch Battle</button></div>
+          <p class="m-lead m-mode-desc">${(E.mode(this.mode || 'conquest')).desc}</p>
         </div>`);
       this.bindCommon();
       this.el.querySelectorAll('.m-biome').forEach(b => b.addEventListener('click', () => { this.biome = b.dataset.b; this.el.querySelectorAll('.m-biome').forEach(x => x.classList.toggle('on', x === b)); }));
       this.el.querySelectorAll('.m-fleet button').forEach(b => b.addEventListener('click', () => { this.fleet = b.dataset.v; this.el.querySelectorAll('.m-fleet button').forEach(x => x.classList.toggle('on', x === b)); }));
-      this.on('.m-go', () => this.onStart(E.Campaign.quickBattle({ biome: this.biome, human: s.faction, seed: (Math.random() * 1e9) | 0, fleetScale: +(this.fleet || 1), enemyScale: +(this.fleet || 1), difficulty: s.difficulty }), null));
+      this.el.querySelectorAll('.m-mode button').forEach(b => b.addEventListener('click', () => { this.mode = b.dataset.m; this.el.querySelectorAll('.m-mode button').forEach(x => x.classList.toggle('on', x === b)); const d = this.q('.m-mode-desc'); if (d) d.textContent = E.mode(this.mode).desc; }));
+      this.on('.m-go', () => this.onStart(E.Campaign.quickBattle({ biome: this.biome, human: s.faction, seed: (Math.random() * 1e9) | 0, fleetScale: +(this.fleet || 1), enemyScale: +(this.fleet || 1), difficulty: s.difficulty, mode: this.mode || 'conquest' }), null));
     }
 
     // ── campaign ───────────────────────────────────────────────
@@ -151,6 +154,8 @@
           <div class="m-sec">Armor</div><div class="c-grid">${Object.values(E.VEHICLES).map(d => unit(d, 'Hover vehicle')).join('')}</div>
           <div class="m-sec">Starfighters</div><div class="c-grid">${Object.values(E.FIGHTERS).map(d => unit(d, 'Starfighter')).join('')}</div>
           <div class="m-sec">Capital ships</div><div class="c-grid">${Object.values(E.CAPITALS).map(d => `<div class="c-unit"><b>${d.name}</b><em>Capital ship · ${d.len} m</em><p>${d.desc}</p><div class="c-stats">${stat('Hull', d.hp)}${stat('Shield', d.shield)}${stat('Batteries', d.main + ' + ' + d.side * 2)}</div></div>`).join('')}</div>
+          <div class="m-sec">Battle modes</div><div class="c-grid">${E.MODE_LIST.map(m => `<div class="c-unit"><b>${m.name}</b><em>${m.bleed ? 'Reinforcement bleed' : 'No bleed'}</em><p>${m.desc}</p></div>`).join('')}</div>
+          <div class="m-sec">Commendations</div><div class="c-grid">${E.Commendations.LIST.map(m => `<div class="c-unit"><b>★ ${m.name}</b><em>Medal</em><p>${m.desc}</p></div>`).join('')}</div>
           <div class="m-sec">Worlds</div><div class="c-grid">${E.BIOME_LIST.map(b => `<div class="c-unit"><b>${b.name}</b><em>${b.theme} · ${b.challenge.name}</em><p>${b.desc}</p></div>`).join('')}</div>
         </div>`);
       this.bindCommon();

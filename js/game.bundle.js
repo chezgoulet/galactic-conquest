@@ -1888,7 +1888,7 @@
   }
   function quickBattle(opts) {
     opts = opts || {};
-    return { biome: opts.biome || 'desert', human: opts.human || 'aegis', seed: opts.seed !== undefined ? opts.seed : 1, fleetScale: opts.fleetScale || 1, enemyScale: opts.enemyScale || 1, difficulty: opts.difficulty || 'normal' };
+    return { biome: opts.biome || 'desert', human: opts.human || 'aegis', seed: opts.seed !== undefined ? opts.seed : 1, fleetScale: opts.fleetScale || 1, enemyScale: opts.enemyScale || 1, difficulty: opts.difficulty || 'normal', mode: opts.mode || 'conquest' };
   }
 
   // Career ranks from lifetime score.
@@ -2071,6 +2071,24 @@
     aaMaxAlt: 900,           // AA batteries ignore aircraft above this height over the ground
     mineArm: 1.6, mineR: 3.4,
   };
+})(window.E = window.E || {});
+
+// ---- js/data/modes.js ----
+// Battle modes: small, data-driven rule tweaks a quick battle can pick. All of
+// them reuse the command-post / reinforcement loop — a mode only changes the
+// ticket pool and how hard holding posts bleeds the enemy, so the sim, AI and UI
+// need no special cases.
+(function (E) {
+  'use strict';
+  const MODES = {
+    conquest:    { id: 'conquest',    name: 'Conquest',    ticketMul: 1,    bleed: true,  bleedMul: 1,   desc: 'Hold more command posts than the enemy to drain their reinforcements. The standard battle.' },
+    blitz:       { id: 'blitz',       name: 'Blitz',       ticketMul: 0.65, bleed: true,  bleedMul: 2,   desc: 'Fewer reinforcements and a much faster bleed: a short, sharp fight.' },
+    annihilation:{ id: 'annihilation',name: 'Annihilation',ticketMul: 1.2,  bleed: false, bleedMul: 1,   desc: 'Command posts do not bleed a side. Break the enemy army to win.' },
+    onslaught:   { id: 'onslaught',   name: 'Onslaught',   ticketMul: 1.5,  bleed: true,  bleedMul: 0.5, desc: 'Deep reserves and a slow bleed: a war of attrition.' },
+  };
+  E.MODES = MODES;
+  E.MODE_LIST = ['conquest', 'blitz', 'annihilation', 'onslaught'].map((id) => MODES[id]);
+  E.mode = (id) => MODES[id] || MODES.conquest;
 })(window.E = window.E || {});
 
 // ---- js/data/space.js ----
@@ -5990,9 +6008,9 @@
     const A = w.teams.aegis, Vd = w.teams.verdant;
     for (const [T, O] of [[A, Vd], [Vd, A]]) {
       const diff = O.cps - T.cps;
-      if (diff > 0 && O.cps >= 3) {
+      if (w.cfg.bleed !== false && diff > 0 && O.cps >= 3) {
         T.bleedT += dt;
-        const iv = diff >= 4 ? 1.2 : diff === 3 ? 2.2 : diff === 2 ? 4 : 7;
+        const iv = (diff >= 4 ? 1.2 : diff === 3 ? 2.2 : diff === 2 ? 4 : 7) / (w.cfg.bleedMul || 1);
         if (T.bleedT >= iv) { T.bleedT = 0; T.tickets = Math.max(0, T.tickets - 1); }
       } else T.bleedT = 0;
     }
@@ -7493,7 +7511,9 @@
       this.players = {};
       this.diff = opts.difficulty || 'normal';
       const D = DIFF[this.diff] || DIFF.normal;
-      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat, fog: !!opts.fog };
+      const M = (E.MODES && E.MODES[opts.mode]) || (E.MODES && E.MODES.conquest) || { ticketMul: 1, bleed: true, bleedMul: 1 };
+      this.mode = M.id || 'conquest';
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat, fog: !!opts.fog, mode: this.mode, bleed: M.bleed, bleedMul: M.bleedMul || 1 };
       // per-side scale + campaign bonuses
       const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
       const bon = (f) => (opts.bonus && opts.bonus[f]) || {};
@@ -7503,7 +7523,7 @@
         const enemyT = (f !== this.human && !opts.pvp) ? D.enemyTickets : 1;
         this.teams[f] = {
           id: f, scale: s, bonus: b,
-          tickets: Math.round(E.FORCE.tickets * (0.75 + s * 0.25) * enemyT * (b.ticketMul || 1) + (b.reserves ? 40 : 0)), startTickets: 0,
+          tickets: Math.round((E.FORCE.tickets * (0.75 + s * 0.25) * enemyT * (b.ticketMul || 1) + (b.reserves ? 40 : 0)) * M.ticketMul), startTickets: 0,
           infCap: Math.round(E.FORCE.infantry * (0.8 + s * 0.2)),
           waveT: 4, vehT: { skiff: 20, tank: 35 }, airT: 10, bleedT: 0, strikeT: b.orbital ? 25 : 60,
           kills: 0, deaths: 0, captures: 0, cps: 0, fleetHp: opts.fleetHp && opts.fleetHp[f] ? opts.fleetHp[f].slice() : null,
@@ -14654,13 +14674,16 @@
           <div class="m-sec">Battlefield</div>
           <div class="m-biomes">${E.BIOME_LIST.map(b => `<button class="m-biome${b.id === this.biome ? ' on' : ''}" data-b="${b.id}"><i style="${planetStyle(b.id)}"></i><b>${b.name}</b><em>${b.theme} · ${b.challenge.name}</em></button>`).join('')}</div>
           <div class="m-row"><div><div class="m-sec">Difficulty</div>${this.diffSeg(s.difficulty)}</div>
+            <div><div class="m-sec">Mode</div><div class="seg m-mode">${E.MODE_LIST.map(m => `<button data-m="${m.id}" class="${(this.mode || 'conquest') === m.id ? 'on' : ''}" title="${m.desc}">${m.name}</button>`).join('')}</div></div>
             <div><div class="m-sec">Fleets</div><div class="seg m-fleet">${[['1', 'Skirmish'], ['1.4', 'Battle'], ['1.8', 'Armada']].map(([v, n]) => `<button data-v="${v}" class="${(this.fleet || '1') === v ? 'on' : ''}">${n}</button>`).join('')}</div></div>
             <button class="gc-btn primary m-go">Launch Battle</button></div>
+          <p class="m-lead m-mode-desc">${(E.mode(this.mode || 'conquest')).desc}</p>
         </div>`);
       this.bindCommon();
       this.el.querySelectorAll('.m-biome').forEach(b => b.addEventListener('click', () => { this.biome = b.dataset.b; this.el.querySelectorAll('.m-biome').forEach(x => x.classList.toggle('on', x === b)); }));
       this.el.querySelectorAll('.m-fleet button').forEach(b => b.addEventListener('click', () => { this.fleet = b.dataset.v; this.el.querySelectorAll('.m-fleet button').forEach(x => x.classList.toggle('on', x === b)); }));
-      this.on('.m-go', () => this.onStart(E.Campaign.quickBattle({ biome: this.biome, human: s.faction, seed: (Math.random() * 1e9) | 0, fleetScale: +(this.fleet || 1), enemyScale: +(this.fleet || 1), difficulty: s.difficulty }), null));
+      this.el.querySelectorAll('.m-mode button').forEach(b => b.addEventListener('click', () => { this.mode = b.dataset.m; this.el.querySelectorAll('.m-mode button').forEach(x => x.classList.toggle('on', x === b)); const d = this.q('.m-mode-desc'); if (d) d.textContent = E.mode(this.mode).desc; }));
+      this.on('.m-go', () => this.onStart(E.Campaign.quickBattle({ biome: this.biome, human: s.faction, seed: (Math.random() * 1e9) | 0, fleetScale: +(this.fleet || 1), enemyScale: +(this.fleet || 1), difficulty: s.difficulty, mode: this.mode || 'conquest' }), null));
     }
 
     // ── campaign ───────────────────────────────────────────────
@@ -14713,6 +14736,8 @@
           <div class="m-sec">Armor</div><div class="c-grid">${Object.values(E.VEHICLES).map(d => unit(d, 'Hover vehicle')).join('')}</div>
           <div class="m-sec">Starfighters</div><div class="c-grid">${Object.values(E.FIGHTERS).map(d => unit(d, 'Starfighter')).join('')}</div>
           <div class="m-sec">Capital ships</div><div class="c-grid">${Object.values(E.CAPITALS).map(d => `<div class="c-unit"><b>${d.name}</b><em>Capital ship · ${d.len} m</em><p>${d.desc}</p><div class="c-stats">${stat('Hull', d.hp)}${stat('Shield', d.shield)}${stat('Batteries', d.main + ' + ' + d.side * 2)}</div></div>`).join('')}</div>
+          <div class="m-sec">Battle modes</div><div class="c-grid">${E.MODE_LIST.map(m => `<div class="c-unit"><b>${m.name}</b><em>${m.bleed ? 'Reinforcement bleed' : 'No bleed'}</em><p>${m.desc}</p></div>`).join('')}</div>
+          <div class="m-sec">Commendations</div><div class="c-grid">${E.Commendations.LIST.map(m => `<div class="c-unit"><b>★ ${m.name}</b><em>Medal</em><p>${m.desc}</p></div>`).join('')}</div>
           <div class="m-sec">Worlds</div><div class="c-grid">${E.BIOME_LIST.map(b => `<div class="c-unit"><b>${b.name}</b><em>${b.theme} · ${b.challenge.name}</em><p>${b.desc}</p></div>`).join('')}</div>
         </div>`);
       this.bindCommon();

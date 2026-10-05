@@ -512,7 +512,7 @@
   }
   function quickBattle(opts) {
     opts = opts || {};
-    return { biome: opts.biome || 'desert', human: opts.human || 'aegis', seed: opts.seed !== undefined ? opts.seed : 1, fleetScale: opts.fleetScale || 1, enemyScale: opts.enemyScale || 1, difficulty: opts.difficulty || 'normal' };
+    return { biome: opts.biome || 'desert', human: opts.human || 'aegis', seed: opts.seed !== undefined ? opts.seed : 1, fleetScale: opts.fleetScale || 1, enemyScale: opts.enemyScale || 1, difficulty: opts.difficulty || 'normal', mode: opts.mode || 'conquest' };
   }
 
   // Career ranks from lifetime score.
