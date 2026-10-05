@@ -47,6 +47,7 @@ test('online: game client end-to-end against the real service', async () => {
   const baseUrl = `http://127.0.0.1:${app.server.address().port}`;
   svc = { close: async () => { await app.close(); await db.close(); } };
 
+  const ls = shimLS();
   const E = load([
   ...load.files(['core', 'data']),
     ...load.files(['sim']),
@@ -54,7 +55,7 @@ test('online: game client end-to-end against the real service', async () => {
   ], {
     fetch, WebSocket, RTCPeerConnection: MockRTC,
     location: { protocol: 'http:', host: '127.0.0.1', href: baseUrl },
-    localStorage: shimLS(),
+    localStorage: ls,
     navigator: { platform: 'web' },
   });
 
@@ -66,6 +67,15 @@ test('online: game client end-to-end against the real service', async () => {
   assert.ok(oc.token, 'signup returns a token');
   await oc.connect();
   assert.ok(oc.user, 'authenticated (hello)');
+
+  // ── cloud save round-trip through the game client ──
+  ls.setItem('gc.profile.v1', JSON.stringify({ xp: 7, battles: 1, wins: 0, kills: 3 }));
+  const cloudSaved = await oc.cloudSave('save');
+  assert.ok(cloudSaved.version >= 1, 'cloud save wrote a slot');
+  ls.removeItem('gc.profile.v1');
+  const cloudLoaded = await oc.cloudLoad('save');
+  assert.strictEqual(cloudLoaded.data.profile.xp, 7, 'cloud load restores the profile');
+  assert.ok((await oc.cloudList()).some((s) => s.key === 'save'), 'cloud list shows the slot');
 
   // ── guest account + connect ──
   const og = new E.Online.OnlineClient();

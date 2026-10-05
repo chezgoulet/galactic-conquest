@@ -20,6 +20,7 @@ import { buildModerationRoutes } from './moderation/routes.js';
 import { buildHub } from './realtime/hub.js';
 import { Results } from './realtime/results.js';
 import { buildResultsRoutes } from './realtime/routes.js';
+import { buildCloudRoutes } from './cloud/routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +77,7 @@ export async function buildApp(cfg, db) {
   buildModerationRoutes(app);
   buildAdminRoutes(app);
   buildResultsRoutes(app);
+  buildCloudRoutes(app);
 
   // admin console (vanilla JS) served at /admin
   app.register(staticPlugin, { root: path.join(__dirname, '..', 'public'), prefix: '/', decorateReply: false });

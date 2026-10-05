@@ -102,6 +102,19 @@
       el('.mp-o-login').addEventListener('click', () => doLogin(false));
       el('.mp-o-signup').addEventListener('click', () => doLogin(true));
 
+      // cloud saves (need a signed-in account; independent of the lobby)
+      const cmsg = (t, bad) => { const m = el('.mp-o-cloud-msg'); if (m) { m.textContent = t || ''; m.classList.toggle('bad', !!bad); } };
+      el('.mp-o-cloud-save').addEventListener('click', () => {
+        if (!oc.token) return cmsg('Sign in first.', true);
+        cmsg('Backing up…');
+        oc.cloudSave('save').then((r) => cmsg('Save backed up (slot v' + r.version + ', ' + r.size + ' bytes).')).catch((e) => cmsg(e.message || 'backup failed', true));
+      });
+      el('.mp-o-cloud-load').addEventListener('click', () => {
+        if (!oc.token) return cmsg('Sign in first.', true);
+        cmsg('Restoring…');
+        oc.cloudLoad('save').then(({ data }) => { if (this.menu && this.menu.loadSaveData) this.menu.loadSaveData(data); cmsg('Save restored from the cloud.'); }).catch((e) => cmsg(e.message || 'restore failed', true));
+      });
+
       // lobby pane
       const showLobby = () => { el('[data-opane="account"]').hidden = true; el('[data-opane="lobby"]').hidden = false; renderLobby(); };
       const showAccount = () => { el('[data-opane="lobby"]').hidden = true; el('[data-opane="account"]').hidden = false; };
@@ -256,6 +269,14 @@
           <button class="gc-btn primary mp-o-start" disabled style="flex:1">Start battle</button>
         </div>
         <div class="mp-col" style="margin-top:10px"><button class="gc-btn mp-leave" hidden>Leave battle</button></div>
+      </div>
+      <div class="mp-col" style="margin-top:14px">
+        <div class="m-sec">Cloud saves</div>
+        <div class="mp-row2">
+          <button class="gc-btn mp-o-cloud-save">Back up save</button>
+          <button class="gc-btn mp-o-cloud-load">Restore save</button>
+        </div>
+        <p class="mp-msg mp-o-cloud-msg"></p>
       </div>
     </div>`;
 
