@@ -83,8 +83,14 @@
       const k = 1 - Math.exp(-dt * 20), T = this.terrain, seen = this._seen || (this._seen = new Set());
       seen.clear();
       const cam = this.scene.camera.position;
+      // fog of war: on an authoritative fogged world hide enemies the local team
+      // cannot see. A guest's RemoteWorld is already filtered by the host, so it
+      // needs no second pass (and lacks the full unit set to compute one).
+      const remote = !!(world.isRemote && world.isRemote());
+      const vis = (!remote && world.cfg && world.cfg.fog && E.SIM.vision) ? E.SIM.vision(world, world.human) : null;
       for (const u of world.units) {
         if (!u.alive) continue;
+        if (vis && !vis.has(u.id)) continue;
         seen.add(u.id);
         const r = this.record(u), m = r.m, g = m.root;
         r.u = u;

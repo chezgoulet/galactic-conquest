@@ -37,6 +37,7 @@
     let best = null, bs = 0, thr = null, td = 1e9;
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const dx = e.pos.x - u.pos.x, dy = e.pos.y - u.pos.y, dz = e.pos.z - u.pos.z, d = Math.hypot(dx, dy, dz);
       if (e.kind === 'fighter' && e.fl && d < 700 && d < td && !e.inCloud) {   // is somebody pointing at me?
         if ((e.fl.fx * -dx + e.fl.fy * -dy + e.fl.fz * -dz) / (d || 1) > 0.86) { thr = e; td = d; }
@@ -301,6 +302,7 @@
     if (a.cas) {   // a call-in: hit something near the marked point, or the point itself
       for (const e of w.units) {
         if (!e.alive || e.team === u.team || e.kind === 'fighter' || e.kind === 'capital') continue;
+        if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
         const dx = e.pos.x - a.cas.x, dz = e.pos.z - a.cas.z, d2 = dx * dx + dz * dz;
         if (d2 > 130 * 130) continue;
         const s = (pref[e.kind] || 0.2) * (e.type === 'tank' ? 1.5 : 1) / (Math.sqrt(d2) + 40);
@@ -311,6 +313,7 @@
     }
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       let pf = pref[e.kind]; if (!pf) continue;
       if (e.kind === 'vehicle' && e.type === 'tank') pf *= 1.3;
       const d = V.distance(u.pos, e.pos);

@@ -35,7 +35,7 @@
       this.players = {};
       this.diff = opts.difficulty || 'normal';
       const D = DIFF[this.diff] || DIFF.normal;
-      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat };
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat, fog: !!opts.fog };
       // per-side scale + campaign bonuses
       const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
       const bon = (f) => (opts.bonus && opts.bonus[f]) || {};

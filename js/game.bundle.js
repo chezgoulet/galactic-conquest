@@ -2030,6 +2030,7 @@
     let best = null, bs = 0; S.eyeOf(u, tmpA);
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg && w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const pf = pref[e.kind]; if (!pf) continue;
       const d = V.distance(u.pos, e.pos);
       if (d > sense && e.kind !== 'capital') continue;
@@ -2539,6 +2540,7 @@
     let best = null, bs = 0, thr = null, td = 1e9;
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const dx = e.pos.x - u.pos.x, dy = e.pos.y - u.pos.y, dz = e.pos.z - u.pos.z, d = Math.hypot(dx, dy, dz);
       if (e.kind === 'fighter' && e.fl && d < 700 && d < td && !e.inCloud) {   // is somebody pointing at me?
         if ((e.fl.fx * -dx + e.fl.fy * -dy + e.fl.fz * -dz) / (d || 1) > 0.86) { thr = e; td = d; }
@@ -2803,6 +2805,7 @@
     if (a.cas) {   // a call-in: hit something near the marked point, or the point itself
       for (const e of w.units) {
         if (!e.alive || e.team === u.team || e.kind === 'fighter' || e.kind === 'capital') continue;
+        if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
         const dx = e.pos.x - a.cas.x, dz = e.pos.z - a.cas.z, d2 = dx * dx + dz * dz;
         if (d2 > 130 * 130) continue;
         const s = (pref[e.kind] || 0.2) * (e.type === 'tank' ? 1.5 : 1) / (Math.sqrt(d2) + 40);
@@ -2813,6 +2816,7 @@
     }
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       let pf = pref[e.kind]; if (!pf) continue;
       if (e.kind === 'vehicle' && e.type === 'tank') pf *= 1.3;
       const d = V.distance(u.pos, e.pos);
@@ -4299,7 +4303,7 @@
     // go after enemy structures when the line is ours, and objective sites
     if (w.cps.filter(c => c.owner === sq.team).length >= 3 && R.next() < 0.22) {
       let tgt = null, bd = 1e9;
-      for (const e of w.units) if (e.alive && e.team === en && e.kind === 'turret' && (e.type === 'shieldgen' || e.type === 'ioncannon' || e.type === 'aabattery')) { const d = Math.hypot(e.pos.x - sq.cx, e.pos.z - sq.cz); if (d < bd) { bd = d; tgt = e; } }
+      for (const e of w.units) if (e.alive && e.team === en && e.kind === 'turret' && (e.type === 'shieldgen' || e.type === 'ioncannon' || e.type === 'aabattery')) { if (w.cfg.fog && !S.visible(w, sq.team, e)) continue; const d = Math.hypot(e.pos.x - sq.cx, e.pos.z - sq.cz); if (d < bd) { bd = d; tgt = e; } }
       if (tgt) { best = { x: tgt.pos.x, z: tgt.pos.z, r: 22, cp: -1, uid: tgt.id }; bs = 1; }
     }
     for (const o of w.objs) {
@@ -4365,6 +4369,7 @@
     const focus = sq ? sq.focus : 0, T = w.terrain;
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const pf = pr[keyOf(e)]; if (!pf) continue;
       let d = V.distance(u.pos, e.pos);
       if (e.kind === 'infantry' && e.m && e.m.stealth && e.stance === 1 && Math.hypot(e.vel.x, e.vel.z) < 1.5) d *= 1 + 2 * e.m.stealth;
@@ -4512,18 +4517,18 @@
         if (!e.alive || e.team === u.team) continue;
         const d2 = V.distance2(e.pos, u.pos);
         if (e.kind === 'infantry' && d2 < 40 * 40) { infNear = true; break; }
-        if (e.kind === 'turret' && d2 < sd && !S.chargeOn(w, e.id) && (e.type === 'shieldgen' || e.type === 'aabattery' || e.type === 'ioncannon' || e.type === 'nest' || e.type === 'battery')) { sd = d2; st = e; }
+        if (e.kind === 'turret' && d2 < sd && !S.chargeOn(w, e.id) && (e.type === 'shieldgen' || e.type === 'aabattery' || e.type === 'ioncannon' || e.type === 'nest' || e.type === 'battery') && (!w.cfg.fog || S.visible(w, u.team, e))) { sd = d2; st = e; }
       }
       if (st && !infNear) { ai.mode = 'sabotage'; ai.job = st.id; ai.dx = st.pos.x; ai.dz = st.pos.z; ai.dr = st.r + 2.5; return true; }
     }
     // lay mines on the approach to a post we hold
-    if (w.t > (ai.mineT || 0) && u.altT <= 0 && w.units.some(e => e.alive && e.team !== u.team && e.kind === 'vehicle')) {
+    if (w.t > (ai.mineT || 0) && u.altT <= 0 && w.units.some(e => e.alive && e.team !== u.team && e.kind === 'vehicle' && (!w.cfg.fog || S.visible(w, u.team, e)))) {
       const mine = w.cps.filter(c => c.owner === u.team), en = w.cps.filter(c => c.owner !== u.team);
       if (mine.length && en.length) {
         let bc = null, bd = 1e9;
         for (const c of mine) { const d = Math.hypot(c.pos.x - u.pos.x, c.pos.z - u.pos.z); if (d < bd) { bd = d; bc = c; } }
         let ec = null, ed = 1e9; for (const c of en) { const d = Math.hypot(c.pos.x - bc.pos.x, c.pos.z - bc.pos.z); if (d < ed) { ed = d; ec = c; } }
-        for (const e of w.units) if (e.alive && e.team !== u.team && e.kind === 'vehicle') { const d = Math.hypot(e.pos.x - bc.pos.x, e.pos.z - bc.pos.z); if (d < ed && d < 500) { ed = d; ec = { pos: e.pos }; } }
+        for (const e of w.units) if (e.alive && e.team !== u.team && e.kind === 'vehicle' && (!w.cfg.fog || S.visible(w, u.team, e))) { const d = Math.hypot(e.pos.x - bc.pos.x, e.pos.z - bc.pos.z); if (d < ed && d < 500) { ed = d; ec = { pos: e.pos }; } }
         const dx = ec.pos.x - bc.pos.x, dz = ec.pos.z - bc.pos.z, dl = Math.hypot(dx, dz) || 1, off = bc.r + 10 + R.next() * 24, lat = (R.next() - 0.5) * 30;
         ai.mode = 'mine'; ai.dx = bc.pos.x + dx / dl * off - dz / dl * lat; ai.dz = bc.pos.z + dz / dl * off + dx / dl * lat; ai.dr = 2.5; ai.job = -1;
         if (bd < 160) return true;
@@ -4665,6 +4670,7 @@
     const aa = u.type === 'aa';
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const pf = pr[keyOf(e)]; if (!pf) continue;
       const d = V.distance(u.pos, e.pos);
       let range = W.range;
@@ -5363,6 +5369,7 @@
     let best = null, bs = 0; S.eyeOf(u, tmpA);
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       let s = 0, d = V.distance(u.pos, e.pos);
       if (D.aa) {
         if (e.kind !== 'fighter') continue;
@@ -5740,7 +5747,7 @@
         // never waste the salvo on ground under an enemy shield dome
         const open = (pos) => !(S.shielded && S.shielded(w, en, pos));
         for (const c of w.cps) if (c.n[en] > bn && c.n[f] === 0 && open(c.pos)) { bn = c.n[en]; best = c; }
-        if (!best) { const tk = w.units.find(u => u.alive && u.team === en && (u.type === 'tank' || u.kind === 'turret') && open(u.pos)); if (tk && w.rng.next() < 0.6) best = tk; }
+        if (!best) { const tk = w.units.find(u => u.alive && u.team === en && (u.type === 'tank' || u.kind === 'turret') && open(u.pos) && (!w.cfg.fog || S.visible(w, f, u))); if (tk && w.rng.next() < 0.6) best = tk; }
         if (best) S.strike(w, f, best.pos, null);
       }
     }
@@ -6189,7 +6196,9 @@
   const flank = (u, p) => ((p.x - u.pos.x) * -Math.cos(u.yaw) + (p.z - u.pos.z) * Math.sin(u.yaw)) >= 0 ? 1 : -1;
   // focus = enemy ship to hit with the main battery and torpedoes; fsys = subsystem to aim at
   function capitalGuns(w, u, dt, focus, fsys, boost) {
-    const L = lists(w), en = u.team === 'aegis' ? 'verdant' : 'aegis', caps = L.caps[en], fi = L.fighters[en];
+    const L = lists(w), en = u.team === 'aegis' ? 'verdant' : 'aegis';
+    let caps = L.caps[en], fi = L.fighters[en];
+    if (w.cfg.fog) { const v = S.vision(w, u.team); caps = caps.filter((e) => v.has(e.id)); fi = fi.filter((e) => v.has(e.id)); }
     const dm = E.DOCTRINE[u.team].capDmg, wm = weaponMul(u) * (u.captured ? 0.7 : 1);
     const bridge = u.sys.bridge.alive, braced = u.braceT > 0;
     if (focus && (!focus.alive || focus.team === u.team)) focus = null;
@@ -6292,7 +6301,7 @@
   function needsEscort(w, team) { return capsOf(w, team).filter(u => u.needsEscort); }
   function bombTargets(w, team) { // enemy ships' live subsystems whose shield arc is open or generator dead
     const out = [];
-    for (const c of capsOf(w, team === 'aegis' ? 'verdant' : 'aegis')) for (const n of ORDER) if (c.sys[n].alive) out.push({ ship: c, sys: n, pos: sysPos(c, n, {}), exposed: !c.sys.shield.alive || shieldFrac(c) < 0.3 });
+    for (const c of capsOf(w, team === 'aegis' ? 'verdant' : 'aegis')) { if (w.cfg.fog && !S.visible(w, team, c)) continue; for (const n of ORDER) if (c.sys[n].alive) out.push({ ship: c, sys: n, pos: sysPos(c, n, {}), exposed: !c.sys.shield.alive || shieldFrac(c) < 0.3 }); }
     return out;
   }
 
@@ -6867,7 +6876,7 @@
   function firstAlive(tg, list) { for (const n of list) if (tg.sys[n].alive) return n; return ''; }
   function think(w, u) {
     const ai = u.ai, team = u.team, st = w.space ? w.space[team] : null, stage = st ? st.stage : 1;
-    const en = S.capsOf(w, enemyTeam(team)), bridge = u.sys.bridge.alive;
+    const en = S.capsOf(w, enemyTeam(team)).filter((e) => !w.cfg.fog || S.visible(w, team, e)), bridge = u.sys.bridge.alive;
     if (!u.retreat && !u.stranded && en.length && crippled(u)) {
       if (u.sys.engines.alive) beginRetreat(w, u, 'crippled'); else { u.stranded = true; w.events.push({ type: 'shipStranded', uid: u.id, team, pos: V.clone(u.pos) }); }
     }
@@ -7202,6 +7211,63 @@
   E.ARENA = ARENA;
 })(window.E = window.E || {});
 
+// ---- js/sim/vision.js ----
+// Fog of war: which enemies a team can actually see. A team always sees its own
+// units; an enemy is seen only when a friendly observer is within sight range
+// with line of sight (and it is not masked by cloud), or when it sits inside a
+// command post the team owns. Sight ranges are a little longer than weapon
+// ranges so a unit can usually see what it is about to shoot. This is the single
+// source of truth shared by the networked snapshot filter, the renderer and
+// (when fog is enabled) the AI. Deterministic: pure distance/LOS lookups, no RNG.
+(function (E) {
+  'use strict';
+  const S = E.SIM = E.SIM || {};
+  const SIGHT = {
+    infantry: { _: 340, sniper: 560 },
+    vehicle: { _: 540, aa: 950 },
+    fighter: { _: 1500, interceptor: 1700, bomber: 1000, strike: 1200, gunship: 900 },
+    capital: { _: 3000, frigate: 2400, cruiser: 2600, carrier: 2800, dreadnought: 3200 },
+    turret: { _: 520, aabattery: 1000, battery: 720, shieldgen: 420, ioncannon: 1350, nest: 420 },
+  };
+  const CP_SIGHT = 700;
+
+  function sightOf(u) { const t = SIGHT[u.kind]; if (!t) return 500; return t[u.type] || t._ || 500; }
+
+  // Set of unit ids visible to `team`, cached for the current tick.
+  function vision(w, team) {
+    if (w._visTick !== w.tickN) { w._visTick = w.tickN; w._vis = {}; }
+    const cached = w._vis[team];
+    if (cached) return cached;
+    const out = new Set(), observers = [];
+    for (const u of w.units) if (u.alive && u.team === team) { out.add(u.id); observers.push(u); }
+    const tmpB = {};
+    for (const e of w.units) {
+      if (!e.alive || e.team === team) continue;
+      let vis = false;
+      for (const o of observers) {
+        const r = sightOf(o), dx = e.pos.x - o.pos.x, dy = e.pos.y - o.pos.y, dz = e.pos.z - o.pos.z;
+        if (dx * dx + dy * dy + dz * dz > r * r) continue;
+        if (S.los && !S.los(w, o.pos, S.centerOf(e, tmpB))) continue;
+        if (S.cloudBlocks && S.cloudBlocks(o.pos, e.pos)) continue;
+        vis = true; break;
+      }
+      if (!vis && w.cps) for (const c of w.cps) {
+        if (c.owner !== team) continue;
+        const dx = e.pos.x - c.pos.x, dz = e.pos.z - c.pos.z, r = CP_SIGHT + (c.r || 0);
+        if (dx * dx + dz * dz <= r * r) { vis = true; break; }
+      }
+      if (vis) out.add(e.id);
+    }
+    w._vis[team] = out;
+    return out;
+  }
+
+  // True when `team` may perceive entity `e` (own units and nulls are always seen).
+  function visible(w, team, e) { return !e || e.team === team || vision(w, team).has(e.id); }
+
+  Object.assign(S, { vision, visible, sightOf, CP_SIGHT });
+})(window.E = window.E || {});
+
 // ---- js/sim/world.js ----
 // The World: owns the match state. Pure and deterministic — it draws only from
 // this.rng and never touches THREE or the DOM. Rendering, audio and networking
@@ -7240,7 +7306,7 @@
       this.players = {};
       this.diff = opts.difficulty || 'normal';
       const D = DIFF[this.diff] || DIFF.normal;
-      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat };
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat, fog: !!opts.fog };
       // per-side scale + campaign bonuses
       const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
       const bon = (f) => (opts.bonus && opts.bonus[f]) || {};
@@ -7345,14 +7411,18 @@
   function R2(x) { return Math.round(x * 100) / 100; }
   function R3(x) { return Math.round(x * 1000) / 1000; }
 
-  function pack(w, ev, prev) {
+  // `vis` (optional) is the set of unit ids a team may see (E.SIM.vision). When
+  // present only those rows are transmitted, and projectiles are cut to the
+  // team's own plus those fired by a visible unit — the fog-of-war filter.
+  function pack(w, ev, prev, vis, team) {
     const now = {};
-    const U = w.units.map((u) => { now[u.id] = urow(u); return now[u.id]; });
+    const U = [];
+    for (const u of w.units) { if (vis && !vis.has(u.id)) continue; const r = urow(u); now[u.id] = r; U.push(r); }
     const CP = w.cps.map((c) => [c.id, c.owner || 0, R2(c.cap || 0), c.contested ? 1 : 0, c.n.aegis, c.n.verdant]);
     const TEAM = {};
     for (const f of E.TEAMS) { const T = w.teams[f]; TEAM[f] = [T.tickets, T.startTickets, T.cps, T.kills, T.deaths, R1(T.strikeT)]; }
     const PL = Object.values(w.players).map((p) => [p.id, p.name, p.kills, p.deaths, p.captures, Math.round(p.score), p.unitId || 0, p.team]);
-    const PJ = (w.projectiles || []).map((p) => [p.kind, R1(p.pos.x), R1(p.pos.y), R1(p.pos.z), R1(p.vel.x), R1(p.vel.y), R1(p.vel.z), p.team, R1(p.scale || 1)]);
+    const PJ = (w.projectiles || []).filter((p) => !vis || p.team === team || vis.has(p.uid)).map((p) => [p.kind, R1(p.pos.x), R1(p.pos.y), R1(p.pos.z), R1(p.vel.x), R1(p.vel.y), R1(p.vel.z), p.team, R1(p.scale || 1)]);
     const STR = (w.strikes || []).map((s) => [R1(s.pos.x), R1(s.pos.y), R1(s.pos.z)]);
     const full = !prev;
     let delta;
@@ -7514,16 +7584,18 @@
       this._evBuf = this._evBuf.concat(events).slice(-EV_RING);
       if (now - this._last < SNAP_MS) return;
       this._last = now;
-      const s = pack(w, this._evBuf, this._prev);
-      const fullStr = JSON.stringify(strip(pack(w, this._evBuf, null)));
-      const str = JSON.stringify(strip(s));
+      const fog = !!(w.cfg && w.cfg.fog);
       for (const [id, info] of this._guests) {
+        // fog of war: each guest only receives what their faction can see, so a
+        // delta must be built against that guest's own previous (filtered) view
+        const vis = fog ? E.SIM.vision(w, info.faction) : null;
+        const s = pack(w, this._evBuf, info.U, vis, info.faction);
         const behind = s.full || (s.n - (info.lastN || 0)) >= LAG_FULL;
-        this.relay.send(id, behind ? fullStr : str);
-        info.lastN = s.n;
+        const data = behind ? strip(pack(w, this._evBuf, null, vis, info.faction)) : strip(s);
+        this.relay.send(id, JSON.stringify(data));
+        info.U = s._U; info.lastN = s.n;
       }
       this._evBuf = [];
-      this._prev = s._U;
     }
 
     onPeer(m) {
@@ -7531,7 +7603,7 @@
       const f = E.opponent(w.human);   // 2-player slice: guest takes the opposing faction
       const pid = 'p' + (this._nextPid++);
       w.addPlayer(pid, f, m.name || 'Commander');
-      this._guests.set(m.id, { pid, faction: f, lastN: 0 });
+      this._guests.set(m.id, { pid, faction: f, lastN: 0, U: null });
       this.relay.send(m.id, JSON.stringify({ t: 'meta', biome: w.planet.biome, seed: w.planet.seed, scale: w.planet.scale || 1, faction: f, name: m.name || 'Commander', pid }));
       E.bus.emit('net:peer', { id: m.id, faction: f });
     }
@@ -11169,8 +11241,14 @@
       const k = 1 - Math.exp(-dt * 20), T = this.terrain, seen = this._seen || (this._seen = new Set());
       seen.clear();
       const cam = this.scene.camera.position;
+      // fog of war: on an authoritative fogged world hide enemies the local team
+      // cannot see. A guest's RemoteWorld is already filtered by the host, so it
+      // needs no second pass (and lacks the full unit set to compute one).
+      const remote = !!(world.isRemote && world.isRemote());
+      const vis = (!remote && world.cfg && world.cfg.fog && E.SIM.vision) ? E.SIM.vision(world, world.human) : null;
       for (const u of world.units) {
         if (!u.alive) continue;
+        if (vis && !vis.has(u.id)) continue;
         seen.add(u.id);
         const r = this.record(u), m = r.m, g = m.root;
         r.u = u;
@@ -13833,7 +13911,7 @@
         g.querySelector('.mp-code').textContent = m.room;
         g.querySelector('.mp-url').textContent = pageUrl();
         this.menu.hide();
-        game.start(Object.assign({ role: 'host', relay }, opts));
+        game.start(Object.assign({ role: 'host', relay, pvp: true, fog: true }, opts));
         this.session = new E.Net.NetSession();
         this.session.host(game);
         E.bus.emit('lan:hosted', { code: m.room });
@@ -13959,7 +14037,7 @@
       const p = oc._pending || { biome: 'desert', seed: (Math.random() * 1e9) | 0 };
       const game = this._game();
       this.menu.hide();
-      game.start({ role: 'host', relay: oc.relay, biome: p.biome, seed: p.seed, human: 'aegis' });
+      game.start({ role: 'host', relay: oc.relay, biome: p.biome, seed: p.seed, human: 'aegis', pvp: true, fog: true });
       this.session = new E.Net.NetSession();
       this.session.host(game);
       // reconcile the result for Elo when the match ends

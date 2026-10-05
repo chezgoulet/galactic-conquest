@@ -42,14 +42,18 @@
   function R2(x) { return Math.round(x * 100) / 100; }
   function R3(x) { return Math.round(x * 1000) / 1000; }
 
-  function pack(w, ev, prev) {
+  // `vis` (optional) is the set of unit ids a team may see (E.SIM.vision). When
+  // present only those rows are transmitted, and projectiles are cut to the
+  // team's own plus those fired by a visible unit — the fog-of-war filter.
+  function pack(w, ev, prev, vis, team) {
     const now = {};
-    const U = w.units.map((u) => { now[u.id] = urow(u); return now[u.id]; });
+    const U = [];
+    for (const u of w.units) { if (vis && !vis.has(u.id)) continue; const r = urow(u); now[u.id] = r; U.push(r); }
     const CP = w.cps.map((c) => [c.id, c.owner || 0, R2(c.cap || 0), c.contested ? 1 : 0, c.n.aegis, c.n.verdant]);
     const TEAM = {};
     for (const f of E.TEAMS) { const T = w.teams[f]; TEAM[f] = [T.tickets, T.startTickets, T.cps, T.kills, T.deaths, R1(T.strikeT)]; }
     const PL = Object.values(w.players).map((p) => [p.id, p.name, p.kills, p.deaths, p.captures, Math.round(p.score), p.unitId || 0, p.team]);
-    const PJ = (w.projectiles || []).map((p) => [p.kind, R1(p.pos.x), R1(p.pos.y), R1(p.pos.z), R1(p.vel.x), R1(p.vel.y), R1(p.vel.z), p.team, R1(p.scale || 1)]);
+    const PJ = (w.projectiles || []).filter((p) => !vis || p.team === team || vis.has(p.uid)).map((p) => [p.kind, R1(p.pos.x), R1(p.pos.y), R1(p.pos.z), R1(p.vel.x), R1(p.vel.y), R1(p.vel.z), p.team, R1(p.scale || 1)]);
     const STR = (w.strikes || []).map((s) => [R1(s.pos.x), R1(s.pos.y), R1(s.pos.z)]);
     const full = !prev;
     let delta;
@@ -211,16 +215,18 @@
       this._evBuf = this._evBuf.concat(events).slice(-EV_RING);
       if (now - this._last < SNAP_MS) return;
       this._last = now;
-      const s = pack(w, this._evBuf, this._prev);
-      const fullStr = JSON.stringify(strip(pack(w, this._evBuf, null)));
-      const str = JSON.stringify(strip(s));
+      const fog = !!(w.cfg && w.cfg.fog);
       for (const [id, info] of this._guests) {
+        // fog of war: each guest only receives what their faction can see, so a
+        // delta must be built against that guest's own previous (filtered) view
+        const vis = fog ? E.SIM.vision(w, info.faction) : null;
+        const s = pack(w, this._evBuf, info.U, vis, info.faction);
         const behind = s.full || (s.n - (info.lastN || 0)) >= LAG_FULL;
-        this.relay.send(id, behind ? fullStr : str);
-        info.lastN = s.n;
+        const data = behind ? strip(pack(w, this._evBuf, null, vis, info.faction)) : strip(s);
+        this.relay.send(id, JSON.stringify(data));
+        info.U = s._U; info.lastN = s.n;
       }
       this._evBuf = [];
-      this._prev = s._U;
     }
 
     onPeer(m) {
@@ -228,7 +234,7 @@
       const f = E.opponent(w.human);   // 2-player slice: guest takes the opposing faction
       const pid = 'p' + (this._nextPid++);
       w.addPlayer(pid, f, m.name || 'Commander');
-      this._guests.set(m.id, { pid, faction: f, lastN: 0 });
+      this._guests.set(m.id, { pid, faction: f, lastN: 0, U: null });
       this.relay.send(m.id, JSON.stringify({ t: 'meta', biome: w.planet.biome, seed: w.planet.seed, scale: w.planet.scale || 1, faction: f, name: m.name || 'Commander', pid }));
       E.bus.emit('net:peer', { id: m.id, faction: f });
     }
