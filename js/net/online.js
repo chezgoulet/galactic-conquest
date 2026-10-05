@@ -45,6 +45,8 @@
       this.role = null; this.room = null;
       this.roster = new Map(); // id -> {name, ready, rating}
       this.ticket = null; this.match = null; this.ranked = false;
+      this.mode = 'team';
+      this._wantOpen = false; this._reconnectT = null; this._reconnects = 0;
       this._handlers = {};
     }
     on(ev, fn) { (this._handlers[ev] = this._handlers[ev] || []).push(fn); return this; }
@@ -74,6 +76,7 @@
 
     // ── connection ─────────────────────────────────────────────
     connect() {
+      this._wantOpen = true;
       const relay = new E.Relay();
       this.relay = relay;
       relay.on('hosted', (m) => { this.role = 'host'; this.room = m.room; this.roster.set(0, { name: this.name(), ready: true, host: true }); this.emit('hosted', m); this.emit('lobby', this._lobby()); });
@@ -82,14 +85,16 @@
       relay.on('left', (m) => { this.roster.delete(m.id); this.emit('lobby', this._lobby()); });
       relay.on('ready', (m) => { if (m.state) { for (const g of m.state.guests) this.roster.set(g.id, Object.assign(this.roster.get(g.id) || {}, { name: this.roster.get(g.id) && this.roster.get(g.id).name, ready: g.ready })); } this.emit('lobby', this._lobby()); });
       relay.on('ticket', (m) => { this.ticket = m.ticket; this.match = m.match; this.ranked = !!m.ranked; this.emit('ticket', m); });
+      relay.on('lobbies', (m) => this.emit('lobbies', m.rooms || []));
       relay.on('closed', () => this.emit('closed'));
       relay.on('error', (m) => this.emit('error', m));
-      relay.on('sigclose', () => this.emit('sigclose'));
+      relay.on('sigclose', () => { this.emit('sigclose'); this._scheduleReconnect(); });
       return relay.connect(this.baseUrl + '/ws').then(() => relay.auth(this.token, '0.1.0', 'web')).then(() => { this.user = relay.user || this.user; this.emit('signed', { user: relay.user, ice: relay.ice.length }); return this; });
     }
-    host(mode) { if (this.relay) this.relay.host(this.name(), { mode: mode || 'team' }); }
-    join(code, mode) { if (this.relay) this.relay.join(code, this.name(), { mode: mode || 'team' }); }
-    quick(mode) { if (this.relay) this.relay.queue(mode || 'team'); }
+    host(mode) { this.mode = mode || 'team'; if (this.relay) this.relay.host(this.name(), { mode: this.mode }); }
+    join(code, mode) { this.mode = mode || 'team'; if (this.relay) this.relay.join(code, this.name(), { mode: this.mode }); }
+    quick(mode) { this.mode = mode || 'team'; if (this.relay) this.relay.queue(this.mode); }
+    browse() { if (this.relay) this.relay.browse(); }
     ready(on) { if (this.relay) this.relay.ready(on); }
     start(rated) { if (this.relay) this.relay.start(rated); }
     // post the match result for reconciliation + Elo (both players call this)
@@ -113,7 +118,29 @@
       const host = this.roster.get(0) || { name: this.name() };
       return { role: this.role, room: this.room, host: host.name, guests, allReady: guests.length === 0 || guests.every((g) => g.ready) };
     }
-    close() { if (this.relay) { try { this.relay.close(); } catch {} this.relay = null; } this.role = null; this.room = null; this.roster.clear(); this.ticket = null; }
+    close() {
+      this._wantOpen = false;
+      if (this._reconnectT) { clearTimeout(this._reconnectT); this._reconnectT = null; }
+      if (this.relay) { try { this.relay.close(); } catch {} this.relay = null; }
+      this.role = null; this.room = null; this.roster.clear(); this.ticket = null;
+    }
+    // After an unexpected signaling drop, re-establish the socket with backoff and,
+    // if we were a guest, rejoin the same room. The P2P match itself rides on the
+    // WebRTC DataChannel and survives the signaling server going away.
+    _scheduleReconnect() {
+      if (!this._wantOpen || this._reconnectT) return;
+      if (this._reconnects >= 5) { this.emit('reconnectFailed'); return; }
+      const delay = Math.min(15000, 1000 * Math.pow(2, this._reconnects++));
+      this.emit('reconnecting', { attempt: this._reconnects, delay });
+      this._reconnectT = setTimeout(() => {
+        this._reconnectT = null;
+        this.connect().then(() => {
+          this._reconnects = 0;
+          this.emit('reconnected');
+          if (this.role === 'guest' && this.room && this.relay) this.relay.join(this.room, this.name(), { mode: this.mode });
+        }).catch(() => this._scheduleReconnect());
+      }, delay);
+    }
   }
 
   E.Online = { OnlineClient, defaultServiceUrl };

@@ -125,6 +125,11 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     await page.click('.m-item[data-a="controls"]'); await page.waitForSelector('.ct-tbl');
     await page.click('.ct-tab[data-k="capital"]'); await page.waitForTimeout(200); await shot('30-controls.png');
     ok((await page.$$('.ct-tab')).length === 8, 'controls reference lists every unit kind and the gamepad');
+    // ── multiplayer screen exposes the server browser and cloud controls ──
+    await page.click('.m-back'); await page.waitForSelector('.m-item[data-a="mp"]');
+    await page.click('.m-item[data-a="mp"]'); await page.waitForSelector('.mp-tab-online');
+    await page.click('.mp-tab-online'); await page.waitForSelector('.mp-o-browse');
+    ok(await page.$('.mp-o-browse') !== null && await page.$('.mp-o-cloud-save') !== null, 'multiplayer exposes the server browser and cloud save controls');
     const fatal = errors.filter(e => !/favicon|manifest|404/.test(e));
     ok(fatal.length === 0, 'no page console errors ' + JSON.stringify(fatal));
     console.log('ui.flow ok');

@@ -138,9 +138,25 @@
         if (lb.role === 'guest') ready.textContent = selfReady ? 'Un-ready' : 'Ready';
       };
 
+      oc.on('hosted', showLobby);
+      oc.on('joined', showLobby);
       oc.on('lobby', renderLobby);
       oc.on('error', (m) => msg(m.msg || 'error', true));
-      oc.on('sigclose', () => msg('Lost the online service', true));
+      oc.on('sigclose', () => cmsg('Lost the online service — reconnecting…', true));
+      oc.on('reconnecting', (m) => cmsg('Reconnecting… (attempt ' + m.attempt + ')'));
+      oc.on('reconnected', () => cmsg('Reconnected.'));
+      oc.on('reconnectFailed', () => cmsg('Could not reconnect — reopen Multiplayer.', true));
+
+      // public server browser
+      const renderRooms = (rooms) => {
+        const box = el('.mp-o-rooms'); if (!box) return;
+        box.innerHTML = rooms.length
+          ? rooms.map((r) => `<div class="mp-o-guest"><span>${esc(r.host || 'Host')} · ${esc(r.mode)}</span><button class="gc-btn mp-o-rjoin" data-room="${r.code}">Join ${r.code} (${r.players}/${r.max})</button></div>`).join('')
+          : '<div class="mp-o-guest dim">no open rooms</div>';
+        box.querySelectorAll('.mp-o-rjoin').forEach((b) => b.addEventListener('click', () => { if (!oc.token) return cmsg('Sign in first.', true); oc.join(b.dataset.room); }));
+      };
+      el('.mp-o-browse').addEventListener('click', () => { if (!oc.token) return cmsg('Sign in first.', true); oc.browse(); });
+      oc.on('lobbies', renderRooms);
 
       el('.mp-o-do-host').addEventListener('click', () => { oc.host('team'); });
       el('.mp-o-join').addEventListener('click', () => {
@@ -165,7 +181,7 @@
         // guest: the host's NetSession sends `meta`; _bootGuest boots the game
       });
 
-      el('.mp-o-leave').addEventListener('click', () => { this.leave(); });
+      const leaveBtn = el('.mp-o-leave'); if (leaveBtn) leaveBtn.addEventListener('click', () => { this.leave(); });
 
       // if already signed in, go straight to the lobby
       if (oc.token) showLobby(); else showAccount();
@@ -277,6 +293,11 @@
           <button class="gc-btn mp-o-cloud-load">Restore save</button>
         </div>
         <p class="mp-msg mp-o-cloud-msg"></p>
+      </div>
+      <div class="mp-col" style="margin-top:14px">
+        <div class="m-sec">Open rooms</div>
+        <button class="gc-btn mp-o-browse" style="width:100%">Browse rooms</button>
+        <div class="mp-o-rooms"></div>
       </div>
     </div>`;
 

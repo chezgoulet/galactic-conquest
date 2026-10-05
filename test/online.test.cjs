@@ -89,6 +89,12 @@ test('online: game client end-to-end against the real service', async () => {
   const hosted = await wait(oc, 'hosted');
   assert.match(hosted.room, /^[A-Z0-9]{5}$/, '5-letter room code');
 
+  // ── server browser lists the open room ──
+  const roomsP = wait(og, 'lobbies');
+  og.browse();
+  const rooms = await roomsP;
+  assert.ok(rooms.some((r) => r.code === hosted.room && r.players === 1), 'server browser lists the open room');
+
   // ── guest joins ──
   og.join(hosted.room);
   const joined = await wait(og, 'joined');
@@ -124,4 +130,12 @@ test('online: game client end-to-end against the real service', async () => {
   assert.ok(mine.some((m) => m.status === 'confirmed' && m.winner_team === 'aegis'), 'guest sees the confirmed match');
   const guest = await app.db.queryOne('SELECT rating FROM users WHERE email = $1', ['guest@ex.com']);
   assert.notStrictEqual(guest.rating, 1200, 'guest Elo moved');
+
+  // ── signaling reconnect: a dropped socket is re-established automatically ──
+  const reconnecting = wait(og, 'reconnecting', 6000);
+  const reconnected = wait(og, 'reconnected', 10000);
+  og.relay.ws.close();
+  await reconnecting;
+  await reconnected;
+  assert.ok(og.relay && og.relay.ws && og.relay.ws.readyState === 1, 'guest re-established the signaling socket');
 });
