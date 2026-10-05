@@ -12,7 +12,8 @@
   const N = (t, d, o, x) => M.noiseSrc(t, d, o, x), T = (t, d, o, x) => M.tone(t, d, o, x);
   const K = {};
   // def(kind, {bus, ref, max, send, dur}, builder(t, out, rate))
-  const def = (kinds, meta, fn) => { for (const k of [].concat(kinds)) K[k] = Object.assign({ fn, dur: 0.5, ref: 25, max: 500, bus: 'weapons' }, meta); };
+  const def = (kinds, meta, fn) => { for (const k of [].concat(kinds)) K[k] = Object.assign({ fn, dur: 0.5, ref: 25, max: 500, bus: 'weapons', g: 1 }, meta); };
+  const TRIM = {"rifle": 6, "repeater": 7, "pulse": 5, "laser": 6, "chin": 7, "pd": 8, "bolthit": 6, "hitmark": 4, "covbreak": 3, "footstep": 3, "ui": 4, "launch": 3, "pod": 2, "spore": 3, "shield": 2, "hover": 3, "whiz": 2, "weld": 3, "mine": 3, "tool": 3, "beep": 2, "deny": 2, "select": 2, "move": 2, "build": 2, "ops": 2, "bombaway": 2, "kill": 2, "hurt": 2, "rocket": 1.6, "shieldhit": 1.8};
 
   // ── infantry small arms ──
   def(['rifle', 'blaster'], { ref: 18, max: 380, dur: 0.3, send: 0.12 }, (t, o, r) => {
@@ -150,7 +151,7 @@
       if (!M.ready) return null;
       const k = K[kind] || K[SFX.alias[kind]]; if (!k) return null;
       o = o || {}; const c = M.ctx; t = t || c.currentTime;
-      const out = M.voice({ bus: o.bus || k.bus, ref: k.ref, max: k.max, send: k.send, interior: o.interior != null ? o.interior : k.interior, vol: vol == null ? 1 : vol, prio: o.prio }, o.pos, k.dur);
+      const out = M.voice({ bus: o.bus || k.bus, ref: k.ref, max: k.max, send: k.send, interior: o.interior != null ? o.interior : k.interior, vol: (vol == null ? 1 : vol) * (TRIM[kind] || k.g || 1), prio: o.prio }, o.pos, k.dur);
       if (!out) return null;
       k.fn(t, out, o.rate || R(0.94, 1.06));
       return out;
@@ -174,21 +175,21 @@
   });
   // aircraft: thrust rumble, turbine whine, afterburner roar, wind and buffet. dens 0 = vacuum: only the cockpit hum remains
   mk('jet', (c, out, o) => {
-    const rum = nz(c, true, 'lowpass', 220, 0.8, out, 0.7), whine = osc(c, 'sawtooth', 300, out, 0.025), w2 = osc(c, 'triangle', 600, out, 0.02), roar = nz(c, false, 'lowpass', 1100, 0.6, out, 0), wind = nz(c, false, 'bandpass', 900, 0.7, out, 0), buf = nz(c, true, 'lowpass', 120, 1, out, 0), hum = osc(c, 'sine', 118, out, 0);
+    const rum = nz(c, true, 'lowpass', 220, 0.8, out, 0.45), whine = osc(c, 'sawtooth', 300, out, 0.025), w2 = osc(c, 'triangle', 600, out, 0.02), roar = nz(c, false, 'lowpass', 1100, 0.6, out, 0), wind = nz(c, false, 'bandpass', 900, 0.7, out, 0), buf = nz(c, true, 'lowpass', 120, 1, out, 0), hum = osc(c, 'sine', 118, out, 0);
     const lfo = c.createOscillator(); lfo.frequency.value = 11; const lg = c.createGain(); lg.gain.value = 0.5; lfo.connect(lg); lg.connect(buf.g.gain); lfo.start();
     return { nodes: [rum.s, whine.o, w2.o, roar.s, wind.s, buf.s, hum.o, lfo], set(p) { const thr = p.thr || 0, d = p.dens == null ? 1 : p.dens, bo = p.boost ? 1 : 0, sp = Math.min(1, (p.speed || 0) / 220);
-      smooth(rum.g.gain, (0.15 + thr * 0.5) * (0.35 + 0.65 * d) + (d < 0.1 ? 0.12 : 0), c); smooth(rum.f.frequency, 160 + thr * 260, c);
+      smooth(rum.g.gain, (0.15 + thr * 0.5) * (0.35 + 0.65 * d) + (d < 0.1 ? 0.04 : 0), c); smooth(rum.f.frequency, 160 + thr * 260, c);
       smooth(whine.o.frequency, 260 + thr * 700 + bo * 300, c); smooth(whine.g.gain, (0.012 + thr * 0.03) * (0.3 + 0.7 * d), c); smooth(w2.o.frequency, 520 + thr * 1400, c); smooth(w2.g.gain, 0.01 * (0.3 + 0.7 * d), c);
       smooth(roar.g.gain, bo * 0.5 * (0.4 + 0.6 * d) + 0.04 * thr, c); smooth(roar.f.frequency, 700 + bo * 1600, c);
       smooth(wind.g.gain, Math.pow(sp, 1.4) * 0.55 * Math.pow(d, 1.2), c); smooth(wind.f.frequency, 500 + sp * 2800, c);
-      smooth(buf.g.gain, (p.buffet || 0) * 0.5 * (0.3 + 0.7 * d), c); smooth(hum.g.gain, d < 0.15 ? 0.18 : 0.04, c);
+      smooth(buf.g.gain, (p.buffet || 0) * 0.5 * (0.3 + 0.7 * d), c); smooth(hum.g.gain, d < 0.15 ? 0.1 : 0.03, c);
       smooth(out.gain, p.gain == null ? 0.75 : p.gain, c); } };
   });
   // capital ship: reactor rumble and structure-borne hum (level follows throttle / engine power)
   mk('reactor', (c, out) => {
-    const a = osc(c, 'sine', 38, out, 0.5), b = osc(c, 'sine', 57, out, 0.3), cc = osc(c, 'triangle', 114, out, 0.05), r = nz(c, true, 'lowpass', 140, 0.7, out, 0.45);
+    const a = osc(c, 'sine', 38, out, 0.3), b = osc(c, 'sine', 57, out, 0.18), cc = osc(c, 'triangle', 114, out, 0.05), r = nz(c, true, 'lowpass', 140, 0.7, out, 0.22);
     const lfo = c.createOscillator(); lfo.frequency.value = 0.23; const lg = c.createGain(); lg.gain.value = 0.15; lfo.connect(lg); lg.connect(a.g.gain); lfo.start();
-    return { nodes: [a.o, b.o, cc.o, r.s, lfo], set(p) { const th = p.thr || 0, pw = p.engines == null ? 0.33 : p.engines; smooth(a.o.frequency, 36 + th * 8 + pw * 8, c); smooth(b.o.frequency, 54 + th * 10, c); smooth(r.g.gain, 0.25 + th * 0.4 + pw * 0.3, c); smooth(cc.g.gain, 0.02 + (p.core || 0) * 0.08, c); smooth(out.gain, p.gain == null ? 0.7 : p.gain, c); } };
+    return { nodes: [a.o, b.o, cc.o, r.s, lfo], set(p) { const th = p.thr || 0, pw = p.engines == null ? 0.33 : p.engines; smooth(a.o.frequency, 36 + th * 8 + pw * 8, c); smooth(b.o.frequency, 54 + th * 10, c); smooth(r.g.gain, 0.15 + th * 0.25 + pw * 0.2, c); smooth(cc.g.gain, 0.02 + (p.core || 0) * 0.08, c); smooth(out.gain, p.gain == null ? 0.7 : p.gain, c); } };
   });
   // wind bed for the ground (biome ambience); gain follows density
   mk('wind', (c, out) => {
