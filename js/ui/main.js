@@ -21,7 +21,7 @@
   function attract() {
     const biomes = ['desert', 'jungle', 'urban', 'tundra', 'volcanic', 'gas'];
     const b = window.GC_ATTRACT_BIOME || biomes[(Math.random() * biomes.length) | 0];
-    loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: b, seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); menu.show(); window.__GC_MENU__ = true; });
+    loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: b, seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); menu.show(); window.__GC_MENU__ = true; if (E.Onboarding) E.Onboarding.maybeShow(); });
   }
 
   function battle(opts, ctx) {

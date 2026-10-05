@@ -24,6 +24,7 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     ? ['--no-sandbox', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-features=WebGPU']
     : ['--use-angle=swiftshader', '--no-sandbox', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  await page.setViewportSize({ width: 1280, height: 720 });
   page.setDefaultTimeout(240000);
   await page.addInitScript((backend) => { window.GC_QUALITY = 'low'; window.GC_NO_GOV = true; window.GC_RES = 0.5; window.GC_PB_SPEED = 0.35; localStorage.clear(); if (backend === 'webgl') window.GC_BACKEND = 'webgl'; }, BACKEND);
   const errors = [];
@@ -35,6 +36,17 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     await page.goto(`http://localhost:${port}/index.html`, { waitUntil: 'load' });
     await page.waitForFunction('window.__GC_MENU__ === true || window.__GC_ERROR__', null, { polling: 300 });
     ok(!(await page.evaluate('window.__GC_ERROR__')), 'game booted');
+    // ── first-run onboarding ──
+    await page.waitForSelector('.ob-root');
+    ok(await page.$('.ob-card .ob-step') !== null, 'first-run onboarding is shown');
+    await page.click('.ob-controls'); await page.waitForSelector('.ob-ctl .ct-tbl');
+    ok(true, 'onboarding expands the controls reference');
+    await page.click('.ob-go'); await page.waitForSelector('.ob-root', { state: 'detached' });
+    // ── accessibility: colour-blind palette ──
+    await page.click('.m-item[data-a="settings"]'); await page.waitForSelector('.s-pal');
+    await page.selectOption('.s-pal', 'colorblind');
+    ok(await page.evaluate('document.documentElement.classList.contains("cb") && GC.E.Palette.col.aegis === GC.E.Palette.palettes.colorblind.aegis'), 'colour-blind palette applies');
+    await page.click('.m-back'); await page.waitForSelector('.m-item[data-a="campaign"]');
     // ── new campaign ──
     await page.click('.m-item[data-a="campaign"]');
     await page.waitForSelector('.m-go'); await shot('01b-new-campaign.png');

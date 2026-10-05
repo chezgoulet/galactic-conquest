@@ -544,6 +544,35 @@
   E.hash2 = hash2;
 })(window.E = window.E || {});
 
+// ---- js/core/palette.js ----
+// Team colours, in one place so a colour-blind palette can swap them at runtime.
+// `E.Palette.col` is a stable object the HUD, campaign map and CSS variables read
+// from; `apply(name)` mutates it in place and pushes the team colours onto the
+// document, so redraws pick the new palette up without any other wiring. The 3D
+// faction art keeps its own palette; identity is also carried by shape, glyph
+// and flag, never by colour alone.
+(function (E) {
+  'use strict';
+  const PALETTES = {
+    default:    { aegis: '#ff6a3a', verdant: '#3df0b0', neutral: '#b9c6dd', free: '#9aa8c0', objective: '#ffd04a' },
+    // Okabe-Ito warm/cool pair: vermillion vs blue stays distinct under red-green
+    // colour blindness and on low-contrast panels.
+    colorblind: { aegis: '#d55e00', verdant: '#2f9be0', neutral: '#c8d4e8', free: '#9aa8c0', objective: '#ffd04a' },
+  };
+  const col = Object.assign({}, PALETTES.default);
+  function apply(name) {
+    const p = PALETTES[name] || PALETTES.default;
+    Object.assign(col, p);
+    if (typeof document !== 'undefined' && document.documentElement) {
+      const r = document.documentElement.style;
+      r.setProperty('--aegis', col.aegis);
+      r.setProperty('--verdant', col.verdant);
+      document.documentElement.classList.toggle('cb', name === 'colorblind');
+    }
+  }
+  E.Palette = { col, apply, names: Object.keys(PALETTES), palettes: PALETTES };
+})(window.E = window.E || {});
+
 // ---- js/core/rng.js ----
 // Deterministic, seedable RNG. The simulation must never touch Math.random; it
 // draws from a world RNG so a match is fully reproducible from (config, seed,
@@ -12163,7 +12192,7 @@
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const css = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
   const VW = 1300, VH = 780, MX = 150, MY = 90;
-  const OWN = { aegis: '#ff6a3a', verdant: '#3df0b0', free: '#9aa8c0' };
+  const OWN = E.Palette.col;
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const TRAIT = { shipyard: 'M-7 5 L-9 -1 L-3 -1 L-3 -6 L3 -6 L3 -1 L9 -1 L7 5 Z', refinery: 'M0 -8 C5 -1 7 2 7 4 A7 7 0 0 1 -7 4 C-7 2 -5 -1 0 -8 Z', fortress: 'M-8 7 L-8 -3 L-5 -3 L-5 -6 L-2 -6 L-2 -3 L2 -3 L2 -6 L5 -6 L5 -3 L8 -3 L8 7 Z' };
   const SHIP_ABBR = { frigate: 'FR', cruiser: 'CR', carrier: 'CV', dreadnought: 'DN' };
@@ -12906,7 +12935,7 @@
 // prefers-reduced-motion (CSS), and everything scales with the root font size.
 (function (E) {
   'use strict';
-  const COL = { aegis: '#ff6a3a', verdant: '#3df0b0', neutral: '#b9c6dd' };
+  const COL = E.Palette.col;
   const TNAME = { aegis: 'CONCORD', verdant: 'PACT' };
   const CLASSES = ['trooper', 'heavy', 'sniper', 'medic', 'engineer'];
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -13653,8 +13682,8 @@
 
   // ── shared: settings panel ──
   const SettingsUI = {
-    defaults: { quality: 'auto', sens: 1, invertY: false, reduceMotion: false, uiScale: 1, mix: { master: 0.8, music: 0.8, sfx: 0.9, ambience: 0.8, voice: 1, ui: 0.8 } },
-    ensure(s) { s.mix = Object.assign({}, SettingsUI.defaults.mix, s.mix || {}, s.volume != null && !(s.mix && s.mix.master != null) ? { master: s.volume } : {}); if (s.uiScale == null) s.uiScale = 1; return s; },
+    defaults: { quality: 'auto', sens: 1, invertY: false, reduceMotion: false, uiScale: 1, palette: 'default', highContrast: false, mix: { master: 0.8, music: 0.8, sfx: 0.9, ambience: 0.8, voice: 1, ui: 0.8 } },
+    ensure(s) { s.mix = Object.assign({}, SettingsUI.defaults.mix, s.mix || {}, s.volume != null && !(s.mix && s.mix.master != null) ? { master: s.volume } : {}); if (s.uiScale == null) s.uiScale = 1; if (s.palette == null) s.palette = 'default'; return s; },
     html(s) {
       SettingsUI.ensure(s);
       return `<div class="st-grid">
@@ -13663,6 +13692,8 @@
         <label>Interface size<input type="range" class="s-ui" min="0.8" max="1.5" step="0.05" value="${s.uiScale}"><output>${Math.round(s.uiScale * 100)}%</output></label>
         <label class="chk"><input type="checkbox" class="s-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
         <label class="chk"><input type="checkbox" class="s-rm"${s.reduceMotion ? ' checked' : ''}> Reduce motion (no pulsing, flashing or sliding)</label>
+        <label>Team colours<select class="s-pal">${(E.Palette ? E.Palette.names : ['default']).map(n => `<option value="${n}"${(s.palette || 'default') === n ? ' selected' : ''}>${n === 'colorblind' ? 'Colour-blind safe' : 'Default'}</option>`).join('')}</select></label>
+        <label class="chk"><input type="checkbox" class="s-hc"${s.highContrast ? ' checked' : ''}> High-contrast interface</label>
       </div>
       <div class="st-sub">AUDIO MIX</div>
       <div class="st-grid">${MIX.map(([k, n]) => `<label>${n}<input type="range" data-mix="${k}" min="0" max="1" step="0.05" value="${s.mix[k]}"><output>${Math.round(s.mix[k] * 100)}</output></label>`).join('')}</div>`;
@@ -13670,7 +13701,9 @@
     apply(s) {
       SettingsUI.ensure(s);
       document.documentElement.classList.toggle('rm', !!s.reduceMotion);
+      document.documentElement.classList.toggle('hc', !!s.highContrast);
       document.documentElement.style.setProperty('--ui-scale', String(s.uiScale));
+      if (E.Palette) E.Palette.apply(s.palette || 'default');
       if (E.Mixer) E.Mixer.setMix(s.mix);
     },
     bind(root, s, game) {
@@ -13681,6 +13714,8 @@
       rng('.s-sens', 'sens', v => v.toFixed(2)); rng('.s-ui', 'uiScale', v => Math.round(v * 100) + '%');
       q('.s-inv').addEventListener('change', (e) => { s.invertY = e.target.checked; save(); });
       q('.s-rm').addEventListener('change', (e) => { s.reduceMotion = e.target.checked; save(); });
+      const pal = q('.s-pal'); if (pal) pal.addEventListener('change', (e) => { s.palette = e.target.value; save(); });
+      const hc = q('.s-hc'); if (hc) hc.addEventListener('change', (e) => { s.highContrast = e.target.checked; save(); });
       root.querySelectorAll('[data-mix]').forEach(r => r.addEventListener('input', (e) => { s.mix[r.dataset.mix] = +e.target.value; if (r.dataset.mix === 'master') s.volume = s.mix.master; e.target.nextElementSibling.textContent = Math.round(+e.target.value * 100); save(); if (E.SFX && r.dataset.mix !== 'music') E.SFX.play(r.dataset.mix === 'voice' ? 'beep' : r.dataset.mix === 'ui' ? 'select' : 'rifle', null, 0.6); }));
     },
   };
@@ -13706,13 +13741,14 @@
     this.setLayer('pause', `
       <div class="p-card">
         <div class="p-title">PAUSED</div>
-        <div class="p-btns"><button class="gc-btn primary p-resume">Resume</button><button class="gc-btn p-ctl">Controls <span class="k">F1</span></button></div>
+        <div class="p-btns"><button class="gc-btn primary p-resume">Resume</button><button class="gc-btn p-ctl">Controls <span class="k">F1</span></button><button class="gc-btn p-how">How to play</button></div>
         <div class="p-set"></div>
         <button class="gc-btn p-quit">${g.role === 'sp' ? 'Abandon Battle' : 'Leave Match'}</button>
       </div>`);
     const L = this.$.layer; L.querySelector('.p-set').innerHTML = SettingsUI.html(s); SettingsUI.bind(L, s, g);
     L.querySelector('.p-resume').addEventListener('click', () => g.togglePause(false));
     L.querySelector('.p-ctl').addEventListener('click', () => this.showControls());
+    const how = L.querySelector('.p-how'); if (how) how.addEventListener('click', () => { if (E.Onboarding) E.Onboarding.show(); });
     L.querySelector('.p-quit').addEventListener('click', () => { g.paused = false; if (g.onQuit) g.onQuit(); });
     const r = L.querySelector('.p-resume'); if (r) r.focus();
   };
@@ -14188,7 +14224,7 @@
   function attract() {
     const biomes = ['desert', 'jungle', 'urban', 'tundra', 'volcanic', 'gas'];
     const b = window.GC_ATTRACT_BIOME || biomes[(Math.random() * biomes.length) | 0];
-    loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: b, seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); menu.show(); window.__GC_MENU__ = true; });
+    loading('GALACTIC CONQUEST', () => { game.start({ role: 'attract', biome: b, seed: (Math.random() * 1e9) | 0, fleetScale: 1.4, enemyScale: 1.4 }); menu.show(); window.__GC_MENU__ = true; if (E.Onboarding) E.Onboarding.maybeShow(); });
   }
 
   function battle(opts, ctx) {
@@ -14407,11 +14443,12 @@
           <div class="m-h"><button class="m-back">‹ Back</button><h1>Settings</h1></div>
           <div class="st-grid"><label>Callsign<input type="text" class="s-name" maxlength="16" value="${esc(s.name)}"></label></div>
           <div class="st-set"></div>
-          <div class="m-row"><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
+          <div class="m-row"><button class="gc-btn s-how">How to play</button><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
         </div>`);
       this.bindCommon();
       this.q('.st-set').innerHTML = E.SettingsUI.html(s); E.SettingsUI.bind(this.q('.st-set'), s, window.GC && window.GC.game);
       this.q('.s-name').addEventListener('input', (e) => { s.name = e.target.value.trim() || 'Commander'; this.saveSettings(); });
+      this.on('.s-how', () => { if (E.Onboarding) E.Onboarding.show(); });
       this.on('.s-ctl', () => this.showControls('settings'));
       this.on('.s-reset', () => { if (confirm('Erase your career and campaign?')) { this.profile = { xp: 0, battles: 0, wins: 0, kills: 0 }; this.campaign = null; this.saveProfile(); this.saveCampaign(); this.show(); } });
     }
@@ -14424,6 +14461,56 @@
 
   E.Menu = Menu;
   E.LS_KEY = LS_KEY;
+})(window.E = window.E || {});
+
+// ---- js/ui/onboarding.js ----
+// First-run onboarding: a short, dismissible "how to play" card shown once, and
+// on demand from the menu or pause screen. Everything it says is also in the
+// Codex and the Controls reference; this just makes sure a new player sees the
+// four things that actually win a match.
+(function (E) {
+  'use strict';
+  const KEY = 'gc.onboard.v1';
+  function seen() { try { return !!localStorage.getItem(KEY); } catch (e) { return true; } }
+  function mark() { try { localStorage.setItem(KEY, '1'); } catch (e) {} }
+
+  function show() {
+    hide();
+    const host = document.getElementById('ui') || document.body;
+    const el = document.createElement('div');
+    el.className = 'ob-root';
+    el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', 'How to play');
+    el.innerHTML = `
+      <div class="ob-card">
+        <div class="ob-title">WELCOME, COMMANDER</div>
+        <p class="ob-lead">A conquest battle is fought on land, in the air and in space. Four things decide it:</p>
+        <div class="ob-grid">
+          <div class="ob-step"><b>1 · Fight</b><p><kbd>WASD</kbd> move, mouse aims, <kbd>LMB</kbd> fires. <kbd>Shift</kbd> sprints, <kbd>Space</kbd> jumps. Use cover — incoming fire suppresses your aim.</p></div>
+          <div class="ob-step"><b>2 · Take any unit</b><p>Aim at a friendly soldier, tank, fighter or the flagship and press <kbd>F</kbd> to take it over. <kbd>M</kbd> opens the commander view to order your army.</p></div>
+          <div class="ob-step"><b>3 · Win the ground</b><p>Stand inside a command post ring to capture it. Hold more posts than the enemy to drain their reinforcements — every death costs one.</p></div>
+          <div class="ob-step"><b>4 · Own the sky</b><p>Fighters and the capital ship duel overhead. Launch, escort, board and knock out subsystems to win space.</p></div>
+        </div>
+        <div class="ob-ctl" hidden></div>
+        <div class="ob-btns">
+          <button class="gc-btn ob-controls">View all controls</button>
+          <button class="gc-btn primary ob-go">Got it</button>
+        </div>
+      </div>`;
+    host.appendChild(el);
+    const close = () => { mark(); hide(); };
+    const go = el.querySelector('.ob-go'); if (go) go.focus({ preventScroll: true });
+    el.querySelector('.ob-go').addEventListener('click', close);
+    el.querySelector('.ob-controls').addEventListener('click', () => {
+      const box = el.querySelector('.ob-ctl');
+      if (box.hidden) { box.innerHTML = E.ControlsUI.html('infantry'); E.ControlsUI.bind(box); box.hidden = false; el.querySelector('.ob-controls').textContent = 'Hide controls'; }
+      else { box.hidden = true; el.querySelector('.ob-controls').textContent = 'View all controls'; }
+    });
+    el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
+  }
+  function hide() { const el = document.querySelector('.ob-root'); if (el) el.remove(); }
+  function maybeShow() { if (!seen()) show(); }
+
+  E.Onboarding = { show, hide, maybeShow, seen, mark, KEY };
 })(window.E = window.E || {});
 
 window.__GC_READY__ = true;

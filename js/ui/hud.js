@@ -10,7 +10,7 @@
 // prefers-reduced-motion (CSS), and everything scales with the root font size.
 (function (E) {
   'use strict';
-  const COL = { aegis: '#ff6a3a', verdant: '#3df0b0', neutral: '#b9c6dd' };
+  const COL = E.Palette.col;
   const TNAME = { aegis: 'CONCORD', verdant: 'PACT' };
   const CLASSES = ['trooper', 'heavy', 'sniper', 'medic', 'engineer'];
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
