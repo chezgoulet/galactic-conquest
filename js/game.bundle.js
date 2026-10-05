@@ -582,22 +582,27 @@
   'use strict';
 
   function mulberry32(a) {
-    return function () {
+    const fn = function () {
       a |= 0; a = (a + 0x6D2B79F5) | 0;
       let t = Math.imul(a ^ (a >>> 15), 1 | a);
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+    // live stream state, so a match can be saved and resumed bit-for-bit
+    fn.getState = () => a >>> 0;
+    fn.setState = (v) => { a = v >>> 0; };
+    return fn;
   }
 
   // Factory: E.RNG(seed) -> deterministic RNG. No `new`; matches E.RNG(seed)
-  // call sites everywhere in the codebase.
+  // call sites everywhere in the codebase. `state`/`set` read and restore the
+  // exact stream position (not just the original seed).
   function RNG(seed) {
     let s = seed >>> 0;
     const f = mulberry32(s);
     return {
-      get state() { return s; },
-      set(seed) { s = seed >>> 0; /* note: cannot rebind mulberry stream here */ return this; },
+      get state() { return f.getState(); },
+      set(seed) { s = seed >>> 0; f.setState(s); return this; },
       next: () => f(),                       // [0,1)
       f: (a, b) => a + (b - a) * f(),
       i: (n) => (f() * n) | 0,               // [0,n)
@@ -623,6 +628,67 @@
   E.mulberry32 = mulberry32;
   // derive a uint seed from a string (for named biomes, faction motifs, etc.)
   E.seedFrom = (str) => E.hashStr(str);
+})(window.E = window.E || {});
+
+// ---- js/core/save.js ----
+// Portable save envelope. The game keeps its settings, career profile, campaign
+// and war-log in localStorage under versioned keys; this bundles all of them into
+// one versioned JSON document so a player can back them up or move between
+// browsers. Pure and browser-free where it can be (the localStorage and download
+// helpers are guarded), so the round-trip is unit-testable in Node.
+(function (E) {
+  'use strict';
+  const VERSION = 1, APP = 'galactic-conquest', FILENAME = 'galactic-conquest-save.json';
+  const KEYS = { settings: 'gc.settings.v2', profile: 'gc.profile.v1', campaign: 'gc.campaign.v2', history: 'gc.camp.hist.v1' };
+
+  function readLS(k) { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : null; } catch (e) { return null; } }
+  function writeLS(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+  function envelope() {
+    return { app: APP, version: VERSION, exported: Date.now(), data: { settings: readLS(KEYS.settings), profile: readLS(KEYS.profile), campaign: readLS(KEYS.campaign), history: readLS(KEYS.history) } };
+  }
+  function exportString() { return JSON.stringify(envelope(), null, 2); }
+
+  // Validate and split an envelope; throws on anything that is not ours or is
+  // from a newer build. Leaves the caller to merge/apply and persist.
+  function parse(str) {
+    let o; try { o = JSON.parse(str); } catch (e) { throw new Error('That file is not valid JSON.'); }
+    if (!o || o.app !== APP) throw new Error('That is not a Galactic Conquest save.');
+    if ((o.version | 0) > VERSION) throw new Error('That save is from a newer version of the game.');
+    const d = (o.data && typeof o.data === 'object') ? o.data : {};
+    return { settings: d.settings || null, profile: d.profile || null, campaign: d.campaign || null, history: d.history || null };
+  }
+  // Parse and write into localStorage. Returns the split data for the caller.
+  function importString(str) {
+    const d = parse(str);
+    writeLS(KEYS.settings, d.settings); writeLS(KEYS.profile, d.profile);
+    writeLS(KEYS.campaign, d.campaign); writeLS(KEYS.history, d.history);
+    return d;
+  }
+
+  // ── browser helpers (no-ops without a DOM) ──────────────────
+  function download(name) {
+    if (typeof document === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) return false;
+    const blob = new Blob([exportString()], { type: 'application/json' });
+    const url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = name || FILENAME; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return true;
+  }
+  function pick(cb) {
+    if (typeof document === 'undefined') return false;
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json,.json';
+    inp.onchange = () => {
+      const f = inp.files && inp.files[0]; if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { try { cb(importString(String(r.result))); } catch (e) { cb(null, e); } };
+      r.readAsText(f);
+    };
+    inp.click();
+    return true;
+  }
+
+  E.Save = { VERSION, APP, FILENAME, KEYS, envelope, exportString, parse, importString, download, pick };
 })(window.E = window.E || {});
 
 // ---- js/core/sfx.js ----
@@ -14311,6 +14377,16 @@
       E.bus.on('settings:changed', () => this.saveSettings());
     }
     saveSettings() { store.set(LS_SET, this.settings); }
+    // apply an imported save envelope back onto the live menu + storage
+    applyImported(d) {
+      const base = { faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 };
+      this.settings = E.SettingsUI.ensure(Object.assign(base, d.settings || {}));
+      E.SettingsUI.apply(this.settings);
+      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, d.profile || {});
+      const c = d.campaign; this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
+      this.saveSettings(); this.saveProfile(); this.saveCampaign();
+      this.showSettings();
+    }
     saveCampaign() { if (this.campaign) store.set(LS_KEY, this.campaign); else { try { localStorage.removeItem(LS_KEY); } catch (e) {} } }
     saveProfile() { store.set(LS_PRO, this.profile); }
     hide() { if (this.el) { this.el.remove(); this.el = null; } }
@@ -14443,13 +14519,15 @@
           <div class="m-h"><button class="m-back">‹ Back</button><h1>Settings</h1></div>
           <div class="st-grid"><label>Callsign<input type="text" class="s-name" maxlength="16" value="${esc(s.name)}"></label></div>
           <div class="st-set"></div>
-          <div class="m-row"><button class="gc-btn s-how">How to play</button><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
+          <div class="m-row"><button class="gc-btn s-how">How to play</button><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-exp">Export save</button><button class="gc-btn s-imp">Import save</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
         </div>`);
       this.bindCommon();
       this.q('.st-set').innerHTML = E.SettingsUI.html(s); E.SettingsUI.bind(this.q('.st-set'), s, window.GC && window.GC.game);
       this.q('.s-name').addEventListener('input', (e) => { s.name = e.target.value.trim() || 'Commander'; this.saveSettings(); });
       this.on('.s-how', () => { if (E.Onboarding) E.Onboarding.show(); });
       this.on('.s-ctl', () => this.showControls('settings'));
+      this.on('.s-exp', () => { if (E.Save) E.Save.download(); });
+      this.on('.s-imp', () => { if (E.Save) E.Save.pick((d, err) => { if (err || !d) return alert((err && err.message) || 'Could not read that save.'); this.applyImported(d); }); });
       this.on('.s-reset', () => { if (confirm('Erase your career and campaign?')) { this.profile = { xp: 0, battles: 0, wins: 0, kills: 0 }; this.campaign = null; this.saveProfile(); this.saveCampaign(); this.show(); } });
     }
     showControls(from) {

@@ -46,6 +46,10 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     await page.click('.m-item[data-a="settings"]'); await page.waitForSelector('.s-pal');
     await page.selectOption('.s-pal', 'colorblind');
     ok(await page.evaluate('document.documentElement.classList.contains("cb") && GC.E.Palette.col.aegis === GC.E.Palette.palettes.colorblind.aegis'), 'colour-blind palette applies');
+    const dl = page.waitForEvent('download', { timeout: 20000 }).catch(() => null);
+    await page.click('.s-exp');
+    const down = await dl;
+    ok(down && /galactic-conquest-save\.json/.test(down.suggestedFilename()), 'export save downloads a save file');
     await page.click('.m-back'); await page.waitForSelector('.m-item[data-a="campaign"]');
     // ── new campaign ──
     await page.click('.m-item[data-a="campaign"]');

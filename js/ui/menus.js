@@ -20,6 +20,16 @@
       E.bus.on('settings:changed', () => this.saveSettings());
     }
     saveSettings() { store.set(LS_SET, this.settings); }
+    // apply an imported save envelope back onto the live menu + storage
+    applyImported(d) {
+      const base = { faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 };
+      this.settings = E.SettingsUI.ensure(Object.assign(base, d.settings || {}));
+      E.SettingsUI.apply(this.settings);
+      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, d.profile || {});
+      const c = d.campaign; this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
+      this.saveSettings(); this.saveProfile(); this.saveCampaign();
+      this.showSettings();
+    }
     saveCampaign() { if (this.campaign) store.set(LS_KEY, this.campaign); else { try { localStorage.removeItem(LS_KEY); } catch (e) {} } }
     saveProfile() { store.set(LS_PRO, this.profile); }
     hide() { if (this.el) { this.el.remove(); this.el = null; } }
@@ -152,13 +162,15 @@
           <div class="m-h"><button class="m-back">‹ Back</button><h1>Settings</h1></div>
           <div class="st-grid"><label>Callsign<input type="text" class="s-name" maxlength="16" value="${esc(s.name)}"></label></div>
           <div class="st-set"></div>
-          <div class="m-row"><button class="gc-btn s-how">How to play</button><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
+          <div class="m-row"><button class="gc-btn s-how">How to play</button><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-exp">Export save</button><button class="gc-btn s-imp">Import save</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
         </div>`);
       this.bindCommon();
       this.q('.st-set').innerHTML = E.SettingsUI.html(s); E.SettingsUI.bind(this.q('.st-set'), s, window.GC && window.GC.game);
       this.q('.s-name').addEventListener('input', (e) => { s.name = e.target.value.trim() || 'Commander'; this.saveSettings(); });
       this.on('.s-how', () => { if (E.Onboarding) E.Onboarding.show(); });
       this.on('.s-ctl', () => this.showControls('settings'));
+      this.on('.s-exp', () => { if (E.Save) E.Save.download(); });
+      this.on('.s-imp', () => { if (E.Save) E.Save.pick((d, err) => { if (err || !d) return alert((err && err.message) || 'Could not read that save.'); this.applyImported(d); }); });
       this.on('.s-reset', () => { if (confirm('Erase your career and campaign?')) { this.profile = { xp: 0, battles: 0, wins: 0, kills: 0 }; this.campaign = null; this.saveProfile(); this.saveCampaign(); this.show(); } });
     }
     showControls(from) {
