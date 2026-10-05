@@ -10,6 +10,7 @@
   'use strict';
 
   const CHUNK = 15000, HELLO_WAIT = 6000, RECOVER_MS = 15000, SOFT_WAIT = 2500;
+  const FRAME = '\u0001', MAX_CHUNKS = 1024;   // fragment framing (see sendRaw/onMsg)
   E.PROTOCOL = 1; // bump when snapshots/commands/game data change incompatibly
 
   class Relay {
@@ -128,7 +129,12 @@
     sendRaw(p, str) {
       if (!p.dc || p.dc.readyState !== 'open') return;
       if (str.length <= CHUNK) { p.dc.send(str); return; }
-      for (let i = 0; i < str.length; i += CHUNK) p.dc.send(str.slice(i, i + CHUNK));
+      // Fragment a payload that exceeds one DataChannel message. Each part is
+      // prefixed with a frame header (STX id:part:total:) so the receiver can
+      // reassemble it; DataChannels are ordered, and sendRaw is synchronous, so
+      // the parts of one payload are never interleaved with another send.
+      const id = (p._fid = (p._fid || 0) + 1), n = Math.ceil(str.length / CHUNK);
+      for (let i = 0; i < n; i++) p.dc.send(FRAME + id + ':' + i + ':' + n + ':' + str.slice(i * CHUNK, (i + 1) * CHUNK));
     }
     // host -> all, host -> one, guest -> host
     send(to, data) {
@@ -138,13 +144,28 @@
     toHost(data) { this.send(0, data); }
     toAll(data) { for (const p of this.peers.values()) this.send(p.id, data); }
     kick(id) { this.raw({ op: 'kick', id }); }
-    // onMsg: the first message each way must be the hello; protocol mismatch -> refuse
+    // onMsg: reassemble framed fragments, then run the hello gate on whole messages
     onMsg(p, data) {
+      if (typeof data === 'string' && data.charCodeAt(0) === 1) { this._reassemble(p, data); return; }
+      this._deliver(p, data);
+    }
+    _deliver(p, data) {
       if (!p.hello && data && data.startsWith && data.startsWith('{"k":"hi"')) {
         let h; try { h = JSON.parse(data); } catch { return; }
         if (h.k === 'hi') { p.hello = true; if (h.p !== E.PROTOCOL) { this.dropPeer(p.id); this.emit('error', { msg: 'version mismatch' }); return; } this.emit('hello', { id: p.id, open: true }); return; }
       }
       this.emit('msg', { from: p.id, data });
+    }
+    // header: STX id:part:total:<payload>; parts of one id accumulate in order
+    _reassemble(p, data) {
+      const a = data.indexOf(':', 1), b = data.indexOf(':', a + 1), c = data.indexOf(':', b + 1);
+      if (a < 0 || b < 0 || c < 0) return;
+      const id = +data.slice(1, a), part = +data.slice(a + 1, b), total = +data.slice(b + 1, c);
+      if (!(id > 0) || !(part >= 0) || !(total > 0) || total > MAX_CHUNKS || part >= total) return;
+      let rx = p._rx;
+      if (!rx || rx.id !== id) { rx = p._rx = { id, total, parts: new Array(total), got: 0 }; }
+      if (rx.parts[part] === undefined) { rx.parts[part] = data.slice(c + 1); rx.got++; }
+      if (rx.got === rx.total) { p._rx = null; this._deliver(p, rx.parts.join('')); }
     }
     recover(p) {
       if (p._rec) return; p._rec = true;

@@ -33,7 +33,7 @@ export function buildMeRoutes(app) {
   app.post('/api/me/password', async (req) => {
     const u = await me(req);
     const { current, next } = req.body || {};
-    if (!current || !A.verifyPasswordLocal(current, u.password_hash)) throw badRequest('current password is wrong');
+    if (!current || !verifyPassword(current, u.password_hash)) throw badRequest('current password is wrong');
     if (!next || next.length < 8) throw badRequest('new password too short');
     await app.db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hashPassword(next), u.id]);
     return { ok: true };

@@ -14,8 +14,12 @@ const freePort = () => new Promise((res) => { const s = net.createServer(); s.li
   const port = await freePort();
   const server = spawn('node', [path.join(ROOT, 'tools', 'serve.cjs'), String(port)], { stdio: 'ignore' });
   await new Promise(r => setTimeout(r, 1200));
-  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  const BACKEND = process.env.GC_UI_BACKEND === 'webgl' ? 'webgl' : 'webgpu';
+  const browser = await chromium.launch({ headless: true, args: BACKEND === 'webgl'
+    ? ['--no-sandbox', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-features=WebGPU']
+    : ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
   const page = await browser.newPage();
+  await page.addInitScript((backend) => { if (backend === 'webgl') window.GC_BACKEND = 'webgl'; }, BACKEND);
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.goto(`http://localhost:${port}/index.html`, { waitUntil: 'load' });
   await page.waitForFunction('window.__GC_READY__ === true', null, { timeout: 60000 });

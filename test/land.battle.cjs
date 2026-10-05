@@ -41,3 +41,4 @@ console.log('vehicles killed by', sorted(tot.vehKilledBy));
 console.log('cover: hits', tot.cover.hits, 'broken', tot.cover.broken, 'bots in cover', (avg(tot.cover.inCoverPct) * 100).toFixed(1) + '%', 'shots from cover', (avg(tot.cover.fromCoverPct) * 100).toFixed(1) + '%');
 console.log('vaults', tot.vaults, 'rams', tot.rams, 'cripples', tot.cripples, 'mines laid', tot.minesLaid, 'mine hits', tot.mines, 'repair ticks', tot.repairs, 'suppress(lvl2)', tot.supp);
 console.log('NaN positions', tot.nan, 'errors', tot.errors);
+if (tot.nan > 0 || tot.errors > 0 || (tot.wins.none || 0) > 0) { console.error('FAIL: land battle sanity gate'); process.exitCode = 1; }

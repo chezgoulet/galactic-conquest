@@ -22,8 +22,10 @@ test('ed25519 ticket sign + verify; tamper fails; rotation-safe verify', () => {
   const [b, s] = token.split('.');
   assert.ok(C.verifyTicket(kp.publicKey, token), 'valid ticket verifies');
   assert.deepStrictEqual(C.decodeTicket(token), body, 'payload decodes');
-  // tamper the signature (guaranteed to change)
-  const tampered = token.slice(0, -1) + (token.at(-1) === 'a' ? 'b' : 'a');
+  // tamper a byte in the middle of the signature. (Flipping the *last* base64url
+  // character can decode to identical bytes because trailing bits are ignored.)
+  const mid = b.length + 1 + Math.floor(s.length / 2);
+  const tampered = token.slice(0, mid) + (token[mid] === 'a' ? 'b' : 'a') + token.slice(mid + 1);
   assert.ok(!C.verifyTicket(kp.publicKey, tampered), 'tampered ticket fails');
   // a second key still verifies its own ticket (rotation)
   const kp2 = C.generateKeyPair();

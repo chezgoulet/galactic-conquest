@@ -27,13 +27,18 @@ async function freePort() {
   for (let i = 0; i < 50 && !up; i++) { await new Promise(r => setTimeout(r, 100)); up = await canConnect(); }
   if (!up) { console.error('static server did not start on port', port); process.exit(1); }
 
+  // CI can force the WebGL2 backend (GC_UI_BACKEND=webgl) because WebGPU on
+  // software Vulkan is unreliable on hosted runners; locally WebGPU is default.
+  const BACKEND = process.env.GC_UI_BACKEND === 'webgl' ? 'webgl' : 'webgpu';
   const browser = await chromium.launch({
     headless: true,
-    args: ['--use-angle=swiftshader', '--no-sandbox', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-features=Vulkan'],
+    args: BACKEND === 'webgl'
+      ? ['--no-sandbox', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-features=WebGPU']
+      : ['--use-angle=swiftshader', '--no-sandbox', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-features=Vulkan'],
   });
   const cleanup = async () => { try { await browser.close(); } catch {} try { server.kill('SIGKILL'); } catch {} };
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  await page.addInitScript(() => { window.GC_AUTOSTART = { biome: 'desert', seed: 7 }; window.GC_QUALITY = 'low'; window.GC_NO_GOV = true; window.GC_RES = 0.5; });
+  await page.addInitScript((backend) => { window.GC_AUTOSTART = { biome: 'desert', seed: 7 }; window.GC_QUALITY = 'low'; window.GC_NO_GOV = true; window.GC_RES = 0.5; if (backend === 'webgl') window.GC_BACKEND = 'webgl'; }, BACKEND);
   const errors = [];
   const logs = [];
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));

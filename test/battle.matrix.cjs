@@ -28,3 +28,6 @@ for (const k in tot.kills) { const [a, v] = k.split('>'); (byVictim[v] = byVicti
 console.log('\nwinners', JSON.stringify(tot.wins), ' length', tot.len.join(','), ' bad values', tot.bad, ' sim speed', Math.round(tot.len.reduce((a, b) => a + b, 0) / (tot.ms / 1000)) + 'x realtime');
 console.log('events', JSON.stringify(tot.ev));
 for (const v in byVictim) console.log('killed ' + v + ' by:', JSON.stringify(byVictim[v]));
+// gate: no non-finite state, and every battle must resolve (no MAX-timeout stalls)
+if (tot.bad > 0) { console.error('FAIL: ' + tot.bad + ' non-finite values'); process.exitCode = 1; }
+if ((tot.wins.none || 0) > 0) { console.error('FAIL: ' + tot.wins.none + ' battle(s) never resolved'); process.exitCode = 1; }

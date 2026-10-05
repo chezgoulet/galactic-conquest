@@ -46,3 +46,4 @@ console.log('mean stage duration s (I, II, III):', agg.stage.map(avg).join(', ')
 console.log('match time s: mean', avg(agg.ttl), 'min', Math.round(Math.min(...agg.ttl)), 'max', Math.round(Math.max(...agg.ttl)));
 console.log('boarding results', JSON.stringify(agg.board));
 console.log('pd events', agg.pd, 'escort requests', agg.esc, 'NaN frames', bad);
+if (bad > 0 || (agg.win.none || 0) > 0) { console.error('FAIL: space battle sanity gate'); process.exitCode = 1; }

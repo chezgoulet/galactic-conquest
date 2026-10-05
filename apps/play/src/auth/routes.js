@@ -81,26 +81,30 @@ export function buildAuthRoutes(app) {
   // approves; the client (with its game token) claims it.
   app.post('/api/auth/handoff', async (req) => {
     const { email, password, verifier } = req.body || {};
+    if (!verifier || String(verifier).length < 8) throw badRequest('verifier required');
     const user = await A.verifyCredentials(email, password);
     const id = crypto.randomBytes(16).toString('hex');
-    await app.db.query('INSERT INTO login_handoffs (id, user_id, expires_at) VALUES ($1,$2, now() + interval \'10 minutes\')', [id, user.id]);
+    await app.db.query('INSERT INTO login_handoffs (id, user_id, verifier_hash, expires_at) VALUES ($1,$2,$3, now() + interval \'10 minutes\')', [id, user.id, sha256(String(verifier))]);
     return { url: app.cfg.PUBLIC_URL + '/approve?h=' + id, user: { id: user.id, name: user.display_name } };
   });
   app.post('/api/auth/handoff/approve', async (req, res) => {
     const { h } = req.body || {};
-    const row = await app.db.queryOne('SELECT * FROM login_handoffs WHERE id = $1 AND claimed_at IS NULL', [h]);
-    if (!row) throw badRequest('unknown hand-off');
+    const row = await app.db.queryOne('SELECT * FROM login_handoffs WHERE id = $1 AND claimed_at IS NULL AND expires_at > now()', [h]);
+    if (!row) throw badRequest('unknown or expired hand-off');
     // approval comes from an authenticated web session (the human at the browser)
     if (!req.user) throw new HttpError(401, 'unauthorized', 'sign in to approve');
     if (row.user_id !== req.user.id) throw badRequest('hand-off is for a different account');
-    const { id } = await A.issueSession(row.user ? await A.findById(row.user_id) : req.user, { kind: 'web' });
+    await app.db.query('UPDATE login_handoffs SET approved_at = COALESCE(approved_at, now()) WHERE id = $1', [h]);
+    const { id } = await A.issueSession(req.user, { kind: 'web' });
     setSession(req, res, id);
     return { ok: true };
   });
   app.post('/api/auth/handoff/claim', async (req) => {
     const { h, verifier, device } = req.body || {};
-    const row = await app.db.queryOne('SELECT * FROM login_handoffs WHERE id = $1 AND claimed_at IS NULL', [h]);
-    if (!row) throw badRequest('unknown or already claimed hand-off');
+    const row = await app.db.queryOne('SELECT * FROM login_handoffs WHERE id = $1 AND claimed_at IS NULL AND expires_at > now()', [h]);
+    if (!row) throw badRequest('unknown or expired hand-off');
+    if (!row.approved_at) throw badRequest('hand-off not approved');
+    if (!verifier || !row.verifier_hash || sha256(String(verifier)) !== row.verifier_hash) throw badRequest('verifier mismatch');
     await app.db.query('UPDATE login_handoffs SET claimed_at = now() WHERE id = $1', [h]);
     const user = await A.findById(row.user_id);
     const { id } = await A.issueSession(user, { kind: 'game', client: device });
