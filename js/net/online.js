@@ -98,6 +98,16 @@
       return api(this.baseUrl, '/api/match/claim', 'POST', { ticket: this.ticket, match: this.match, result: result || null, team: team || null }, this.token)
         .then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'claim failed'); return r.d; });
     }
+    // ── cloud saves ────────────────────────────────────────────
+    cloudList() { return api(this.baseUrl, '/api/cloud', 'GET', null, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud list failed'); return r.d; }); }
+    cloudGet(key) { return api(this.baseUrl, '/api/cloud/' + encodeURIComponent(key), 'GET', null, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud get failed'); return r.d; }); }
+    cloudPut(key, value, version) { return api(this.baseUrl, '/api/cloud/' + encodeURIComponent(key), 'PUT', version != null ? { value, version } : { value }, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud save failed'); return r.d; }); }
+    cloudDelete(key) { return api(this.baseUrl, '/api/cloud/' + encodeURIComponent(key), 'DELETE', null, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud delete failed'); return r.d; }); }
+    // upload the current settings/profile/campaign envelope as one slot
+    cloudSave(key, version) { return this.cloudPut(key || 'save', E.Save.envelope(), version); }
+    // download a slot and apply it to localStorage; returns the split data
+    cloudLoad(key) { return this.cloudGet(key || 'save').then((r) => ({ data: E.Save.importString(JSON.stringify(r.value)), version: r.version })); }
+
     _lobby() {
       const guests = [...this.roster.entries()].filter(([id]) => id !== 0).map(([id, g]) => ({ id, name: g.name, ready: !!g.ready, rating: g.rating }));
       const host = this.roster.get(0) || { name: this.name() };

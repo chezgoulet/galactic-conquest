@@ -20,16 +20,16 @@
       E.bus.on('settings:changed', () => this.saveSettings());
     }
     saveSettings() { store.set(LS_SET, this.settings); }
-    // apply an imported save envelope back onto the live menu + storage
-    applyImported(d) {
+    // apply imported save data onto the live menu + storage (no navigation)
+    loadSaveData(d) {
       const base = { faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 };
       this.settings = E.SettingsUI.ensure(Object.assign(base, d.settings || {}));
       E.SettingsUI.apply(this.settings);
       this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, d.profile || {});
       const c = d.campaign; this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.saveSettings(); this.saveProfile(); this.saveCampaign();
-      this.showSettings();
     }
+    applyImported(d) { this.loadSaveData(d); this.showSettings(); }
     saveCampaign() { if (this.campaign) store.set(LS_KEY, this.campaign); else { try { localStorage.removeItem(LS_KEY); } catch (e) {} } }
     saveProfile() { store.set(LS_PRO, this.profile); }
     hide() { if (this.el) { this.el.remove(); this.el = null; } }

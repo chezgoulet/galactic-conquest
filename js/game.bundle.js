@@ -7875,6 +7875,16 @@
       return api(this.baseUrl, '/api/match/claim', 'POST', { ticket: this.ticket, match: this.match, result: result || null, team: team || null }, this.token)
         .then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'claim failed'); return r.d; });
     }
+    // ── cloud saves ────────────────────────────────────────────
+    cloudList() { return api(this.baseUrl, '/api/cloud', 'GET', null, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud list failed'); return r.d; }); }
+    cloudGet(key) { return api(this.baseUrl, '/api/cloud/' + encodeURIComponent(key), 'GET', null, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud get failed'); return r.d; }); }
+    cloudPut(key, value, version) { return api(this.baseUrl, '/api/cloud/' + encodeURIComponent(key), 'PUT', version != null ? { value, version } : { value }, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud save failed'); return r.d; }); }
+    cloudDelete(key) { return api(this.baseUrl, '/api/cloud/' + encodeURIComponent(key), 'DELETE', null, this.token).then((r) => { if (!r.ok) throw new Error((r.d && (r.d.message || r.d.error)) || 'cloud delete failed'); return r.d; }); }
+    // upload the current settings/profile/campaign envelope as one slot
+    cloudSave(key, version) { return this.cloudPut(key || 'save', E.Save.envelope(), version); }
+    // download a slot and apply it to localStorage; returns the split data
+    cloudLoad(key) { return this.cloudGet(key || 'save').then((r) => ({ data: E.Save.importString(JSON.stringify(r.value)), version: r.version })); }
+
     _lobby() {
       const guests = [...this.roster.entries()].filter(([id]) => id !== 0).map(([id, g]) => ({ id, name: g.name, ready: !!g.ready, rating: g.rating }));
       const host = this.roster.get(0) || { name: this.name() };
@@ -14157,6 +14167,19 @@
       el('.mp-o-login').addEventListener('click', () => doLogin(false));
       el('.mp-o-signup').addEventListener('click', () => doLogin(true));
 
+      // cloud saves (need a signed-in account; independent of the lobby)
+      const cmsg = (t, bad) => { const m = el('.mp-o-cloud-msg'); if (m) { m.textContent = t || ''; m.classList.toggle('bad', !!bad); } };
+      el('.mp-o-cloud-save').addEventListener('click', () => {
+        if (!oc.token) return cmsg('Sign in first.', true);
+        cmsg('Backing up…');
+        oc.cloudSave('save').then((r) => cmsg('Save backed up (slot v' + r.version + ', ' + r.size + ' bytes).')).catch((e) => cmsg(e.message || 'backup failed', true));
+      });
+      el('.mp-o-cloud-load').addEventListener('click', () => {
+        if (!oc.token) return cmsg('Sign in first.', true);
+        cmsg('Restoring…');
+        oc.cloudLoad('save').then(({ data }) => { if (this.menu && this.menu.loadSaveData) this.menu.loadSaveData(data); cmsg('Save restored from the cloud.'); }).catch((e) => cmsg(e.message || 'restore failed', true));
+      });
+
       // lobby pane
       const showLobby = () => { el('[data-opane="account"]').hidden = true; el('[data-opane="lobby"]').hidden = false; renderLobby(); };
       const showAccount = () => { el('[data-opane="lobby"]').hidden = true; el('[data-opane="account"]').hidden = false; };
@@ -14312,6 +14335,14 @@
         </div>
         <div class="mp-col" style="margin-top:10px"><button class="gc-btn mp-leave" hidden>Leave battle</button></div>
       </div>
+      <div class="mp-col" style="margin-top:14px">
+        <div class="m-sec">Cloud saves</div>
+        <div class="mp-row2">
+          <button class="gc-btn mp-o-cloud-save">Back up save</button>
+          <button class="gc-btn mp-o-cloud-load">Restore save</button>
+        </div>
+        <p class="mp-msg mp-o-cloud-msg"></p>
+      </div>
     </div>`;
 
     const lobby = new Lobby(root, menu);
@@ -14455,16 +14486,16 @@
       E.bus.on('settings:changed', () => this.saveSettings());
     }
     saveSettings() { store.set(LS_SET, this.settings); }
-    // apply an imported save envelope back onto the live menu + storage
-    applyImported(d) {
+    // apply imported save data onto the live menu + storage (no navigation)
+    loadSaveData(d) {
       const base = { faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 };
       this.settings = E.SettingsUI.ensure(Object.assign(base, d.settings || {}));
       E.SettingsUI.apply(this.settings);
       this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, d.profile || {});
       const c = d.campaign; this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.saveSettings(); this.saveProfile(); this.saveCampaign();
-      this.showSettings();
     }
+    applyImported(d) { this.loadSaveData(d); this.showSettings(); }
     saveCampaign() { if (this.campaign) store.set(LS_KEY, this.campaign); else { try { localStorage.removeItem(LS_KEY); } catch (e) {} } }
     saveProfile() { store.set(LS_PRO, this.profile); }
     hide() { if (this.el) { this.el.remove(); this.el = null; } }
