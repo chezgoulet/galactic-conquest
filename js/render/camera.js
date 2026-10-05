@@ -32,7 +32,7 @@
     // centre of the fighting: mean position of living ground units (falls back to the middle post)
     setFront(world) {
       let x = 0, z = 0, n = 0;
-      for (const u of world.units) if (u.alive && (u.kind === 'infantry' || u.kind === 'vehicle')) { x += u.pos.x; z += u.pos.z; n++; }
+      for (const u of world.units) if (u.alive && u.mode !== 'boarding' && u.pos.y < 400 && (u.kind === 'infantry' || u.kind === 'vehicle')) { x += u.pos.x; z += u.pos.z; n++; }
       if (n < 4) { const c = world.cps[Math.floor(world.cps.length / 2)]; x = c.pos.x; z = c.pos.z; n = 1; }
       this.front = { x: x / n, z: z / n };
     }

@@ -25,9 +25,19 @@
     return baseFlash.call(this, p, Math.min(size, d * 0.35 + 0.5), col, life);
   };
 
+  // dynamic lights are capped so a blast beside the camera lights the hull instead of whiting out the frame
+  const baseLight = P.light;
+  P.light = function (p, col, power, dist) { return baseLight.call(this, p, col, Math.min(power, 260), Math.min(dist, 300)); };
+
   P.initArt = function () {
     const T = E.THREE;
     if (this._art) return; this._art = true;
+    // additive glow particles: size capped by viewer distance and intensity tamed, so stacked blasts glow instead of white out
+    const raw = this.add.emit.bind(this.add), cam = this.scene.camera.position;
+    this.add.emit = (x, y, z, vx, vy, vz, life, s0, s1, r, g, b, a, drag, grav) => {
+      const d = Math.hypot(x - cam.x, y - cam.y, z - cam.z), cap = Math.max(1.2, d * 0.16);
+      raw(x, y, z, vx, vy, vz, life, Math.min(s0, cap), Math.min(s1, cap), r * 0.7, g * 0.7, b * 0.7, a * 0.8, drag, grav);
+    };
     // ── debris ──
     this.dN = Math.round(260 * Math.max(0.5, this.q));
     this.dGeo = chunkGeo();
@@ -179,8 +189,8 @@
           // muzzle flash with a light for the heavier guns and anything near the camera
           const c = E.TEAM_BOLT[e.team] || HOT;
           if (W.kind === 'bolt' && e.wk !== 'flak') this.muzzle(e.pos, 0.9 + (W.scale || 1) * 0.5, [c[0] * 1.2, c[1] * 1.2, c[2] * 1.2], near(e.pos, 40) ? 5 : 0);
-          else if (W.kind === 'turbo') { this.flash(e.pos, 22, c, 0.2); this.light(e.pos, c, 600, 260); }
-          else if (W.kind === 'shell') { this.muzzle(e.pos, 4, HOT, 80); this.puff(e.pos, 3, [0.5, 0.48, 0.45], 3, 1.2, 0.5, 5); }
+          else if (W.kind === 'turbo') { this.flash(e.pos, 22, c, 0.2); this.light(e.pos, c, 120, 120); }
+          else if (W.kind === 'shell') { this.muzzle(e.pos, 4, HOT, 40); this.puff(e.pos, 3, [0.5, 0.48, 0.45], 3, 1.2, 0.5, 5); }
           break;
         }
         case 'impact': {
@@ -209,7 +219,7 @@
         case 'crash': {
           const p = e.pos;
           if (e.surf === 'water') { this.puff(p, 10, [0.9, 0.95, 1], 10, 2.4, 9, 12); this.ring(p, 36, [0.7, 0.88, 1], 1.2, true); this.explosion({ x: p.x, y: p.y + 1, z: p.z }, 6); }
-          else if (e.surf === 'hull') { this.blast(p, 9, { space: true }); this.spark(p, 30, [1, 0.75, 0.4], 30, 1.2, 0.2); this.light(p, [1, 0.6, 0.3], 800, 200); }
+          else if (e.surf === 'hull') { this.blast(p, 9, { space: true }); this.spark(p, 30, [1, 0.75, 0.4], 30, 1.2, 0.2); this.light(p, [1, 0.6, 0.3], 150, 120); }
           else { this.blast({ x: p.x, y: p.y + 1, z: p.z }, 16, {}); this.spark(p, 20, [1, 0.7, 0.35], 24, 1.4, 0.2); this.scorch(p, 12, 0.8); this.emitter({ pos: { x: p.x, y: p.y + 1, z: p.z }, life: 45, rate: 6, kind: 'burn', size: 2 }); }
           if (this.onShake) this.onShake(p, 18); break;
         }

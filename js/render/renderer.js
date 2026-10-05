@@ -74,7 +74,7 @@
       const tex = this._glowTex || (this._glowTex = (() => { const cv = document.createElement('canvas'); cv.width = cv.height = 64; const x = cv.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.3, 'rgba(255,255,255,0.4)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new T.CanvasTexture(cv); })());
       const n = org ? 3 : (u.type === 'dreadnought' ? 4 : 3), W = d.h * 2.5, H = d.h * 1.25;
       for (let i = 0; i < n; i++) {
-        const s = new T.Sprite(E.Mat.sprite({ map: tex, color: new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), additive: true }));
+        const s = new T.Sprite(E.Mat.sprite({ map: tex, color: new T.Color(c[0] / 255 * 0.7, c[1] / 255 * 0.7, c[2] / 255 * 0.7), additive: true }));
         s.scale.setScalar(H * 1.5); s.position.set((i - (n - 1) / 2) * W * (org ? 0.26 : 0.24), 0, -d.len * 0.57); r.m.body.add(s);
       }
     }
@@ -162,7 +162,7 @@
         if (e.kind === 'infantry') { this.corpses.push({ root: r.m.root, body: r.m.body, rig: r.m.rig, kind: (e.uid | 0), t: 0, dir: this.fx.rng.sign() }); if (this.corpses.length > 40) this.scene.units.remove(this.corpses.shift().root); }
         else if (e.kind === 'capital') { this.wrecks.push({ rec: r, t: 0, vy: 0, len: r.u.def.len, h: r.u.h, yaw: e.yaw, boomT: 0 });
           const hc = E.faction(e.team).palette.hull, L = r.u.def.len;
-          this.fx.blast(e.pos, 60, { space: true, hull: hc }); this.fx.ring(e.pos, L * 1.4, [1, 0.8, 0.5], 1.6, false); this.fx.light(e.pos, [1, 0.7, 0.4], 4000, L * 2);
+          this.fx.blast(e.pos, 60, { space: true, hull: hc }); this.fx.ring(e.pos, L * 1.4, [1, 0.8, 0.5], 1.6, false); this.fx.light(e.pos, [1, 0.7, 0.4], 500, L * 1.2);
           for (let k = 0; k < 5; k++) this.fx.debris({ x: e.pos.x + this.fx.rng.f(-1, 1) * L * 0.3, y: e.pos.y, z: e.pos.z + this.fx.rng.f(-1, 1) * L * 0.3 }, 36, hc, L * 0.18, L * 0.2, { grav: 0, life: 70, size: Math.max(2, L * 0.025), trail: true });
           this.camera.shake(0.8); }
         else this.scene.units.remove(r.m.root);

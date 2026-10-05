@@ -152,7 +152,7 @@
         const a = { x: f.x, y: f.y + 9, z: f.z };
         this.beamAt('ion', a, to, 5.5, [0.55, 1.4, 3.2], 1.4, 1.0);
         this.beamAt('ion', a, to, 2.0, [3.0, 4.0, 5.0], 1.4, 1.0);
-        fx.ring({ x: f.x, y: f.y, z: f.z }, 70, [0.4, 0.8, 1], 1.0, true); fx.flash({ x: f.x, y: f.y + 9, z: f.z }, 40, [0.5, 0.8, 1], 0.5); fx.light(a, [0.5, 0.8, 1], 500, 200);
+        fx.ring({ x: f.x, y: f.y, z: f.z }, 70, [0.4, 0.8, 1], 1.0, true); fx.flash({ x: f.x, y: f.y + 9, z: f.z }, 40, [0.5, 0.8, 1], 0.5); fx.light(a, [0.5, 0.8, 1], 200, 150);
         fx.spark(a, 24, [0.6, 0.9, 1], 30, 1.2, 0.3);
         this.R.camera.shake(0.3);
       } else if (e.type === 'strikeBlocked') {

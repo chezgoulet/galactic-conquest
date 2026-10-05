@@ -312,7 +312,7 @@
     const warp = N.fbm3(gwp.mul(0.11)).mul(7.0);
     const rf = L.ripF || 2.2, rph = dot(gwp, dir).mul(rf).add(warp);
     const ripple = sin(rph).mul(0.5).add(0.5);
-    const ripAmp = float(L.rip || 0.0).mul(smoothstep(0.55, 0.12, steep)).mul(mid);
+    const ripAmp = float(L.rip || 0.0).mul(smoothstep(0.55, 0.12, steep)).mul(smoothstep(230, 35, dist));
     // kind specific albedo modulation
     let albedo = base0;
     if (kind === 'sand' || kind === 'regolith') {

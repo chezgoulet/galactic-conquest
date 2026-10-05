@@ -98,7 +98,7 @@
         // thrust glow tracks throttle; a stranded or retreating ship runs hot
         const thr = u.stranded ? 0 : E.clamp(u.throttle === undefined ? 0.6 : u.throttle, 0, 1) + (u.retreat ? 0.5 : 0) + (u.boost ? 0.4 : 0);
         const eng = u.sys && u.sys.engines && u.sys.engines.alive ? 1 : 0.25;
-        for (const s of S.eng) s.scale.setScalar(d.h * 1.9 * (0.35 + thr * 0.9 * eng));
+        const cp = this.R.scene.camera.position; for (const s of S.eng) { s.getWorldPosition(this._wp || (this._wp = new E.THREE.Vector3())); const dd = Math.hypot(this._wp.x - cp.x, this._wp.y - cp.y, this._wp.z - cp.z); s.scale.setScalar(Math.min(d.h * 0.8 * (0.35 + thr * 0.8 * eng), Math.max(4, dd * 0.05))); }
         S.navT += dt; const on = (Math.sin(S.navT * 3) > 0.5) ? 1 : 0.15; S.nav[2].material.opacity = on; S.nav[3].material.opacity = 1 - on * 0.6;
         // shield shell: alpha follows the four arcs; hits flare
         let a = 0, n = 0; if (u.arcs) for (const x of u.arcs) { a += x.v / (x.max || 1); n++; }
@@ -148,7 +148,7 @@
         case 'shieldDown': if (r && r.space) { r.space.flash = 1; f.flash(e.pos, r.u.def.h, [0.6, 0.9, 1.5], 0.3); f.spark(e.pos, 14, [0.6, 0.9, 1.2], 40, 0.8, 0.5); } break;
         case 'shieldCollapse': if (r && r.space) { r.space.flash = 1; f.ring(e.pos, r.u.def.len * 0.7, [0.5, 0.85, 1.3], 1.2, false); f.flash(e.pos, r.u.def.len * 0.25, [0.6, 0.9, 1.5], 0.4); } break;
         case 'sysDamaged': if (near(e.pos, 3000)) { f.spark(e.pos, 8, [1, 0.7, 0.4], 30, 0.7, 0.4); f.flash(e.pos, 14, [1, 0.8, 0.5], 0.12); } break;
-        case 'sysDestroyed': { f.blast(e.pos, e.sys === 'reactor' ? 40 : 24, { space: true, hull: r ? E.faction(r.u.team).palette.hull : null }); f.light(e.pos, [1, 0.6, 0.3], 1500, 500); if (this.R.camera) this.R.camera.shake(0.25); break; }
+        case 'sysDestroyed': { f.blast(e.pos, e.sys === 'reactor' ? 40 : 24, { space: true, hull: r ? E.faction(r.u.team).palette.hull : null }); f.light(e.pos, [1, 0.6, 0.3], 250, 200); if (this.R.camera) this.R.camera.shake(0.25); break; }
         case 'hullBreach': {
           if (!r || !r.space) break; const S = r.space, d = r.u.def, g = f.rng;
           const side = g.pick ? g.pick([-1, 1]) : (g.next() < 0.5 ? -1 : 1), top = g.next() < 0.5;

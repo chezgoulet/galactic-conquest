@@ -199,12 +199,12 @@
     body.add(mesh(cached('fig:' + F.id + ':' + type, () => fighterGeo(F, type))));
     // engine glow (sprite + exhaust cone) tied to throttle / afterburner by the renderer
     const org = F.hull.style === 'organic', c = F.palette.engine, k = type === 'bomber' ? 1.25 : 1;
-    const col = new T.Color(c[0] / 255 * 3, c[1] / 255 * 3, c[2] / 255 * 3), flames = [], glows = [];
+    const col = new T.Color(c[0] / 255 * 1.2, c[1] / 255 * 1.2, c[2] / 255 * 1.2), flames = [], glows = [];
     const nz = org ? [[0, 0]] : type === 'gunship' ? [[-3.0, -0.5], [3.0, -0.5]] : [[-0.62 * k, 0], [0.62 * k, 0]];
     const zb = org ? -3.9 * k : type === 'gunship' ? -2.8 : -4.7 * k;
     for (const [x, y] of nz) {
       const g = new T.Sprite(E.Mat.sprite({ map: E.ArtStruct.glowTex(), color: col, additive: true })); g.position.set(x, y, zb); body.add(g); glows.push(g);
-      const f = new T.Mesh(new T.ConeGeometry(0.34 * k, 1, 10, 1, true).rotateX(-Math.PI / 2).translate(0, 0, -0.5), E.Mat.emissive({ color: col, additive: true, opacity: 0.8, side: 'double' })); f.position.set(x, y, zb); body.add(f); flames.push(f);
+      const f = new T.Mesh(new T.ConeGeometry(0.34 * k, 1, 10, 1, true).rotateX(-Math.PI / 2).translate(0, 0, -0.5), E.Mat.emissive({ color: col, additive: true, opacity: 0.45, side: 'double' })); f.position.set(x, y, zb); body.add(f); flames.push(f);
     }
     return { root, body, glows, flames, wing: type === 'bomber' ? 5.2 : type === 'gunship' ? 3.8 : 4.6 };
   }
