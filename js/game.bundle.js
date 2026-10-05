@@ -2984,6 +2984,7 @@
       if (best) { a.tid = best.id; return; }
       a.tid = 0; a.px = a.cas.x; a.pz = a.cas.z; a.hasPt = true; return;
     }
+    const focus = w.space && w.space[u.team] ? w.space[u.team].target : 0;   // concentrate with the fleet
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
       if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
@@ -2992,6 +2993,7 @@
       const d = V.distance(u.pos, e.pos);
       if (e.kind === 'infantry' && d > 2500) continue;
       let s = pf * 1000 / (d + 700) * (0.85 + R.next() * 0.3);
+      if (e.id === focus) s *= 1.5;
       if (e.id === a.lastTid) s *= 0.5;       // vary targets between passes
       if (s > bs) { bs = s; best = e; }
     }
@@ -4463,11 +4465,14 @@
       let s;
       if (c.owner !== sq.team) s = (c.owner ? 1 : 1.25) * (c.n[sq.team] > 0 ? 1.25 : 1) / (d + 160);
       else if (c.n[en] > 0 || Math.abs(c.cap) < 0.99) s = 1.8 / (d + 160);
+      else if (sq.n <= 3 && w.cfg.retreat >= 0.3) s = 0.9 / (d + 160);        // mauled: fall back to a friendly post to regroup
       else continue;
       let taken = 0; for (const o of w.squads) if (o !== sq && o.team === sq.team && o.goal && o.goal.cp === c.id) taken++;
-      // the team's main effort (objectives.js) pulls every squad onto one post instead of spreading them out
+      // the team's main effort (objectives.js) pulls every squad onto one post instead of spreading them out;
+      // otherwise squads avoid dog-piling the same post, so the line stays spread
       const ef = w.teams[sq.team].effort;
-      if (ef && ef.cp === c.id && sq.id % 4 !== 0) s = 1 + R.next() * 0.1;   // three squads in four go; the fourth minds the line else s *= (0.6 + R.next() * 0.8) / (1 + 0.7 * taken);
+      if (ef && ef.cp === c.id && sq.id % 4 !== 0) s = 1 + R.next() * 0.1;   // three squads in four go; the fourth minds the line
+      else s *= 1 / (1 + 0.5 * taken);                                       // no dog-piling: keep some of the line spread
       if (s > bs) { bs = s; best = { x: c.pos.x, z: c.pos.z, r: c.r * 0.7, cp: c.id, uid: 0 }; }
     }
     // go after enemy structures when the line is ours, and objective sites
@@ -6882,7 +6887,6 @@
   const S = E.SIM = E.SIM || {}, V = E.V3, SP = E.SPACE, ORDER = SP.order;
   const tmpA = V.make(), tmpB = V.make(), tmpD = V.make();
   const H = { x: 0, z: 0, thr: 0 };
-  const SYS_PREF = [['shield', 'batteries', 'engines', 'hangar', 'bridge'], ['shield', 'engines', 'batteries', 'bridge', 'hangar'], ['batteries', 'shield', 'hangar', 'engines', 'bridge']];
   const enemyTeam = (t) => (t === 'aegis' ? 'verdant' : 'aegis');
 
   // ── battle stages (per side, on the world) ───────────────────
@@ -7044,6 +7048,19 @@
 
   // ── fleet AI ─────────────────────────────────────────────────
   function firstAlive(tg, list) { for (const n of list) if (tg.sys[n].alive) return n; return ''; }
+  // Which subsystem to break next, by effect rather than a fixed preference:
+  // strand a runner, finish a wounded hull, cut the guns, then the hangar.
+  function subsystemFor(tg, stage) {
+    if (!tg || !tg.sys || tg.def.role === 'screen') return '';
+    if (stage === 1) return tg.sys.shield.alive ? 'shield' : firstAlive(tg, ORDER);
+    if (tg.retreat && tg.sys.engines.alive) return 'engines';
+    if (tg.hp / tg.maxHp < 0.5 && tg.sys.bridge.alive) return 'bridge';
+    if (tg.sys.batteries.alive) return 'batteries';
+    if (tg.sys.hangar.alive && (tg.def.wing || stage >= 2)) return 'hangar';
+    if (tg.sys.engines.alive) return 'engines';
+    if (tg.sys.bridge.alive) return 'bridge';
+    return firstAlive(tg, ORDER);
+  }
   function think(w, u) {
     const ai = u.ai, team = u.team, st = w.space ? w.space[team] : null, stage = st ? st.stage : 1;
     const en = S.capsOf(w, enemyTeam(team)).filter((e) => !w.cfg.fog || S.visible(w, team, e)), bridge = u.sys.bridge.alive;
@@ -7061,7 +7078,7 @@
       if (tg && V.distance(tg.pos, u.pos) > 2800) { let nb = null; bd = 2800 * 2800; for (const e of en) { const d = V.distance2(e.pos, u.pos); if (d < bd) { bd = d; nb = e; } } if (nb) tg = nb; }
     }
     u.tgtId = tg ? tg.id : 0;
-    u.tgtSys = tg ? (stage === 2 && tg.def.role !== 'screen' ? firstAlive(tg, SYS_PREF[ai.pref]) : stage === 1 && tg.def.role !== 'screen' ? firstAlive(tg, ['shield']) : '') : '';
+    u.tgtSys = subsystemFor(tg, stage);
     if (tg && stage === 3 && tg.def.role !== 'screen' && tg.sys.bridge.alive && S.boardingReady && S.boardingReady(w, u, tg)) u.tgtSys = '';
     // shields: present the stronger flank, switch rarely
     ai.faceT -= 0.5;

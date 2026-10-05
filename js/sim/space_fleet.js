@@ -6,7 +6,6 @@
   const S = E.SIM = E.SIM || {}, V = E.V3, SP = E.SPACE, ORDER = SP.order;
   const tmpA = V.make(), tmpB = V.make(), tmpD = V.make();
   const H = { x: 0, z: 0, thr: 0 };
-  const SYS_PREF = [['shield', 'batteries', 'engines', 'hangar', 'bridge'], ['shield', 'engines', 'batteries', 'bridge', 'hangar'], ['batteries', 'shield', 'hangar', 'engines', 'bridge']];
   const enemyTeam = (t) => (t === 'aegis' ? 'verdant' : 'aegis');
 
   // ── battle stages (per side, on the world) ───────────────────
@@ -168,6 +167,19 @@
 
   // ── fleet AI ─────────────────────────────────────────────────
   function firstAlive(tg, list) { for (const n of list) if (tg.sys[n].alive) return n; return ''; }
+  // Which subsystem to break next, by effect rather than a fixed preference:
+  // strand a runner, finish a wounded hull, cut the guns, then the hangar.
+  function subsystemFor(tg, stage) {
+    if (!tg || !tg.sys || tg.def.role === 'screen') return '';
+    if (stage === 1) return tg.sys.shield.alive ? 'shield' : firstAlive(tg, ORDER);
+    if (tg.retreat && tg.sys.engines.alive) return 'engines';
+    if (tg.hp / tg.maxHp < 0.5 && tg.sys.bridge.alive) return 'bridge';
+    if (tg.sys.batteries.alive) return 'batteries';
+    if (tg.sys.hangar.alive && (tg.def.wing || stage >= 2)) return 'hangar';
+    if (tg.sys.engines.alive) return 'engines';
+    if (tg.sys.bridge.alive) return 'bridge';
+    return firstAlive(tg, ORDER);
+  }
   function think(w, u) {
     const ai = u.ai, team = u.team, st = w.space ? w.space[team] : null, stage = st ? st.stage : 1;
     const en = S.capsOf(w, enemyTeam(team)).filter((e) => !w.cfg.fog || S.visible(w, team, e)), bridge = u.sys.bridge.alive;
@@ -185,7 +197,7 @@
       if (tg && V.distance(tg.pos, u.pos) > 2800) { let nb = null; bd = 2800 * 2800; for (const e of en) { const d = V.distance2(e.pos, u.pos); if (d < bd) { bd = d; nb = e; } } if (nb) tg = nb; }
     }
     u.tgtId = tg ? tg.id : 0;
-    u.tgtSys = tg ? (stage === 2 && tg.def.role !== 'screen' ? firstAlive(tg, SYS_PREF[ai.pref]) : stage === 1 && tg.def.role !== 'screen' ? firstAlive(tg, ['shield']) : '') : '';
+    u.tgtSys = subsystemFor(tg, stage);
     if (tg && stage === 3 && tg.def.role !== 'screen' && tg.sys.bridge.alive && S.boardingReady && S.boardingReady(w, u, tg)) u.tgtSys = '';
     // shields: present the stronger flank, switch rarely
     ai.faceT -= 0.5;
