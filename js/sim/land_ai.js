@@ -92,7 +92,7 @@
       }
       if (!n) { SQ.splice(i, 1); w.sqMap.delete(sq.id); continue; }
       sq.cx = cx / n; sq.cz = cz / n; sq.n = n;
-      if (en) { sq.contact = { x: ex / en, z: ez / en, t: w.t }; let bf = 0, bc = 0; for (const id in tally) if (tally[id] > bc) { bc = tally[id]; bf = +id; } sq.focus = bf; }
+      if (en) { sq.contact = { x: ex / en, z: ez / en, t: w.t }; let bf = 0, bc = 0; for (const id in tally) if (tally[id] > bc) { bc = tally[id]; bf = +id; } sq.focus = w.cfg.coordinate === false ? 0 : bf; }
       const fresh = sq.contact && w.t - sq.contact.t < 4;
       if (!fresh) sq.focus = 0;
       // goal
@@ -105,7 +105,7 @@
       sq.advance = !fresh || sup === 0 || supFiring > 0 || w.t - (sq.advT || 0) > 6;
       if (sq.advance && fresh && sup > 0 && supFiring === 0) sq.advT = w.t;
       // flank point
-      if (fresh && asl >= 2 && (!sq.flank || w.t - sq.flankT > 9)) {
+      if (fresh && asl >= 2 && (w.cfg.tactics === undefined || w.cfg.tactics >= 0.5) && (!sq.flank || w.t - sq.flankT > 9)) {
         const bx = sq.cx - sq.contact.x, bz = sq.cz - sq.contact.z, bl = Math.hypot(bx, bz) || 1;
         if (bl > 38) {
           const ang = sq.flankSign * 0.95, ca = Math.cos(ang), sa = Math.sin(ang), rad = E.clamp(bl * 0.9, 34, 95);

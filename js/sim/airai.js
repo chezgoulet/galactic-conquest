@@ -196,6 +196,17 @@
     if (!tg) {
       // lost it in the cloud? head for where it was, then back on patrol
       if (a.lostT !== undefined && w.t - a.lostT < 3 && a.lx !== undefined) { look(u, a.lx, a.ly, a.lz); C.thr = 0.9; return; }
+      // a friendly capital under attack gets fighter cover before the ground front does
+      let cap = null;
+      if (S.needsEscort) { const list = S.needsEscort(w, u.team); if (list.length) cap = list[u.id % list.length]; }
+      if (cap) {
+        const th = w.t * 0.14 * a.side + u.id * 1.7;
+        const px = cap.pos.x + Math.cos(th) * 520, pz = cap.pos.z + Math.sin(th) * 520;
+        look(u, px, cap.pos.y, pz);
+        C.thr = 0.85; if (Math.hypot(u.pos.x - cap.pos.x, u.pos.z - cap.pos.z) > 1600 || u.pos.y < cap.pos.y - 700) C.boost = true;
+        if (a.mode === 'egress') a.mode = '';
+        return;
+      }
       frontPoint(w, u, a, tmpA);
       patrolPoint(w, u, a, tmpA.x, tmpA.z, 430, 360);
       C.thr = 0.75; if (u.pos.y > S.ALT.cloudHi + 80 || Math.hypot(u.pos.x - tmpA.x, u.pos.z - tmpA.z) > 1800) C.boost = true;
@@ -447,7 +458,8 @@
         const ang = Math.acos(clamp(((tmpA.x - u.pos.x) * tmpN.x + (tmpA.y - u.pos.y) * tmpN.y + (tmpA.z - u.pos.z) * tmpN.z) / (Math.hypot(tmpA.x - u.pos.x, tmpA.y - u.pos.y, tmpA.z - u.pos.z) || 1), -1, 1));
         if (tg.kind !== 'fighter') {
           aiGuns(w, u, a, tg);
-          if (ang < 0.25 && L < E.WEAPONS.pod.range * 0.9 && L > 90 && (tg.kind === 'vehicle' || tg.kind === 'turret') && u.altT <= 0 && u.ord > 0) {
+          const canPod = tg.kind === 'vehicle' || tg.kind === 'turret' || (tg.kind === 'infantry' && L < 260);
+          if (ang < 0.4 && L < E.WEAPONS.pod.range * 0.9 && L > 90 && canPod && u.altT <= 0 && u.ord > 0) {
             if (a.salvo === undefined || a.salvo <= 0) { if (w.t > (a.salvoT || 0)) { a.salvo = 4; a.salvoT = w.t + 3.5; } }
             if (a.salvo > 0 && S.airAlt(w, u, S.noseDir(u, tmpN), 0)) a.salvo--;
           }

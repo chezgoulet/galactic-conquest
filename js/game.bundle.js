@@ -1627,6 +1627,16 @@
   }
   function enemySpend(c, r) {
     const ef = c.enemyFaction, pf = c.playerFaction, k = c.difficulty === 'hard' ? 0.8 : c.difficulty === 'easy' ? 1.5 : 1.1;
+    // covert ops on the player's frontier before committing fleets: incite a soft
+    // colony, sabotage the likeliest target, and recon what it cannot see
+    const frontier = c.planets.filter(p => p.owner === pf && (neighbors(c, p.id).some(n => c.planets[n].owner === ef) || fleetsAt(c, p.id, ef).length));
+    if (frontier.length) {
+      const soft = frontier.find(p => !p.home && p.garrison <= 1 && c.credits[ef] >= opCost(c, 'incite', ef));
+      if (soft && r.next() < 0.5) op(c, 'incite', soft.id, ef);
+      else { const t = frontier.find(p => !p.home) || frontier[0]; if (c.credits[ef] >= opCost(c, 'sabotage', ef) && r.next() < 0.6) op(c, 'sabotage', t.id, ef); }
+      const blind = frontier.filter(p => !(c.intel[ef][p.id] > c.turn));
+      if (blind.length && c.credits[ef] >= opCost(c, 'recon', ef) && r.next() < 0.5) op(c, 'recon', blind[0].id, ef);
+    }
     for (const key of ['fleet', 'logistics', 'airwing']) { const U = UPGRADES[key], lv = c.upgrades[ef][key]; if (lv < U.levels.length - 1 && c.credits[ef] >= U.cost[lv + 1] * k) { c.credits[ef] -= U.cost[lv + 1]; c.upgrades[ef][key]++; } }
     const sup = supplied(c, ef);
     // dig in where the player can reach, then grow the fleet
@@ -2688,6 +2698,17 @@
     if (!tg) {
       // lost it in the cloud? head for where it was, then back on patrol
       if (a.lostT !== undefined && w.t - a.lostT < 3 && a.lx !== undefined) { look(u, a.lx, a.ly, a.lz); C.thr = 0.9; return; }
+      // a friendly capital under attack gets fighter cover before the ground front does
+      let cap = null;
+      if (S.needsEscort) { const list = S.needsEscort(w, u.team); if (list.length) cap = list[u.id % list.length]; }
+      if (cap) {
+        const th = w.t * 0.14 * a.side + u.id * 1.7;
+        const px = cap.pos.x + Math.cos(th) * 520, pz = cap.pos.z + Math.sin(th) * 520;
+        look(u, px, cap.pos.y, pz);
+        C.thr = 0.85; if (Math.hypot(u.pos.x - cap.pos.x, u.pos.z - cap.pos.z) > 1600 || u.pos.y < cap.pos.y - 700) C.boost = true;
+        if (a.mode === 'egress') a.mode = '';
+        return;
+      }
       frontPoint(w, u, a, tmpA);
       patrolPoint(w, u, a, tmpA.x, tmpA.z, 430, 360);
       C.thr = 0.75; if (u.pos.y > S.ALT.cloudHi + 80 || Math.hypot(u.pos.x - tmpA.x, u.pos.z - tmpA.z) > 1800) C.boost = true;
@@ -2939,7 +2960,8 @@
         const ang = Math.acos(clamp(((tmpA.x - u.pos.x) * tmpN.x + (tmpA.y - u.pos.y) * tmpN.y + (tmpA.z - u.pos.z) * tmpN.z) / (Math.hypot(tmpA.x - u.pos.x, tmpA.y - u.pos.y, tmpA.z - u.pos.z) || 1), -1, 1));
         if (tg.kind !== 'fighter') {
           aiGuns(w, u, a, tg);
-          if (ang < 0.25 && L < E.WEAPONS.pod.range * 0.9 && L > 90 && (tg.kind === 'vehicle' || tg.kind === 'turret') && u.altT <= 0 && u.ord > 0) {
+          const canPod = tg.kind === 'vehicle' || tg.kind === 'turret' || (tg.kind === 'infantry' && L < 260);
+          if (ang < 0.4 && L < E.WEAPONS.pod.range * 0.9 && L > 90 && canPod && u.altT <= 0 && u.ord > 0) {
             if (a.salvo === undefined || a.salvo <= 0) { if (w.t > (a.salvoT || 0)) { a.salvo = 4; a.salvoT = w.t + 3.5; } }
             if (a.salvo > 0 && S.airAlt(w, u, S.noseDir(u, tmpN), 0)) a.salvo--;
           }
@@ -4310,7 +4332,7 @@
       }
       if (!n) { SQ.splice(i, 1); w.sqMap.delete(sq.id); continue; }
       sq.cx = cx / n; sq.cz = cz / n; sq.n = n;
-      if (en) { sq.contact = { x: ex / en, z: ez / en, t: w.t }; let bf = 0, bc = 0; for (const id in tally) if (tally[id] > bc) { bc = tally[id]; bf = +id; } sq.focus = bf; }
+      if (en) { sq.contact = { x: ex / en, z: ez / en, t: w.t }; let bf = 0, bc = 0; for (const id in tally) if (tally[id] > bc) { bc = tally[id]; bf = +id; } sq.focus = w.cfg.coordinate === false ? 0 : bf; }
       const fresh = sq.contact && w.t - sq.contact.t < 4;
       if (!fresh) sq.focus = 0;
       // goal
@@ -4323,7 +4345,7 @@
       sq.advance = !fresh || sup === 0 || supFiring > 0 || w.t - (sq.advT || 0) > 6;
       if (sq.advance && fresh && sup > 0 && supFiring === 0) sq.advT = w.t;
       // flank point
-      if (fresh && asl >= 2 && (!sq.flank || w.t - sq.flankT > 9)) {
+      if (fresh && asl >= 2 && (w.cfg.tactics === undefined || w.cfg.tactics >= 0.5) && (!sq.flank || w.t - sq.flankT > 9)) {
         const bx = sq.cx - sq.contact.x, bz = sq.cz - sq.contact.z, bl = Math.hypot(bx, bz) || 1;
         if (bl > 38) {
           const ang = sq.flankSign * 0.95, ca = Math.cos(ang), sa = Math.sin(ang), rad = E.clamp(bl * 0.9, 34, 95);
@@ -6390,7 +6412,11 @@
   const NODE_R = 7, STEP = 4.6, LOWG = 2.5, CEIL = 14;
   const ZONE_LZ = -0.2; // zone origin along the hull (fraction of length)
   const inDeck = (d, x, z) => Math.abs(x - d.cx) <= d.hx && Math.abs(z - d.cz) <= d.hz;
-  const ATT_NODE = ['bridge', 'bridge', 'shield', 'reactor', 'bridge', 'shield'];
+  // what the boarding party goes for: crack the shields first, then take the
+  // bridge; a couple always peel off toward the reactor.
+  const planAgainst = (ship) => ship.sys.shield.alive
+    ? ['shield', 'shield', 'bridge', 'shield', 'bridge', 'reactor']
+    : ['bridge', 'bridge', 'reactor', 'bridge', 'shield', 'reactor'];
 
   // ── placement: deck-local -> world, riding the ship ──────────
   function place(w, u) {
@@ -6569,7 +6595,8 @@
   }
   function startBoarding(w, op, ship) {
     op.status = 'active'; op.started = w.t;
-    for (let i = 0; i < op.surv; i++) spawnAboard(w, op, ship, op.team, MIX[i % MIX.length], ATT_NODE[i % ATT_NODE.length], 'att', i);
+    const plan = planAgainst(ship);
+    for (let i = 0; i < op.surv; i++) spawnAboard(w, op, ship, op.team, MIX[i % MIX.length], plan[i % plan.length], 'att', i);
     const crew = ship.def.crew, names = ['bridge', 'shield', 'reactor'];
     for (let i = 0; i < crew; i++) spawnAboard(w, op, ship, ship.team, i % 4 === 3 ? 'heavy' : 'trooper', names[i % 3], 'def', (i / 3) | 0);
     w.events.push({ type: 'boardingStart', team: op.team, tid: ship.id, n: op.surv, defenders: crew, pos: V.clone(ship.pos) });
@@ -6871,8 +6898,12 @@
     if (u.braceCd <= 0 && u.hitT < 1 && u.shield / Math.max(1, u.maxShield) < 0.12 && u.hp / u.maxHp < 0.5 && w.rng.next() < 0.5) brace(w, u);
     // fighters: launch cover when threatened or on a clock
     if (u.def.wing && u.launchCd <= 0 && u.sys.hangar.alive && (u.threat > 0 || w.tickN % 600 < 15)) launchWing(w, u);
-    // boarding: stage III, shields open on the approach
-    if (tg && stage === 3 && tg.def.role !== 'screen' && S.board && !u.retreat && w.rng.next() < 0.25) S.board(w, team, u, tg);
+    // boarding: send marines when the target is actually takeable (a downed
+    // shield arc on the approach), and prize a weakened or already-broken hull
+    if (tg && tg.def.role !== 'screen' && S.board && S.boardingReady && S.boardingReady(w, u, tg) && !u.retreat) {
+      const ripe = stage === 3 || tg.hp / tg.maxHp < 0.6 || !tg.sys.bridge.alive;
+      if (ripe && w.rng.next() < 0.5) S.board(w, team, u, tg);
+    }
   }
   function aiCapital(w, u, dt) {
     S.capTick(w, u, dt);
@@ -7183,10 +7214,13 @@
 (function (E) {
   'use strict';
   const TEAMS = ['aegis', 'verdant'];
+  // Difficulty is behavioural, not just aim jitter and damage: on easy the bots
+  // fight individually (no squad focus, little flanking, slower to react); on
+  // hard they coordinate, use cover tactics and press the objective.
   const DIFF = {
-    easy:   { aiErr: 0.075, enemyDmg: 0.55, enemyTickets: 0.85 },
-    normal: { aiErr: 0.06, enemyDmg: 0.8,  enemyTickets: 1 },
-    hard:   { aiErr: 0.045, enemyDmg: 1.0,  enemyTickets: 1.2 },
+    easy:   { aiErr: 0.075, enemyDmg: 0.55, enemyTickets: 0.85, coordinate: false, tactics: 0.25, reaction: 1.6, retreat: 0.35 },
+    normal: { aiErr: 0.06,  enemyDmg: 0.8,  enemyTickets: 1,    coordinate: true,  tactics: 0.6,  reaction: 1.0, retreat: 0.27 },
+    hard:   { aiErr: 0.045, enemyDmg: 1.0,  enemyTickets: 1.2,  coordinate: true,  tactics: 1.0,  reaction: 0.75, retreat: 0.22 },
   };
 
   class World {
@@ -7206,7 +7240,7 @@
       this.players = {};
       this.diff = opts.difficulty || 'normal';
       const D = DIFF[this.diff] || DIFF.normal;
-      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg };
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat };
       // per-side scale + campaign bonuses
       const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
       const bon = (f) => (opts.bonus && opts.bonus[f]) || {};

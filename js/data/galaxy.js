@@ -421,6 +421,16 @@
   }
   function enemySpend(c, r) {
     const ef = c.enemyFaction, pf = c.playerFaction, k = c.difficulty === 'hard' ? 0.8 : c.difficulty === 'easy' ? 1.5 : 1.1;
+    // covert ops on the player's frontier before committing fleets: incite a soft
+    // colony, sabotage the likeliest target, and recon what it cannot see
+    const frontier = c.planets.filter(p => p.owner === pf && (neighbors(c, p.id).some(n => c.planets[n].owner === ef) || fleetsAt(c, p.id, ef).length));
+    if (frontier.length) {
+      const soft = frontier.find(p => !p.home && p.garrison <= 1 && c.credits[ef] >= opCost(c, 'incite', ef));
+      if (soft && r.next() < 0.5) op(c, 'incite', soft.id, ef);
+      else { const t = frontier.find(p => !p.home) || frontier[0]; if (c.credits[ef] >= opCost(c, 'sabotage', ef) && r.next() < 0.6) op(c, 'sabotage', t.id, ef); }
+      const blind = frontier.filter(p => !(c.intel[ef][p.id] > c.turn));
+      if (blind.length && c.credits[ef] >= opCost(c, 'recon', ef) && r.next() < 0.5) op(c, 'recon', blind[0].id, ef);
+    }
     for (const key of ['fleet', 'logistics', 'airwing']) { const U = UPGRADES[key], lv = c.upgrades[ef][key]; if (lv < U.levels.length - 1 && c.credits[ef] >= U.cost[lv + 1] * k) { c.credits[ef] -= U.cost[lv + 1]; c.upgrades[ef][key]++; } }
     const sup = supplied(c, ef);
     // dig in where the player can reach, then grow the fleet

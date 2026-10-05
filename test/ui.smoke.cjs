@@ -70,7 +70,10 @@ async function freePort() {
         uiBuilt: !!document.getElementById('gc-top'),
       };
     });
-    await page.screenshot({ path: path.join(ROOT, 'test', 'shots', 'smoke.png') });
+    // the screenshot is an artifact, not the assertion: software rendering on CI
+    // can be slow, so give it room and never fail the gate on it
+    try { await page.screenshot({ path: path.join(ROOT, 'test', 'shots', 'smoke.png'), timeout: 120000 }); }
+    catch (e) { console.error('[smoke] screenshot skipped:', e.message); }
   } finally {
     await cleanup();
   }
