@@ -143,7 +143,7 @@
       for (const f of c.fleets) {
         const own = f.owner === pf; if (!own && !vis.has(f.at)) continue;
         const p = c.planets[f.at], k = f.at + (own ? 'a' : 'b'), n = stack[k] = (stack[k] || 0) + 1, [x, y] = this.xy(p), r = p.home ? 34 : 25;
-        const ox = own ? -r - 62 : r + 62, oy = (own ? 1 : -1) * (r * 0.9) + (n - 1) * 40 * (own ? 1 : -1);
+        const ox = own ? -r - 86 : r + 70, oy = (own ? 1 : -1) * (r * 0.9) + (n - 1) * 40 * (own ? 1 : -1);
         const avg = f.ships.reduce((s, x) => s + x.hp, 0) / Math.max(1, f.ships.length), sel = this.gs.fleet === f.id;
         fleets += `<g class="fl ${own ? 'mine' : 'theirs'}${sel ? ' sel' : ''}${f.moved ? ' done' : ''}" data-f="${f.id}" style="transform:translate(${x + ox}px,${y + oy}px)" tabindex="0" role="button" aria-label="${esc(f.name)}, ${f.ships.length} ships">
           <rect class="tok" x="-40" y="-14" width="80" height="28" rx="5"/><path class="chev" d="M-31 4 L-23 -8 L-15 4 L-23 0 Z"/>

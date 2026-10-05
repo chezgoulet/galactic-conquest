@@ -47,7 +47,7 @@
       const sp = w.space && w.space[g.team];
       const st = { winning: mr > orr * 1.35 && mr > 0.4 || (sp && sp.won), losing: mr < orr * 0.65 || (sp && sp.lost), lastStand: T.tickets <= 25 && !w.winner && T.tickets < T.startTickets };
       E.Music.setState(st);
-      const dom = playing ? (kind === 'capital' || (kind === 'fighter' && u.band === 'space') || kind === 'boarding' ? 'space' : kind === 'fighter' ? 'air' : 'ground') : (g.state === 'commander' ? D.dom : 'ground');
+      const dom = playing ? (kind === 'capital' || (kind === 'fighter' && (u.band === 3 || u.band === 'space')) || kind === 'boarding' ? 'space' : kind === 'fighter' ? 'air' : 'ground') : (g.state === 'commander' ? D.dom : 'ground');
       D.dom = dom; E.Music.setDomain(dom);
       E.Music.setIntensity(g.state === 'attract' ? 0.3 : w.intensity);
     },

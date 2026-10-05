@@ -14,7 +14,7 @@
   const TNAME = { aegis: 'CONCORD', verdant: 'PACT' };
   const CLASSES = ['trooper', 'heavy', 'sniper', 'medic', 'engineer'];
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const BAND = { low: 'LOW', cloud: 'CLOUD', high: 'HIGH', space: 'SPACE' };
+  const BAND = { low: 'LOW', cloud: 'CLOUD', high: 'HIGH', space: 'SPACE', 0: 'LOW', 1: 'CLOUD', 2: 'HIGH', 3: 'SPACE' };
 
   class HUD {
     constructor(root, game) { this.root = root; this.game = game; this.cls = 0; this.feed = []; this.pops = []; this.ann = []; this.dmgDirs = []; this.loadouts = {}; this.armed = null; }

@@ -94,7 +94,7 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     // ── end turn: playback ──
     await page.click('.g-end');
     await page.waitForSelector('.g-pb.on');
-    await page.waitForTimeout(2500); await shot('07-end-turn-playback.png');
+    await page.waitForTimeout(1300); await shot('07-end-turn-playback.png');
     await page.keyboard.press('Escape');
     await page.waitForFunction('!GC.menu.galaxy.busy', null, { polling: 300 });
     if (await page.$('.g-modal.on .a-auto')) { await shot('08-under-attack.png'); await page.click('.a-auto'); await page.waitForSelector('.g-svg g.pl'); }

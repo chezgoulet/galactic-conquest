@@ -5,6 +5,7 @@
 (function (E) {
   'use strict';
   const P = E.HUD.prototype;
+  const BN = ['low', 'cloud', 'high', 'space'], bandKey = (u) => typeof u.band === 'number' ? BN[u.band] || 'low' : (u.band || 'low');
   const BAND = { low: ['LOW ALTITUDE', 'Full lift. Watch the ground and AA batteries'], cloud: ['CLOUD DECK', 'Reduced visibility. AA batteries lose you'], high: ['HIGH ALTITUDE', 'Thin air: less lift, slow handling'], space: ['ORBIT', 'Vacuum: no lift, no drag. Fly by thrust and inertia'] };
   const pips = (el, n, max) => { const key = n + '/' + max; if (el._p === key) return; el._p = key; el.innerHTML = '<i class="on"></i>'.repeat(Math.max(0, Math.min(n, max))) + '<i></i>'.repeat(Math.max(0, max - Math.max(0, n))); };
 
@@ -13,14 +14,14 @@
     // ordnance, countermeasures, troops
     pips($.pips.querySelector('.ord div'), u.ord | 0, d.ord || 0); pips($.pips.querySelector('.cm div'), u.cm | 0, d.cm || 0); if (d.carry) pips($.pips.querySelector('.carry div'), u.carry | 0, d.carry);
     // band banner
-    const b = BAND[u.band] || BAND.low; const bn = $.fl.querySelector('.fl-band');
-    this.tx(bn, b[0] + ' — ' + b[1]); this.cl(bn, 'space', u.band === 'space');
+    const b = BAND[bandKey(u)]; const bn = $.fl.querySelector('.fl-band');
+    this.tx(bn, b[0] + ' — ' + b[1]); this.cl(bn, 'space', bandKey(u) === 'space');
     // warnings
     const W = [];
     if (u.warn === 3) W.push(['MISSILE — ' + Math.round(u.mslD || 0) + ' m — FLARES (SPACE)', 'crit']); else if (u.warn === 2) W.push(['LOCKED ON — EVADE', 'crit']); else if (u.warn === 1) W.push(['TRACKED', 'warn']);
     if (u.stallWarn || u.stall >= 0.5) W.push(['STALL — NOSE DOWN, THROTTLE UP', 'crit']);
     if (u.oob > 0.02) W.push(['LEAVING THE BATTLE AREA — TURN BACK ' + Math.round(u.oob * 100) + '%', 'warn']);
-    if (u.agl < 70 && u.vel.y < -18 && u.band === 'low') W.push(['PULL UP', 'crit']);
+    if (u.agl < 70 && u.vel.y < -18 && bandKey(u) === 'low') W.push(['PULL UP', 'crit']);
     if (d.carry && u.carry > 0) W.push([u.agl <= 45 && u.spd <= 22 ? 'TROOPS ABOARD — PRESS X TO DROP' : 'TROOPS ABOARD — HOVER LOW AND SLOW TO DROP', 'info']);
     if (u.locked) W.push(['TARGET LOCKED — FIRE', 'good']);
     const html = W.map(([t, c]) => `<div class="${c}">${t}</div>`).join('');
@@ -32,7 +33,7 @@
     const d = u.def, cx = W / 2, cy = H / 2, hx = R * 17, th = R * 9, lw = Math.max(1.5, R * 0.12);
     const green = '#9dffc8', amber = '#ffc24a', red = '#ff4a3a', dim = 'rgba(190,230,255,.55)';
     ctx.lineWidth = lw; ctx.font = `600 ${R * 0.7}px system-ui`; ctx.textBaseline = 'middle'; ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 5;
-    const space = u.band === 'space', dens = u.dens == null ? 1 : u.dens;
+    const space = bandKey(u) === 'space', dens = u.dens == null ? 1 : u.dens;
     const stallV = d.stall / Math.sqrt(Math.max(dens, 0.35));
     // speed tape (left)
     const tape = (x, val, step, per, side, marks) => {
@@ -49,20 +50,20 @@
     // readout boxes
     const box = (x, y, txt, col, side) => { ctx.fillStyle = 'rgba(4,10,16,.82)'; ctx.strokeStyle = col; const bw = R * 3.6, bh = R * 1.5; ctx.fillRect(x - (side > 0 ? 0 : bw), y - bh / 2, bw, bh); ctx.strokeRect(x - (side > 0 ? 0 : bw), y - bh / 2, bw, bh); ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.font = `700 ${R * 0.95}px system-ui`; ctx.fillText(txt, x + (side > 0 ? bw / 2 : -bw / 2), y + 1); ctx.font = `600 ${R * 0.7}px system-ui`; };
     box(cx - hx - R * 3.9, cy, Math.round(spd), spd < stallV * 1.25 && dens > 0.3 ? red : green, 1);
-    box(cx + hx + R * 3.9, cy, space ? '—' : Math.round(Math.max(0, u.agl)), u.agl < 80 && u.band === 'low' ? amber : green, -1);
+    box(cx + hx + R * 3.9, cy, space ? '—' : Math.round(Math.max(0, u.agl)), u.agl < 80 && bandKey(u) === 'low' ? amber : green, -1);
     ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.font = `600 ${R * 0.6}px system-ui`;
-    ctx.fillText('SPEED m/s', cx - hx - R * 2.1, cy + th + R * 1.1); ctx.fillText(space ? 'ORBIT' : 'AGL m', cx + hx + R * 2.1, cy + th + R * 1.1);
-    ctx.fillText('Y ' + Math.round(u.pos.y) + ' m · ' + (BAND[u.band] || BAND.low)[0], cx + hx + R * 2.1, cy + th + R * 2);
+    ctx.fillText('SPEED m/s', cx - hx - R * 2.1, cy - th - R * 1.1); ctx.fillText(space ? 'ORBIT' : 'AGL m', cx + hx + R * 2.1, cy - th - R * 1.1);
+    ctx.fillText('Y ' + Math.round(u.pos.y) + ' m', cx + hx + R * 2.1, cy + th + R * 1.1);
     // throttle + afterburner bars
     const bx = cx - hx - R * 8.4, by = cy + th, bh = th * 2;
     ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(bx, by - bh, R * 0.9, bh); ctx.strokeStyle = dim; ctx.strokeRect(bx, by - bh, R * 0.9, bh);
     ctx.fillStyle = green; ctx.fillRect(bx, by - bh * (u.thr || 0), R * 0.9, bh * (u.thr || 0));
     const ex = bx + R * 1.3; ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(ex, by - bh, R * 0.9, bh); ctx.strokeStyle = dim; ctx.strokeRect(ex, by - bh, R * 0.9, bh);
     ctx.fillStyle = u.boostLock ? red : u.boosting ? '#fff' : amber; ctx.fillRect(ex, by - bh * (u.boostE == null ? 1 : u.boostE), R * 0.9, bh * (u.boostE == null ? 1 : u.boostE));
-    ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.fillText('THR', bx + R * 0.45, by + R * 0.9); ctx.fillStyle = u.boosting ? '#fff' : u.boostLock ? red : dim; ctx.fillText(u.boostLock ? 'AB LOCK' : 'AB', ex + R * 0.45, by + R * 0.9);
+    ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.fillText('THR', bx + R * 0.45, by - bh - R * 0.8); ctx.fillStyle = u.boosting ? '#fff' : u.boostLock ? red : dim; ctx.fillText(u.boostLock ? 'LOCK' : 'AB', ex + R * 0.45, by - bh - R * 0.8);
     // g and drift (under the throttle)
-    ctx.textAlign = 'left'; ctx.fillStyle = (u.g || 1) > 7 ? red : dim; ctx.fillText('G ' + (u.g || 1).toFixed(1), bx, by - bh - R * 2.2);
-    if (d.cm !== undefined && !d.vtol) { ctx.fillStyle = u.drift ? amber : dim; ctx.fillText('DRIFT', bx, by - bh - R * 1.1); const de = u.driftE == null ? 1 : E.clamp01(u.driftE / (E.AIR.driftMax || 1)); ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(bx + R * 3, by - bh - R * 1.4, R * 4, R * 0.7); ctx.fillStyle = u.drift ? amber : dim; ctx.fillRect(bx + R * 3, by - bh - R * 1.4, R * 4 * (de > 1 ? 1 : de), R * 0.7); }
+    ctx.textAlign = 'left'; ctx.fillStyle = (u.g || 1) > 7 ? red : dim; ctx.fillText('G ' + (u.g || 1).toFixed(1), bx, by - bh - R * 3.4);
+    if (d.cm !== undefined && !d.vtol) { ctx.fillStyle = u.drift ? amber : dim; ctx.fillText('DRIFT', bx, by - bh - R * 2.2); const de = u.driftE == null ? 1 : E.clamp01(u.driftE / (E.AIR.driftMax || 1)); ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(bx + R * 3, by - bh - R * 2.5, R * 4, R * 0.7); ctx.fillStyle = u.drift ? amber : dim; ctx.fillRect(bx + R * 3, by - bh - R * 2.5, R * 4 * (de > 1 ? 1 : de), R * 0.7); }
     // heading
     const hdg = (((-u.yaw * 180 / Math.PI) % 360) + 360) % 360;
     ctx.textAlign = 'center'; ctx.fillStyle = green; ctx.font = `700 ${R * 0.9}px system-ui`; ctx.fillText(String(Math.round(hdg)).padStart(3, '0') + '°', cx, R * 5.2); ctx.font = `600 ${R * 0.7}px system-ui`;
