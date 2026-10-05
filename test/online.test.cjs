@@ -107,8 +107,8 @@ test('online: game client end-to-end against the real service', async () => {
   assert.strictEqual(pay.players.length, 2);
   assert.strictEqual(pay.ranked, true);
 
-  // ── both players claim the result -> reconciliation + Elo ──
-  assert.strictEqual((await oc.claim('aegis', 'aegis')).status, 'confirmed', 'host claim confirms');
+  // ── a single claim must NOT confirm; the whole roster has to agree ──
+  assert.notStrictEqual((await oc.claim('aegis', 'aegis')).status, 'confirmed', 'one claim alone does not confirm');
   await og.claim('aegis', 'verdant');
   const mine = await fetch(baseUrl + '/api/match/mine', { headers: { authorization: 'Bearer ' + og.token } }).then((r) => r.json());
   assert.ok(mine.some((m) => m.status === 'confirmed' && m.winner_team === 'aegis'), 'guest sees the confirmed match');

@@ -1,12 +1,19 @@
 'use strict';
 // Determinism fingerprint of the sim: runs scripted battles (bots plus a player
-// cycling through every unit kind) and hashes the full world state. Used to
-// prove a refactor is behaviour-preserving:  node test/golden.cjs
-const crypto = require('crypto');
+// cycling through every unit kind) and hashes the full world state. The hashes
+// are stored in test/golden.fixtures.json and asserted here, so an accidental
+// change in sim behaviour fails CI.
+//
+//   node test/golden.cjs                 check against the fixtures
+//   GOLDEN_UPDATE=1 node test/golden.cjs  regenerate the fixtures (deliberate changes)
+const crypto = require('crypto'), fs = require('fs'), path = require('path');
 const load = require('../tools/load.cjs');
 const E = load(load.files(['core', 'data', 'sim']));
 
 const HZ = 30, DT = 1 / HZ, KINDS = ['infantry', 'vehicle', 'fighter', 'capital', 'turret'];
+const FIXTURES = path.join(__dirname, 'golden.fixtures.json');
+const SCENARIOS = [['desert', 7], ['jungle', 99], ['tundra', 3]];
+
 function run(biome, seed, secs) {
   const w = new E.World({ biome, seed, human: 'aegis' });
   w.addPlayer('p1', 'aegis', 'Golden');
@@ -32,5 +39,24 @@ function run(biome, seed, secs) {
   ]));
   return h.digest('hex').slice(0, 16);
 }
-const out = [['desert', 7], ['jungle', 99], ['tundra', 3]].map(([b, s]) => `${b}/${s}:${run(b, s, 80)}`).join(' ');
-console.log(out);
+
+const got = {};
+for (const [b, s] of SCENARIOS) got[`${b}/${s}`] = run(b, s, 80);
+
+if (process.env.GOLDEN_UPDATE) {
+  fs.writeFileSync(FIXTURES, JSON.stringify(got, null, 2) + '\n');
+  console.log('golden fixtures written:', JSON.stringify(got));
+  process.exit(0);
+}
+let want = {};
+try { want = JSON.parse(fs.readFileSync(FIXTURES, 'utf8')); } catch { want = {}; }
+let bad = 0;
+for (const k of Object.keys(got)) {
+  const ok = want[k] === got[k];
+  if (!ok) bad++;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${k} ${got[k]}${ok ? '' : ' (expected ' + (want[k] || '<none>') + ')'}`);
+}
+if (bad) {
+  console.error(`\n${bad} fingerprint(s) changed. If this is intentional, run GOLDEN_UPDATE=1 node test/golden.cjs and commit the fixtures.`);
+  process.exit(1);
+}

@@ -70,7 +70,25 @@ test('game hand-off: register -> claim yields a game session', async () => {
   const ho = await h.app.inject({ method: 'POST', url: '/api/auth/handoff', headers: ck, payload: { email: 'dan@ex.com', password: 'password123', verifier } });
   assert.strictEqual(ho.statusCode, 200);
   const hid = (await ho.json()).url.split('h=')[1];
+  // a bad verifier cannot claim, and neither can an unapproved hand-off
+  const wrong = await h.app.inject({ method: 'POST', url: '/api/auth/handoff/claim', payload: { h: hid, verifier: 'not-the-verifier', device: 'web' } });
+  assert.notStrictEqual(wrong.statusCode, 200, 'verifier mismatch is rejected');
+  const unapproved = await h.app.inject({ method: 'POST', url: '/api/auth/handoff/claim', payload: { h: hid, verifier, device: 'web' } });
+  assert.notStrictEqual(unapproved.statusCode, 200, 'an unapproved hand-off cannot be claimed');
+  const appr = await h.app.inject({ method: 'POST', url: '/api/auth/handoff/approve', headers: ck, payload: { h: hid } });
+  assert.strictEqual(appr.statusCode, 200);
   const claim = await h.app.inject({ method: 'POST', url: '/api/auth/handoff/claim', payload: { h: hid, verifier, device: 'web' } });
   assert.strictEqual(claim.statusCode, 200);
   assert.ok((await claim.json()).token, 'a game token was issued');
+});
+
+test('password change verifies the current password and updates it', async () => {
+  const su = await h.app.inject({ method: 'POST', url: '/api/auth/signup', payload: { email: 'erin@ex.com', password: 'password123', name: 'Erin' } });
+  const ck = auth(cookie(su));
+  const bad = await h.app.inject({ method: 'POST', url: '/api/me/password', headers: ck, payload: { current: 'wrongpass', next: 'newpassword1' } });
+  assert.strictEqual(bad.statusCode, 400, 'wrong current password is rejected (not a 500)');
+  const ok = await h.app.inject({ method: 'POST', url: '/api/me/password', headers: ck, payload: { current: 'password123', next: 'newpassword1' } });
+  assert.strictEqual(ok.statusCode, 200);
+  const login = await h.app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'erin@ex.com', password: 'newpassword1' } });
+  assert.strictEqual(login.statusCode, 200, 'the new password works');
 });

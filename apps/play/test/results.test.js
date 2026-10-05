@@ -61,6 +61,38 @@ test('disputed claims do not settle until resolved; resolution applies elo', asy
   assert.strictEqual(m.winner_team, 'aegis');
 });
 
+test('a single claim does not confirm or move Elo; the full roster must agree', async () => {
+  const [A, B] = [await user('Solo1'), await user('Solo2')];
+  const { mid, code, token } = await makeMatch(A, B);
+  const r0 = (await h.db.queryOne('SELECT rating FROM users WHERE id = $1', [A.id])).rating;
+  const res = await claim(A.ck, { ticket: token, match: code, result: 'aegis', team: 'aegis' });
+  assert.strictEqual(res.statusCode, 200);
+  assert.notStrictEqual((await res.json()).status, 'confirmed', 'one claim alone cannot confirm');
+  const m = await h.db.queryOne('SELECT * FROM matches WHERE id = $1', [mid]);
+  assert.strictEqual(m.status, 'open', 'match stays open until the roster agrees');
+  assert.strictEqual((await h.db.queryOne('SELECT rating FROM users WHERE id = $1', [A.id])).rating, r0, 'no Elo applied yet');
+});
+
+test('a claim that puts the loser on the winning side is disputed', async () => {
+  const [A, B] = [await user('Lie1'), await user('Lie2')];
+  const { mid, code, token } = await makeMatch(A, B);
+  await claim(A.ck, { ticket: token, match: code, result: 'aegis', team: 'aegis' });
+  await claim(B.ck, { ticket: token, match: code, result: 'aegis', team: 'aegis' }); // B impersonates the winner
+  const m = await h.db.queryOne('SELECT * FROM matches WHERE id = $1', [mid]);
+  assert.strictEqual(m.status, 'disputed', 'both players cannot be on the winning side');
+  assert.strictEqual(m.winner_team, null);
+});
+
+test('a ticket for one match cannot inject a claim into another', async () => {
+  const [A, B] = [await user('Xm1'), await user('Xm2')];
+  const m1 = await makeMatch(A, B);
+  const m2 = await makeMatch(A, B);
+  const bad = await claim(A.ck, { ticket: m1.token, match: m2.code, result: 'aegis', team: 'aegis' });
+  assert.notStrictEqual(bad.statusCode, 200, 'cross-match claim rejected');
+  const m = await h.db.queryOne('SELECT * FROM matches WHERE id = $1', [m2.mid]);
+  assert.strictEqual(m.status, 'open', 'the other match is untouched');
+});
+
 test('a forged claim (bad ticket) is rejected', async () => {
   const A = await user('Alice4');
   const bad = await claim(A.ck, { ticket: 'garbage.token.here', match: 'ABCD1', result: 'aegis' });
