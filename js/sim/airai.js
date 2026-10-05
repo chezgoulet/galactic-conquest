@@ -311,6 +311,7 @@
       if (best) { a.tid = best.id; return; }
       a.tid = 0; a.px = a.cas.x; a.pz = a.cas.z; a.hasPt = true; return;
     }
+    const focus = w.space && w.space[u.team] ? w.space[u.team].target : 0;   // concentrate with the fleet
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
       if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
@@ -319,6 +320,7 @@
       const d = V.distance(u.pos, e.pos);
       if (e.kind === 'infantry' && d > 2500) continue;
       let s = pf * 1000 / (d + 700) * (0.85 + R.next() * 0.3);
+      if (e.id === focus) s *= 1.5;
       if (e.id === a.lastTid) s *= 0.5;       // vary targets between passes
       if (s > bs) { bs = s; best = e; }
     }

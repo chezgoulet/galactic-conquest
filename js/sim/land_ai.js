@@ -49,11 +49,14 @@
       let s;
       if (c.owner !== sq.team) s = (c.owner ? 1 : 1.25) * (c.n[sq.team] > 0 ? 1.25 : 1) / (d + 160);
       else if (c.n[en] > 0 || Math.abs(c.cap) < 0.99) s = 1.8 / (d + 160);
+      else if (sq.n <= 3 && w.cfg.retreat >= 0.3) s = 0.9 / (d + 160);        // mauled: fall back to a friendly post to regroup
       else continue;
       let taken = 0; for (const o of w.squads) if (o !== sq && o.team === sq.team && o.goal && o.goal.cp === c.id) taken++;
-      // the team's main effort (objectives.js) pulls every squad onto one post instead of spreading them out
+      // the team's main effort (objectives.js) pulls every squad onto one post instead of spreading them out;
+      // otherwise squads avoid dog-piling the same post, so the line stays spread
       const ef = w.teams[sq.team].effort;
-      if (ef && ef.cp === c.id && sq.id % 4 !== 0) s = 1 + R.next() * 0.1;   // three squads in four go; the fourth minds the line else s *= (0.6 + R.next() * 0.8) / (1 + 0.7 * taken);
+      if (ef && ef.cp === c.id && sq.id % 4 !== 0) s = 1 + R.next() * 0.1;   // three squads in four go; the fourth minds the line
+      else s *= 1 / (1 + 0.5 * taken);                                       // no dog-piling: keep some of the line spread
       if (s > bs) { bs = s; best = { x: c.pos.x, z: c.pos.z, r: c.r * 0.7, cp: c.id, uid: 0 }; }
     }
     // go after enemy structures when the line is ours, and objective sites
