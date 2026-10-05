@@ -16,6 +16,7 @@ function sandbox(biome, seed) {
   w.cover.length = 0; w.coverGrid.clear();
   w.mines.length = 0; w.charges.length = 0; w.objs.length = 0; w.squads.length = 0; if (w.sqMap) w.sqMap.clear();
   w.ion = null; w.landT = { aegis: { aa: 1e9 }, verdant: { aa: 1e9 } }; w.events.length = 0;
+  w.uplinkSet = true; for (const f of E.TEAMS) w.teams[f].effortT = 1e9;   // no battle-flow offensives or uplink in the sandbox
   return w;
 }
 function step(w, secs) {
@@ -570,7 +571,7 @@ test('bots fight from cover and relocate when it is destroyed', () => {
   const foe = noThink(spawn(w, 'infantry', 'trooper', 'verdant', m.x + 90, m.z)); foe.hp = foe.maxHp = 1e6;
   const c1 = S.addCover(w, 'barrier', m.x + 8, m.z + 7, Math.PI / 2, { w: 5 });
   const c2 = S.addCover(w, 'barrier', m.x + 14, m.z - 8, Math.PI / 2, { w: 5 });
-  step(w, 6);
+  step(w, 3);
   assert.ok(bot.ai.cov === c1 || bot.ai.cov === c2, 'took cover');
   const first = bot.ai.cov, at = { x: bot.pos.x, z: bot.pos.z };
   S.breakCover(w, first, 'test'); step(w, 4);
@@ -625,7 +626,7 @@ test('net: cover damage, mines and objectives survive a pack/apply round trip; u
   assert.ok(guest.cover.length === host.cover.length - 0 || guest.cover.length >= host.cover.filter((c) => !c.dyn).length);
   assert.ok(Math.abs(guest.cover[3].hp / guest.cover[3].maxHp - 0.5) < 0.02 && !guest.cover[5].alive, 'static damage mirrored');
   assert.ok(guest.cover.some((c) => c.type === 'wreck' && c.id === dyn.id), 'dynamic cover mirrored');
-  assert.strictEqual(guest.mines.length, 1); assert.strictEqual(guest.objs.length, 1);
+  assert.strictEqual(guest.mines.length, 1); assert.strictEqual(guest.objs.length, host.objs.length);
   const inf = host.units.find((u) => u.kind === 'infantry'); inf.supp = 0.42; inf.stance = 1;
   const row = JSON.parse(JSON.stringify(S.packUnit(inf))); const g = { kind: 'infantry', def: inf.def, h: 1, yaw: 0 }; S.unpackUnit(g, row);
   assert.ok(g.stance === 1 && Math.abs(g.supp - 0.42) < 0.01);

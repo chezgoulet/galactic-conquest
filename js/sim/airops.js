@@ -27,6 +27,16 @@
   // Task a gunship to ferry n troops to a landing zone. Returns the gunship, or
   // null (and an 'airUnavailable' event) if none is free. The lead wires the
   // reinforcement system to this instead of spawning at a command post.
+  // A loaded lander sent straight from the fleet (or the airfield if no hangar
+  // works): the reinforcement system's way of landing a wave at a forward post.
+  function sendLander(w, team, pos, n) {
+    const u = S.launchFighter(w, team, S.carrierFor ? S.carrierFor(w, team) : null, 2);
+    if (u.type !== 'gunship') return null;
+    const cnt = airLoad(w, u, Math.min(n | 0, u.def.carry));
+    u.air.task = { type: 'drop', pos: { x: pos.x, z: pos.z }, n: cnt, stage: 'deliver', t: 0, pid: null };
+    w.events.push({ type: 'airAccepted', uid: u.id, team, role: 'gunship', task: 'drop', pos: { x: pos.x, z: pos.z }, n: cnt, eta: Math.round(V.distance(u.pos, { x: pos.x, y: 0, z: pos.z }) / 50), to: null });
+    return u;
+  }
   function airDrop(w, team, pos, n, pid) {
     let best = null, bs = 1e12;
     const h = w.cps.find(c => c.home === team) || w.cps[0];
@@ -124,5 +134,5 @@
   }
   S.systems = S.systems || []; S.systems.push(airOpsSystem);
 
-  Object.assign(S, { airLoad, airUnload, airDrop, taskAir });
+  Object.assign(S, { airLoad, airUnload, sendLander, airDrop, taskAir });
 })(window.E = window.E || {});

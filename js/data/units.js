@@ -24,7 +24,7 @@
   // faster and more numerous in the air.
   E.DOCTRINE = {
     aegis:   { infHp: 1.08, infSpeed: 0.98, vehHp: 1.15, capHp: 1.1, capDmg: 1.04, fighters: 3, fighterHp: 1.1, fighterSpeed: 0.96 },
-    verdant: { infHp: 1.0, infSpeed: 1.06, vehHp: 0.95, capHp: 1.0, capDmg: 1.0, fighters: 4, fighterHp: 0.92, fighterSpeed: 1.08 },
+    verdant: { infHp: 1.04, infSpeed: 1.06, vehHp: 1.0, capHp: 1.0, capDmg: 1.03, fighters: 4, fighterHp: 0.92, fighterSpeed: 1.08 },
   };
 
   // A battle's order of battle for one side at fleetScale 1.

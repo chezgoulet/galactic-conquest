@@ -51,7 +51,9 @@
       else if (c.n[en] > 0 || Math.abs(c.cap) < 0.99) s = 1.8 / (d + 160);
       else continue;
       let taken = 0; for (const o of w.squads) if (o !== sq && o.team === sq.team && o.goal && o.goal.cp === c.id) taken++;
-      s *= (0.6 + R.next() * 0.8) / (1 + 0.7 * taken);
+      // the team's main effort (objectives.js) pulls every squad onto one post instead of spreading them out
+      const ef = w.teams[sq.team].effort;
+      if (ef && ef.cp === c.id && sq.id % 4 !== 0) s = 1 + R.next() * 0.1;   // three squads in four go; the fourth minds the line else s *= (0.6 + R.next() * 0.8) / (1 + 0.7 * taken);
       if (s > bs) { bs = s; best = { x: c.pos.x, z: c.pos.z, r: c.r * 0.7, cp: c.id, uid: 0 }; }
     }
     // go after enemy structures when the line is ours, and objective sites
@@ -213,10 +215,14 @@
       const tooFar = d > W.range * 0.88;
       // cover maintenance
       if (!validCover(w, u, t)) { ai.cov = null; if (w.t > (ai.covT || 0)) { ai.covT = w.t + 0.7; takeCover(w, u, t.pos.x, t.pos.z, needCover ? 32 : 22, holding ? ord.x : gx, holding ? ord.z : gz); } }
-      const bound = role === 'assault' && !holding && sq && sq.advance && (d > W.range * 0.42 || tooFar) && (u.supp || 0) < 0.45 && hpf > 0.5;
+      // storming: during the team's offensive, everyone but the base of fire keeps bounding
+      // all the way onto the post instead of settling into a long-range firefight
+      const ef = w.teams[u.team].effort, storm = !holding && sq && sq.goal && ef && sq.goal.cp === ef.cp && role !== 'support'
+        && Math.hypot(gx - u.pos.x, gz - u.pos.z) > sq.goal.r && (u.supp || 0) < 0.8 && hpf > 0.35;
+      const bound = storm || (role === 'assault' && !holding && sq && sq.advance && (d > W.range * 0.42 || tooFar) && (u.supp || 0) < 0.45 && hpf > 0.5);
       if (tooFar || bound) {
-        ai.mode = 'advance';
-        let fx = t.pos.x, fz = t.pos.z;
+        ai.mode = storm ? 'storm' : 'advance';
+        let fx = storm ? gx : t.pos.x, fz = storm ? gz : t.pos.z;
         if (sq && sq.flank && !ai.flankDone && role === 'assault') {
           const df = Math.hypot(sq.flank.x - u.pos.x, sq.flank.z - u.pos.z);
           if (df < 14) ai.flankDone = true; else { fx = sq.flank.x; fz = sq.flank.z; }

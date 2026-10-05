@@ -231,5 +231,5 @@ test('some reinforcement waves arrive by troop lander', () => {
     for (let i = 0; i < 30 * 240; i++) { w.tick(1 / 30); for (const e of w.drainEvents()) { if (e.type === 'airDrop') drops++; if (e.type === 'airAccepted' && e.task === 'drop') accepted++; } }
   }
   console.log('troop landers: tasked', accepted, 'delivered', drops);
-  assert.ok(accepted > 0, 'gunships were tasked with landings');
+  assert.ok(accepted > 0 && drops > 0, 'landers were sent and at least one delivered its wave');
 });

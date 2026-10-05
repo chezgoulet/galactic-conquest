@@ -1653,7 +1653,7 @@
   // faster and more numerous in the air.
   E.DOCTRINE = {
     aegis:   { infHp: 1.08, infSpeed: 0.98, vehHp: 1.15, capHp: 1.1, capDmg: 1.04, fighters: 3, fighterHp: 1.1, fighterSpeed: 0.96 },
-    verdant: { infHp: 1.0, infSpeed: 1.06, vehHp: 0.95, capHp: 1.0, capDmg: 1.0, fighters: 4, fighterHp: 0.92, fighterSpeed: 1.08 },
+    verdant: { infHp: 1.04, infSpeed: 1.06, vehHp: 1.0, capHp: 1.0, capDmg: 1.03, fighters: 4, fighterHp: 0.92, fighterSpeed: 1.08 },
   };
 
   // A battle's order of battle for one side at fleetScale 1.
@@ -2638,7 +2638,7 @@
         a.loadT = (a.loadT || 0) + dt;
         if (a.loadT > 2.5) { S.airLoad(w, u, task.n); a.loadT = 0; task.stage = 'deliver'; }
       } else a.loadT = 0;
-      look(u, task.pos.x, u.pos.y, task.pos.z);
+      if (hd < 60) look(u, task.pos.x, u.pos.y, task.pos.z);   // face the LZ only once over the pad: looking there earlier flew it there empty
       return;
     }
     task.stage = 'deliver';
@@ -2742,6 +2742,16 @@
   // Task a gunship to ferry n troops to a landing zone. Returns the gunship, or
   // null (and an 'airUnavailable' event) if none is free. The lead wires the
   // reinforcement system to this instead of spawning at a command post.
+  // A loaded lander sent straight from the fleet (or the airfield if no hangar
+  // works): the reinforcement system's way of landing a wave at a forward post.
+  function sendLander(w, team, pos, n) {
+    const u = S.launchFighter(w, team, S.carrierFor ? S.carrierFor(w, team) : null, 2);
+    if (u.type !== 'gunship') return null;
+    const cnt = airLoad(w, u, Math.min(n | 0, u.def.carry));
+    u.air.task = { type: 'drop', pos: { x: pos.x, z: pos.z }, n: cnt, stage: 'deliver', t: 0, pid: null };
+    w.events.push({ type: 'airAccepted', uid: u.id, team, role: 'gunship', task: 'drop', pos: { x: pos.x, z: pos.z }, n: cnt, eta: Math.round(V.distance(u.pos, { x: pos.x, y: 0, z: pos.z }) / 50), to: null });
+    return u;
+  }
   function airDrop(w, team, pos, n, pid) {
     let best = null, bs = 1e12;
     const h = w.cps.find(c => c.home === team) || w.cps[0];
@@ -2839,7 +2849,7 @@
   }
   S.systems = S.systems || []; S.systems.push(airOpsSystem);
 
-  Object.assign(S, { airLoad, airUnload, airDrop, taskAir });
+  Object.assign(S, { airLoad, airUnload, sendLander, airDrop, taskAir });
 })(window.E = window.E || {});
 
 // ---- js/sim/airwpn.js ----
@@ -3934,7 +3944,9 @@
       else if (c.n[en] > 0 || Math.abs(c.cap) < 0.99) s = 1.8 / (d + 160);
       else continue;
       let taken = 0; for (const o of w.squads) if (o !== sq && o.team === sq.team && o.goal && o.goal.cp === c.id) taken++;
-      s *= (0.6 + R.next() * 0.8) / (1 + 0.7 * taken);
+      // the team's main effort (objectives.js) pulls every squad onto one post instead of spreading them out
+      const ef = w.teams[sq.team].effort;
+      if (ef && ef.cp === c.id && sq.id % 4 !== 0) s = 1 + R.next() * 0.1;   // three squads in four go; the fourth minds the line else s *= (0.6 + R.next() * 0.8) / (1 + 0.7 * taken);
       if (s > bs) { bs = s; best = { x: c.pos.x, z: c.pos.z, r: c.r * 0.7, cp: c.id, uid: 0 }; }
     }
     // go after enemy structures when the line is ours, and objective sites
@@ -4096,10 +4108,14 @@
       const tooFar = d > W.range * 0.88;
       // cover maintenance
       if (!validCover(w, u, t)) { ai.cov = null; if (w.t > (ai.covT || 0)) { ai.covT = w.t + 0.7; takeCover(w, u, t.pos.x, t.pos.z, needCover ? 32 : 22, holding ? ord.x : gx, holding ? ord.z : gz); } }
-      const bound = role === 'assault' && !holding && sq && sq.advance && (d > W.range * 0.42 || tooFar) && (u.supp || 0) < 0.45 && hpf > 0.5;
+      // storming: during the team's offensive, everyone but the base of fire keeps bounding
+      // all the way onto the post instead of settling into a long-range firefight
+      const ef = w.teams[u.team].effort, storm = !holding && sq && sq.goal && ef && sq.goal.cp === ef.cp && role !== 'support'
+        && Math.hypot(gx - u.pos.x, gz - u.pos.z) > sq.goal.r && (u.supp || 0) < 0.8 && hpf > 0.35;
+      const bound = storm || (role === 'assault' && !holding && sq && sq.advance && (d > W.range * 0.42 || tooFar) && (u.supp || 0) < 0.45 && hpf > 0.5);
       if (tooFar || bound) {
-        ai.mode = 'advance';
-        let fx = t.pos.x, fz = t.pos.z;
+        ai.mode = storm ? 'storm' : 'advance';
+        let fx = storm ? gx : t.pos.x, fz = storm ? gz : t.pos.z;
         if (sq && sq.flank && !ai.flankDone && role === 'assault') {
           const df = Math.hypot(sq.flank.x - u.pos.x, sq.flank.z - u.pos.z);
           if (df < 14) ai.flankDone = true; else { fx = sq.flank.x; fz = sq.flank.z; }
@@ -5298,8 +5314,9 @@
       }
       const na = c.n.aegis, nv = c.n.verdant;
       c.contested = na > 0 && nv > 0;
-      if (!c.contested && (na || nv)) {
-        const dir = na ? 1 : -1, n = Math.min(6, na || nv);
+      // the side with more boots in the circle takes it; defenders slow the count but cannot freeze it
+      if (na !== nv) {
+        const dir = na > nv ? 1 : -1, n = Math.min(6, Math.abs(na - nv)) * (c.contested ? 0.6 : 1);
         const before = c.cap;
         c.cap = E.clamp(c.cap + dir * (0.05 + 0.02 * n) * dt, -1, 1);
         const team = dir > 0 ? 'aegis' : 'verdant';
@@ -5325,7 +5342,7 @@
   function spawnCP(w, f) {
     const en = S.enemyOf(f); let best = null, bs = -1;
     for (const c of w.cps) {
-      if (c.owner !== f || c.n[en] > c.n[f] + 2) continue;
+      if (c.owner !== f || (c.n[en] > 0 && !c.home)) continue;   // no reinforcing straight into a post under assault (the home base always can)
       let nd = 1e9;
       for (const o of w.cps) if (o.owner !== f) nd = Math.min(nd, E.distXZ(c.pos, o.pos));
       const s = (1 / (nd + 120)) * (0.5 + w.rng.next());
@@ -5339,7 +5356,7 @@
       let inf = 0, air = 0, gun = 0, lander = false; const veh = { skiff: 0, tank: 0 }; let cap = null;
       for (const u of w.units) {
         if (!u.alive || u.team !== f) continue;
-        if (u.kind === 'infantry') inf++; else if (u.kind === 'fighter') { air++; if (u.type === 'gunship') { gun++; if (!u.pid && !(u.air && u.air.task) && u.hp > u.maxHp * 0.5) lander = true; } } else if (u.kind === 'vehicle') veh[u.type]++; else if (u.kind === 'capital' && !cap) cap = u;
+        if (u.kind === 'infantry') inf++; else if (u.kind === 'fighter') { air++; if (u.type === 'gunship') { gun++; if (u.air && u.air.task && u.air.task.type === 'drop') lander = true; } } else if (u.kind === 'vehicle') veh[u.type]++; else if (u.kind === 'capital' && !cap) cap = u;
       }
       T.alive = inf; T.capital = cap ? cap.id : 0;
       T.strikeT -= dt;
@@ -5348,11 +5365,11 @@
       if (T.waveT <= 0) {
         T.waveT = 5.5;
         const n = Math.min(5, T.infCap - inf, T.tickets - inf);
-        // every other wave comes in by troop lander to a forward post, if a gunship is free:
-        // shoot the lander down on the way and the wave never arrives
+        // every other wave comes down from the fleet by troop lander to a forward post (one
+        // lander at a time): shoot it down on the way and the wave never arrives
         T.waveN = (T.waveN || 0) + 1;
-        const lz = n >= 2 && T.waveN % 2 === 0 && lander && S.airDrop ? spawnCP(w, f) : null;
-        if (!(lz && !lz.home && S.airDrop(w, f, lz.pos, n)))
+        const lz = n >= 2 && T.waveN % 2 === 0 && !lander && S.sendLander ? spawnCP(w, f) : null;
+        if (!(lz && !lz.home && S.sendLander(w, f, lz.pos, n)))
           for (let i = 0; i < n; i++) { const c = spawnCP(w, f); if (!c) break; S.spawnUnit(w, 'infantry', S.pickClass(w), f, S.ring(w, c.pos, 5, c.r * 0.85)); }
       }
       for (const type of ['skiff', 'tank']) {
@@ -5373,10 +5390,69 @@
       if (T.strikeT <= 0 && cap && !cap.pid) {
         T.strikeT = E.WEAPONS.orbital.cd * (T.bonus.orbital ? 0.7 : 1.15) + w.rng.next() * 20;
         const en = S.enemyOf(f); let best = null, bn = 2;
-        for (const c of w.cps) if (c.n[en] > bn && c.n[f] === 0) { bn = c.n[en]; best = c; }
-        if (!best) { const tk = w.units.find(u => u.alive && u.team === en && (u.type === 'tank' || u.kind === 'turret')); if (tk && w.rng.next() < 0.6) best = tk; }
+        // never waste the salvo on ground under an enemy shield dome
+        const open = (pos) => !(S.shielded && S.shielded(w, en, pos));
+        for (const c of w.cps) if (c.n[en] > bn && c.n[f] === 0 && open(c.pos)) { bn = c.n[en]; best = c; }
+        if (!best) { const tk = w.units.find(u => u.alive && u.team === en && (u.type === 'tank' || u.kind === 'turret') && open(u.pos)); if (tk && w.rng.next() < 0.6) best = tk; }
         if (best) S.strike(w, f, best.pos, null);
       }
+    }
+  }
+
+  // ── battle objectives: what the fight is about beyond holding posts ──
+  // Each side must break the other's shield generator to open its base to
+  // orbital fire, and a contested uplink comes online mid-battle. Finishing one
+  // swings reinforcements. (The building blocks are S.addObjective in land_struct.js.)
+  const UPLINK_AT = 150, SWING = 20, OFFENSIVE_EVERY = 80, OFFENSIVE_FOR = 70;
+  function setupObjectives(w) {
+    if (!S.addObjective) return;
+    for (const f of E.TEAMS) {
+      const en = S.enemyOf(f), gen = w.units.find(u => u.alive && u.team === en && u.type === 'shieldgen');
+      if (gen) S.addObjective(w, { type: 'destroy', target: gen.id, team: f, label: 'Destroy the shield generator', key: 'shieldgen' });
+    }
+  }
+  function battleFlow(w, dt) {
+    if (w.winner || !w.objs || w.tickN % 15 !== 0) return;
+    if (!w.uplinkSet && w.t >= UPLINK_AT) {
+      w.uplinkSet = true;
+      // the post nobody calls home that is most fought over
+      let c = null, bs = -1;
+      for (const p of w.cps) { if (p.home) continue; const s = p.n.aegis + p.n.verdant + (p.contested ? 5 : 0) + (1 - Math.abs(p.cap)) * 3; if (s > bs) { bs = s; c = p; } }
+      if (c) { S.addObjective(w, { type: 'uplink', pos: { x: c.pos.x + c.r * 1.6, z: c.pos.z }, r: 22, need: 45, team: null, label: 'Hold the uplink', key: 'uplink' }); w.events.push({ type: 'announce', key: 'uplinkOnline', team: null }); }
+    }
+    // The offensive: every so often a side masses for one post — every squad
+    // converges on it, the fleet prepares it with an orbital strike and the wing
+    // flies close support. This is what moves the front.
+    for (const f of E.TEAMS) {
+      const T = w.teams[f], en = S.enemyOf(f);
+      if (T.effort && (w.t > T.effort.until || w.cps[T.effort.cp].owner === f)) T.effort = null;
+      if (T.effortT === undefined) T.effortT = OFFENSIVE_EVERY * (0.5 + w.rng.next() * 0.5);
+      T.effortT -= dt * 15;
+      if (T.effort || T.effortT > 0) continue;
+      T.effortT = OFFENSIVE_EVERY * (0.8 + w.rng.next() * 0.4);
+      // the nearest post we do not hold: the front, not some far post that merely looks empty
+      let c = null, bs = -1;
+      for (const p of w.cps) {
+        if (p.owner === f) continue;
+        let nd = 1e9; for (const o of w.cps) if (o.owner === f) nd = Math.min(nd, E.distXZ(p.pos, o.pos));
+        const s = 1000 / (nd + 200) - p.n[en] * 0.04 + (p.home ? -0.4 : 0) + w.rng.next() * 0.2;
+        if (s > bs) { bs = s; c = p; }
+      }
+      if (!c) continue;
+      T.effort = { cp: c.id, until: w.t + OFFENSIVE_FOR };
+      for (const sq of w.squads || []) if (sq.team === f) sq.goalT = 0;   // everyone re-plans now
+      w.events.push({ type: 'offensive', team: f, cp: c.id, pos: V.clone(c.pos), until: T.effort.until });
+      if (T.strikeT <= 0 && !(S.shielded && S.shielded(w, en, c.pos)) && c.n[f] === 0 && S.strike(w, f, c.pos, null)) T.strikeT = E.WEAPONS.orbital.cd;
+      if (S.taskAir) S.taskAir(w, f, 'any', c.pos, null);
+    }
+    for (const o of w.objs) {
+      if (!o.done || o.paid) continue;
+      o.paid = true;
+      const win = o.winner || (o.success ? o.team : null);
+      if (!win) continue;
+      const lose = S.enemyOf(win);
+      w.teams[win].tickets += SWING; w.teams[lose].tickets = Math.max(1, w.teams[lose].tickets - SWING);
+      w.events.push({ type: 'announce', key: o.key === 'shieldgen' ? 'shieldgenDown' : 'objectiveWon', team: win, obj: o.id });
     }
   }
 
@@ -5401,7 +5477,8 @@
     for (const T of [A, Vd]) { const q = T.tickets <= 25 ? 2 : T.tickets <= T.startTickets * 0.5 ? 1 : 0; if (q > (T.warned || 0)) { T.warned = q; w.events.push({ type: 'announce', key: q === 2 ? 'ticketsLow' : 'ticketsHalf', team: T.id }); } }
   }
 
-  Object.assign(S, { updateCPs, spawnCP, reinforce, bleedAndWin });
+  S.systems.push(battleFlow);
+  Object.assign(S, { setupObjectives, battleFlow, updateCPs, spawnCP, reinforce, bleedAndWin });
 })(window.E = window.E || {});
 
 // ---- js/sim/sim.js ----
@@ -5452,6 +5529,7 @@
       }
     }
     w.units = w.units.filter(u => u.alive);
+    S.setupObjectives(w);
     for (const u of w.units) u.bornT = -10;
     w.events.length = 0;
   }

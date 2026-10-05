@@ -471,7 +471,7 @@
         a.loadT = (a.loadT || 0) + dt;
         if (a.loadT > 2.5) { S.airLoad(w, u, task.n); a.loadT = 0; task.stage = 'deliver'; }
       } else a.loadT = 0;
-      look(u, task.pos.x, u.pos.y, task.pos.z);
+      if (hd < 60) look(u, task.pos.x, u.pos.y, task.pos.z);   // face the LZ only once over the pad: looking there earlier flew it there empty
       return;
     }
     task.stage = 'deliver';

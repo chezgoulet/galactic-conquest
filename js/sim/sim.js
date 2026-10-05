@@ -45,6 +45,7 @@
       }
     }
     w.units = w.units.filter(u => u.alive);
+    S.setupObjectives(w);
     for (const u of w.units) u.bornT = -10;
     w.events.length = 0;
   }
