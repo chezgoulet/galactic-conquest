@@ -30,18 +30,25 @@
     loading(`${(opts.system || b.name).toUpperCase()}<span>${b.theme} · ${b.challenge.name}</span>`, () => {
       game.stop();
       game.start(Object.assign({ role: 'sp' }, opts));
+      if (E.Music && E.Music.on) E.Music.setMode('battle');
       window.__GC_BATTLE__ = true;
       game.onEnd = (r) => {
         const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills; menu.saveProfile();
         let extra = `<div class="r-xp">+${(r.score + (r.won ? 500 : 100)).toLocaleString()} XP · ${E.Campaign.rank(P.xp).name}</div>`;
         if (ctx && ctx.campaign) {
-          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, E.Campaign.battleReport(game.world));
+          const rep = E.Campaign.battleReport(game.world), pf = ctx.campaign.playerFaction;
+          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, rep);
           ctx.res = res; menu.saveCampaign();
-          extra += `<div class="r-camp">${res.defending ? (res.won ? `${res.planet} holds.` : `${res.planet} has fallen.`) : (res.won ? `${res.planet} is yours.` : `The assault on ${res.planet} failed.`)} +${res.reward} credits</div>`;
+          const head = res.defending ? (res.won ? `${res.planet} holds.` : `${res.planet} has fallen.`) : (res.won ? `${res.planet} is yours.` : `The assault on ${res.planet} failed.`);
+          // what the battle cost the campaign fleet: each ship before -> after
+          const before = (ctx.before && ctx.before.ships) || [], mine = rep[pf] || [];
+          const rows = before.map((s, i) => { const m = mine[i], name = (E.Campaign.SHIPS[s.type] || { name: s.type }).name; const after = !m ? s.hp : m.lost ? 0 : m.hp; return `<div class="rc-s ${after <= 0 ? 'lost' : after < s.hp - 0.05 ? 'dmg' : ''}"><span>${name}</span><i><u style="width:${Math.round(s.hp * 100)}%"></u><b style="width:${Math.round(after * 100)}%"></b></i><em>${Math.round(s.hp * 100)}% &rsaquo; ${after <= 0 ? 'LOST' : Math.round(after * 100) + '%'}</em></div>`; }).join('');
+          extra += `<div class="r-camp"><div class="rc-h">${head} <b>+${res.reward} credits</b></div>${rows ? `<div class="rc-fleet"><div class="rc-t">${ctx.before && ctx.before.name ? ctx.before.name.toUpperCase() : 'FLEET'}: COST OF THE BATTLE</div>${rows}</div>` : ''}</div>`;
+          ctx.summary = `${head} +${res.reward} credits`;
         }
         game.hud.resultsExtra(extra);
       };
-      game.onContinue = () => { const res = ctx && ctx.res; back(() => { if (ctx && ctx.campaign) menu.afterBattle(res || { defending: ctx.defending }); else menu.show(); }); };
+      game.onContinue = () => { const res = ctx && ctx.res; back(() => { if (ctx && ctx.campaign) menu.afterBattle(res || { defending: ctx.defending }, ctx.summary); else menu.show(); }); };
       game.onQuit = () => {
         if (ctx && ctx.campaign && ctx.defending) { E.Campaign.applyBattle(ctx.campaign, ctx.planet, false, 0, true, E.Campaign.battleReport(game.world)); menu.saveCampaign(); }
         back(() => { if (ctx && ctx.campaign) menu.showCampaign(); else menu.show(); });

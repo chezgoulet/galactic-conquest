@@ -20,6 +20,7 @@
       this.running = false; this.acc = new E.Accumulator(30);
       this.renderer = new E.Renderer(canvas, { quality: this.settings.quality || 'auto' });
       this.hud = new E.HUD(document.getElementById('ui'), this);
+      if (E.SettingsUI) E.SettingsUI.apply(this.settings);
       this.bind();
     }
 
@@ -50,7 +51,8 @@
       this.world.drainEvents();
       this.running = true; this.last = performance.now();
       cancelAnimationFrame(this._raf); this._raf = requestAnimationFrame(this.frame);
-      if (E.Music && E.Music.on) { E.Music.setTheme(this.team); }
+      if (E.Music && E.Music.on) { E.Music.setTheme(this.team); E.Music.setMode('battle'); }
+      this.squadMode = 'FOLLOWING';
       E.bus.emit('game:start', this);
       return this;
     }
@@ -83,6 +85,7 @@
       const events = w.drainEvents();
       if (this.net && this.role === 'host') this.net.frame(w, events, now);
       if (events.length) { this.renderer.applyEvents(events, w); this.audio(events); if (this.state !== 'attract') this.hud.events(events, w); }
+      if (E.AudioDir) E.AudioDir.frame(dt, this);
       this.flow(dt);
       const view = this.view();
       this.renderer.fx.syncProjectiles(w.projectiles, dt);
@@ -94,7 +97,6 @@
       g.zoom.value = this.renderer.camera.zoom * (u && u.type === 'sniper' ? 1 : 0.3);
       g.fade.value = Math.max(0, (this.fade || 0)); this.fade = Math.max(0, (this.fade || 0) - dt * 1.6);
       this.renderer.update(dt, this.clock, w, view);
-      if (E.Music && E.Music.on) E.Music.setIntensity(this.state === 'attract' ? 0.3 : w.intensity);
       if (this.state !== 'attract') this.hud.update(dt, w, P, u);
     };
 
@@ -103,7 +105,7 @@
       const w = this.world, u = this.unit();
       if (this.state === 'attract') return;
       if (w.winner) {
-        if (!this.endAt) { this.endAt = this.clock; this.unlock(); if (E.Music && E.Music.on) E.Music.victory(w.winner); if (this.state === 'play') this.cmd('release'); this.state = 'ended'; const c = w.cps[2]; Object.assign(this.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 20, z: c.pos.z, r: 420, h: 160, speed: 0.06 }); }
+        if (!this.endAt) { this.endAt = this.clock; this.unlock(); if (E.Music && E.Music.on) { if (w.winner === this.team) E.Music.victory(w.winner); else E.Music.defeat(this.team); } if (this.state === 'play') this.cmd('release'); this.state = 'ended'; const c = w.cps[2]; Object.assign(this.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 20, z: c.pos.z, r: 420, h: 160, speed: 0.06 }); }
         if (!this.ended && this.clock - this.endAt > 3.5) { this.ended = true; const r = this.result(); this.hud.showResults(r); if (this.onEnd) this.onEnd(r); }
         return;
       }
@@ -189,6 +191,7 @@
     }
     squadOrder(type) {
       const w = this.world, u = this.unit(); if (!u) return;
+      this.squadMode = type === 'follow' ? 'FOLLOWING' : type === 'attack' ? 'MOVING' : 'FREE';
       if (type === 'follow') {
         const near = w.units.filter(e => e.alive && e.team === this.team && !e.pid && e.kind === 'infantry' && E.distXZ2(e.pos, u.pos) < 70 * 70).sort((a, b) => E.distXZ2(a.pos, u.pos) - E.distXZ2(b.pos, u.pos)).slice(0, 6);
         this.squad = near.map(e => e.id); this.cmd('order', this.squad, 'follow');
@@ -207,7 +210,8 @@
       if (!this.running || this.state === 'attract') return;
       if (this.keys.has(k)) return;
       this.keys.add(k);
-      if (k === 'escape') { this.togglePause(); return; }
+      if (k === 'f1' || (k === '/' && this.state !== 'play')) { e.preventDefault(); if (this.hud.layerKind === 'controls') this.hud.closeControls(); else this.hud.showControls(); return; }
+      if (k === 'escape') { if (this.hud.layerKind === 'controls') { this.hud.closeControls(); return; } if (this.hud.armed) { this.hud.armed = null; this.hud.toast('CANCELLED'); return; } this.togglePause(); return; }
       if (this.paused || this.state === 'ended') return;
       if (k === 'tab') this.hud.scoreboard(true);
       if (this.state === 'play') {
@@ -216,6 +220,9 @@
         else if (k === 'z') this.squadOrder('follow');
         else if (k === 'x') this.squadOrder('attack');
         else if (k === 'v') this.squadOrder('free');
+        else if (k === 'y') this.callAir('any');
+        else if (k === 'u') this.callAir('gunship');
+        else this.unitKey(k);
       } else if (this.state === 'commander') {
         const w = this.world, mine = (kind) => w.units.filter(u => u.alive && u.team === this.team && u.kind === kind && !u.pid).map(u => u.id);
         if (k === 'f') this.takeControl();
@@ -227,6 +234,20 @@
         if (k === 'c') this.toCommander();
         else if (k >= '1' && k <= '4') this.hud.pickClass(+k - 1);
         else if (k === 'enter' || k === ' ') this.hud.doDeploy();
+      }
+    }
+    // call-in and ship verbs bound to keys while playing
+    callAir(role) {
+      const u = this.unit(), a = this.renderer.camera.aimPoint; if (!u || !a) return;
+      this.cmd('verb', 'callAir', { x: a.x, z: a.z }, role); if (E.SFX) E.SFX.play('call');
+    }
+    unitKey(k) {
+      const u = this.unit(); if (!u) return;
+      if (u.kind === 'fighter' && k === 'x') this.cmd('verb', 'drop');
+      else if (u.kind === 'capital') {
+        if (k === 'b') this.cmd('verb', 'board');
+        else if (k >= '1' && k <= '4') this.cmd('verb', 'power', +k - 1);
+        else if (k === 'n') { const t = this.clock; if (this._nT && t - this._nT < 1.5) { this.cmd('verb', 'retreat'); this._nT = 0; } else { this._nT = t; this.hud.toast(u.retreat ? 'PRESS N AGAIN TO CANCEL THE RETREAT' : 'PRESS N AGAIN TO ORDER THE RETREAT'); } }
       }
     }
     keyup(e) { const k = e.key.toLowerCase(); this.keys.delete(k); if (k === 'tab') this.hud.scoreboard(false); }
@@ -253,6 +274,7 @@
           if (!this.locked()) { this.lock(); if (!this.freeFire) return; }
           if (e.button === 0) this.mouse.l = true; else if (e.button === 2) this.mouse.r = true; else if (e.button === 1) { this.mouse.m = true; e.preventDefault(); }
         } else if (this.state === 'commander') {
+          if (e.button === 0 && this.hud.armed) { this.fireArmed(e); return; }
           if (e.button === 0) this.sel = { x: e.clientX, y: e.clientY };
           else if (e.button === 2) {
             const p = this.renderer.camera.pick(e.clientX, e.clientY, this.world);
@@ -274,12 +296,19 @@
       on(this.canvas, 'wheel', (e) => { if (this.state === 'commander') { const c = this.renderer.camera.cmd; c.dist = E.clamp(c.dist * (e.deltaY > 0 ? 1.12 : 0.89), 60, 1100); } e.preventDefault(); }, { passive: false });
       on(window, 'contextmenu', (e) => e.preventDefault());
       on(document, 'pointerlockchange', () => { if (!this.locked() && this.running && this.state === 'play' && !this.paused && !this.world.winner && !this.noAutoPause) this.togglePause(true); });
-      const unlockAudio = () => { if (E.Music && !E.Music.on && this.settings.audio !== false) { E.Music.start(this.team || 'aegis'); E.Music.setVolume(this.settings.volume == null ? 0.8 : this.settings.volume); } else if (E.Music) E.Music.resume(); };
+      const unlockAudio = () => { if (E.Music && !E.Music.on && this.settings.audio !== false) { E.Music.start(this.team || 'aegis'); if (E.SettingsUI) E.SettingsUI.apply(this.settings); } else if (E.Music) E.Music.resume(); };
       on(window, 'pointerdown', unlockAudio); on(window, 'keydown', unlockAudio);
     }
 
     // ── audio routing (distance-attenuated, rate-limited) ────
+    fireArmed(e) {
+      const A = this.hud.armed, p = this.renderer.camera.pick(e.clientX, e.clientY, this.world); if (!p) return;
+      if (A.kind === 'cas') this.cmd('verb', 'callAir', { x: p.x, z: p.z }, A.role); else this.cmd('verb', 'strike', p.x, p.z);
+      this.renderer.fx.ring(p, A.kind === 'strike' ? 26 : 14, A.kind === 'strike' ? [1, 0.2, 0.1] : [1, 0.8, 0.3], 0.9, true);
+      this.hud.armed = null; if (E.SFX) E.SFX.play('call');
+    }
     audio(events) {
+      if (E.AudioDir) { E.AudioDir.events(this, events); return; }
       if (!E.Music || !E.Music.on) return;
       const cam = this.renderer.scene.camera.position, S = E.SFX; let n = 0;
       const u = this.unit(), uid = u ? u.id : -1;
