@@ -1258,6 +1258,30 @@
   };
 })(window.E = window.E || {});
 
+// ---- js/data/commendations.js ----
+// Career commendations: medals earned after a battle, folded into the local
+// profile so a player has a record of how they fight beyond raw XP. Pure — each
+// medal is a predicate over the battle result (Game.result()), so this evaluates
+// identically in the browser and in tests.
+(function (E) {
+  'use strict';
+  const LIST = [
+    { id: 'veteran', name: 'Veteran', desc: 'Win a battle', test: (r) => !!r.won },
+    { id: 'sharpshooter', name: 'Sharpshooter', desc: '20 kills in one battle', test: (r) => (r.kills || 0) >= 20 },
+    { id: 'standard', name: 'Standard Bearer', desc: '4 captures in one battle', test: (r) => (r.captures || 0) >= 4 },
+    { id: 'unstoppable', name: 'Unstoppable', desc: 'A kill streak of 10', test: (r) => (r.best || 0) >= 10 },
+    { id: 'flawless', name: 'Flawless', desc: 'Win without dying', test: (r) => !!r.won && (r.deaths || 0) === 0 },
+    { id: 'blitz', name: 'Blitz', desc: 'Win in under six minutes', test: (r) => !!r.won && (r.time || 1e9) < 360 },
+    { id: 'martyr', name: 'Hold the Line', desc: 'Win after dying 10 times', test: (r) => !!r.won && (r.deaths || 0) >= 10 },
+  ];
+  function evaluate(r) {
+    if (!r) return [];
+    return LIST.filter((m) => { try { return m.test(r); } catch (e) { return false; } }).map((m) => ({ id: m.id, name: m.name, desc: m.desc }));
+  }
+  function count(profile) { const m = (profile && profile.medals) || {}; let n = 0; for (const k in m) n += m[k]; return n; }
+  E.Commendations = { LIST, evaluate, count };
+})(window.E = window.E || {});
+
 // ---- js/data/factions.js ----
 // The two factions. Everything downstream (hulls, weapons, insignia, music,
 // doctrine) reads from here so each side is unmistakably itself. They are
@@ -14411,8 +14435,13 @@
       if (E.Music && E.Music.on) E.Music.setMode('battle');
       window.__GC_BATTLE__ = true;
       game.onEnd = (r) => {
-        const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills; menu.saveProfile();
+        const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills;
+        if (!P.medals) P.medals = {};
+        const earned = E.Commendations ? E.Commendations.evaluate(r) : [];
+        for (const m of earned) P.medals[m.id] = (P.medals[m.id] || 0) + 1;
+        menu.saveProfile();
         let extra = `<div class="r-xp">+${(r.score + (r.won ? 500 : 100)).toLocaleString()} XP · ${E.Campaign.rank(P.xp).name}</div>`;
+        if (earned.length) extra += `<div class="r-medals">${earned.map((m) => `<span class="r-medal" title="${m.desc}">★ ${m.name}</span>`).join('')}</div>`;
         if (ctx && ctx.campaign) {
           const rep = E.Campaign.battleReport(game.world), pf = ctx.campaign.playerFaction;
           const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, rep);
@@ -14480,7 +14509,7 @@
       this.root = root;
       this.settings = E.SettingsUI.ensure(Object.assign({ faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 }, store.get(LS_SET, {})));
       E.SettingsUI.apply(this.settings);
-      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, store.get(LS_PRO, {}));
+      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0, medals: {} }, store.get(LS_PRO, {}));
       const c = store.get(LS_KEY, null); this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.onStart = null; this.el = null; this.sel = -1;
       E.bus.on('settings:changed', () => this.saveSettings());
@@ -14491,7 +14520,7 @@
       const base = { faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 };
       this.settings = E.SettingsUI.ensure(Object.assign(base, d.settings || {}));
       E.SettingsUI.apply(this.settings);
-      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, d.profile || {});
+      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0, medals: {} }, d.profile || {});
       const c = d.campaign; this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.saveSettings(); this.saveProfile(); this.saveCampaign();
     }
@@ -14519,7 +14548,7 @@
     // ── main ───────────────────────────────────────────────────
     show() {
       if (E.Music && E.Music.on) E.Music.setMode('battle');
-      const c = this.campaign, rk = E.Campaign.rank(this.profile.xp);
+      const c = this.campaign, rk = E.Campaign.rank(this.profile.xp), medals = E.Commendations ? E.Commendations.count(this.profile) : 0;
       this.layer(`
         <div class="m-main">
           <div class="m-logo"><span>GALACTIC</span><b>CONQUEST</b><i>land · air · space</i></div>
@@ -14531,7 +14560,7 @@
             <button class="m-item" data-a="controls"><b>Controls</b><span>Every binding, for every unit</span></button>
             <button class="m-item" data-a="settings"><b>Settings</b><span>Graphics, audio mix, accessibility</span></button>
           </nav>
-          <div class="m-career"><div><b>${esc(this.settings.name)}</b> · ${rk.name}</div><div class="bar"><i style="width:${(rk.prog * 100).toFixed(0)}%"></i></div><span>${this.profile.xp.toLocaleString()} XP · ${this.profile.wins}/${this.profile.battles} victories · ${this.profile.kills} kills</span></div>
+          <div class="m-career"><div><b>${esc(this.settings.name)}</b> · ${rk.name}</div><div class="bar"><i style="width:${(rk.prog * 100).toFixed(0)}%"></i></div><span>${this.profile.xp.toLocaleString()} XP · ${this.profile.wins}/${this.profile.battles} victories · ${this.profile.kills} kills${medals ? ' · ★ ' + medals + ' commendations' : ''}</span></div>
         </div>
         <div class="m-foot">Everything you see and hear is generated from code.</div>`, 'm-root');
       this.el.querySelectorAll('.m-item').forEach(b => b.addEventListener('click', () => { const a = b.dataset.a; if (a === 'campaign') this.showCampaign(); else if (a === 'instant') this.showInstant(); else if (a === 'mp') this.showMultiplayer(); else if (a === 'codex') this.showCodex(); else if (a === 'controls') this.showControls(); else this.showSettings(); }));
