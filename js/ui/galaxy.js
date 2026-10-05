@@ -13,7 +13,7 @@
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const css = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
   const VW = 1300, VH = 780, MX = 150, MY = 90;
-  const OWN = { aegis: '#ff6a3a', verdant: '#3df0b0', free: '#9aa8c0' };
+  const OWN = E.Palette.col;
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const TRAIT = { shipyard: 'M-7 5 L-9 -1 L-3 -1 L-3 -6 L3 -6 L3 -1 L9 -1 L7 5 Z', refinery: 'M0 -8 C5 -1 7 2 7 4 A7 7 0 0 1 -7 4 C-7 2 -5 -1 0 -8 Z', fortress: 'M-8 7 L-8 -3 L-5 -3 L-5 -6 L-2 -6 L-2 -3 L2 -3 L2 -6 L5 -6 L5 -3 L8 -3 L8 7 Z' };
   const SHIP_ABBR = { frigate: 'FR', cruiser: 'CR', carrier: 'CV', dreadnought: 'DN' };

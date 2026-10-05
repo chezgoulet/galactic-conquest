@@ -152,11 +152,12 @@
           <div class="m-h"><button class="m-back">‹ Back</button><h1>Settings</h1></div>
           <div class="st-grid"><label>Callsign<input type="text" class="s-name" maxlength="16" value="${esc(s.name)}"></label></div>
           <div class="st-set"></div>
-          <div class="m-row"><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
+          <div class="m-row"><button class="gc-btn s-how">How to play</button><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
         </div>`);
       this.bindCommon();
       this.q('.st-set').innerHTML = E.SettingsUI.html(s); E.SettingsUI.bind(this.q('.st-set'), s, window.GC && window.GC.game);
       this.q('.s-name').addEventListener('input', (e) => { s.name = e.target.value.trim() || 'Commander'; this.saveSettings(); });
+      this.on('.s-how', () => { if (E.Onboarding) E.Onboarding.show(); });
       this.on('.s-ctl', () => this.showControls('settings'));
       this.on('.s-reset', () => { if (confirm('Erase your career and campaign?')) { this.profile = { xp: 0, battles: 0, wins: 0, kills: 0 }; this.campaign = null; this.saveProfile(); this.saveCampaign(); this.show(); } });
     }

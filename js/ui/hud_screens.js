@@ -10,8 +10,8 @@
 
   // ── shared: settings panel ──
   const SettingsUI = {
-    defaults: { quality: 'auto', sens: 1, invertY: false, reduceMotion: false, uiScale: 1, mix: { master: 0.8, music: 0.8, sfx: 0.9, ambience: 0.8, voice: 1, ui: 0.8 } },
-    ensure(s) { s.mix = Object.assign({}, SettingsUI.defaults.mix, s.mix || {}, s.volume != null && !(s.mix && s.mix.master != null) ? { master: s.volume } : {}); if (s.uiScale == null) s.uiScale = 1; return s; },
+    defaults: { quality: 'auto', sens: 1, invertY: false, reduceMotion: false, uiScale: 1, palette: 'default', highContrast: false, mix: { master: 0.8, music: 0.8, sfx: 0.9, ambience: 0.8, voice: 1, ui: 0.8 } },
+    ensure(s) { s.mix = Object.assign({}, SettingsUI.defaults.mix, s.mix || {}, s.volume != null && !(s.mix && s.mix.master != null) ? { master: s.volume } : {}); if (s.uiScale == null) s.uiScale = 1; if (s.palette == null) s.palette = 'default'; return s; },
     html(s) {
       SettingsUI.ensure(s);
       return `<div class="st-grid">
@@ -20,6 +20,8 @@
         <label>Interface size<input type="range" class="s-ui" min="0.8" max="1.5" step="0.05" value="${s.uiScale}"><output>${Math.round(s.uiScale * 100)}%</output></label>
         <label class="chk"><input type="checkbox" class="s-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
         <label class="chk"><input type="checkbox" class="s-rm"${s.reduceMotion ? ' checked' : ''}> Reduce motion (no pulsing, flashing or sliding)</label>
+        <label>Team colours<select class="s-pal">${(E.Palette ? E.Palette.names : ['default']).map(n => `<option value="${n}"${(s.palette || 'default') === n ? ' selected' : ''}>${n === 'colorblind' ? 'Colour-blind safe' : 'Default'}</option>`).join('')}</select></label>
+        <label class="chk"><input type="checkbox" class="s-hc"${s.highContrast ? ' checked' : ''}> High-contrast interface</label>
       </div>
       <div class="st-sub">AUDIO MIX</div>
       <div class="st-grid">${MIX.map(([k, n]) => `<label>${n}<input type="range" data-mix="${k}" min="0" max="1" step="0.05" value="${s.mix[k]}"><output>${Math.round(s.mix[k] * 100)}</output></label>`).join('')}</div>`;
@@ -27,7 +29,9 @@
     apply(s) {
       SettingsUI.ensure(s);
       document.documentElement.classList.toggle('rm', !!s.reduceMotion);
+      document.documentElement.classList.toggle('hc', !!s.highContrast);
       document.documentElement.style.setProperty('--ui-scale', String(s.uiScale));
+      if (E.Palette) E.Palette.apply(s.palette || 'default');
       if (E.Mixer) E.Mixer.setMix(s.mix);
     },
     bind(root, s, game) {
@@ -38,6 +42,8 @@
       rng('.s-sens', 'sens', v => v.toFixed(2)); rng('.s-ui', 'uiScale', v => Math.round(v * 100) + '%');
       q('.s-inv').addEventListener('change', (e) => { s.invertY = e.target.checked; save(); });
       q('.s-rm').addEventListener('change', (e) => { s.reduceMotion = e.target.checked; save(); });
+      const pal = q('.s-pal'); if (pal) pal.addEventListener('change', (e) => { s.palette = e.target.value; save(); });
+      const hc = q('.s-hc'); if (hc) hc.addEventListener('change', (e) => { s.highContrast = e.target.checked; save(); });
       root.querySelectorAll('[data-mix]').forEach(r => r.addEventListener('input', (e) => { s.mix[r.dataset.mix] = +e.target.value; if (r.dataset.mix === 'master') s.volume = s.mix.master; e.target.nextElementSibling.textContent = Math.round(+e.target.value * 100); save(); if (E.SFX && r.dataset.mix !== 'music') E.SFX.play(r.dataset.mix === 'voice' ? 'beep' : r.dataset.mix === 'ui' ? 'select' : 'rifle', null, 0.6); }));
     },
   };
@@ -63,13 +69,14 @@
     this.setLayer('pause', `
       <div class="p-card">
         <div class="p-title">PAUSED</div>
-        <div class="p-btns"><button class="gc-btn primary p-resume">Resume</button><button class="gc-btn p-ctl">Controls <span class="k">F1</span></button></div>
+        <div class="p-btns"><button class="gc-btn primary p-resume">Resume</button><button class="gc-btn p-ctl">Controls <span class="k">F1</span></button><button class="gc-btn p-how">How to play</button></div>
         <div class="p-set"></div>
         <button class="gc-btn p-quit">${g.role === 'sp' ? 'Abandon Battle' : 'Leave Match'}</button>
       </div>`);
     const L = this.$.layer; L.querySelector('.p-set').innerHTML = SettingsUI.html(s); SettingsUI.bind(L, s, g);
     L.querySelector('.p-resume').addEventListener('click', () => g.togglePause(false));
     L.querySelector('.p-ctl').addEventListener('click', () => this.showControls());
+    const how = L.querySelector('.p-how'); if (how) how.addEventListener('click', () => { if (E.Onboarding) E.Onboarding.show(); });
     L.querySelector('.p-quit').addEventListener('click', () => { g.paused = false; if (g.onQuit) g.onQuit(); });
     const r = L.querySelector('.p-resume'); if (r) r.focus();
   };
