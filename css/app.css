@@ -162,8 +162,8 @@ button.gc-btn:disabled, button.gc-btn.off { opacity: .42; cursor: not-allowed; }
 .br-own { left: 1.4rem; bottom: 1.4rem; width: 19.5rem; } .br-tgt { right: 1.4rem; top: 9rem; width: 18.5rem; border-top-color: var(--gold) !important; } .br-tgt.none { opacity: .75; }
 .br-ctl { left: 22rem; right: 16.6rem; bottom: 3rem; display: grid; grid-template-columns: 1fr 1.15fr; gap: 1rem; }
 .br-h { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .35rem; } .br-h b { font-size: 1rem; letter-spacing: .14em; } .br-h span { font-size: .72rem; color: var(--dim); letter-spacing: .08em; }
-.br-arcs { display: flex; align-items: center; gap: .6rem; } .br-arcs svg { width: 6.6rem; height: 6.6rem; flex: 0 0 auto; overflow: visible; } .br-arcs .hull { fill: rgba(190,210,240,.28); stroke: rgba(210,225,250,.7); stroke-width: 1; }
-.br-arcs .arc { fill: none; stroke-width: 5; stroke-linecap: round; } .br-arcs .arc.hit { stroke-width: 8; } .br-arcs .al { font-size: 9px; fill: #9fb0cc; letter-spacing: .1em; }
+.br-arcs { display: flex; align-items: center; gap: .6rem; } .br-arcs svg { width: 8rem; height: 6.6rem; margin: 0 auto; flex: 0 0 auto; overflow: visible; } .br-arcs .hull { fill: rgba(190,210,240,.28); stroke: rgba(210,225,250,.7); stroke-width: 1; }
+.br-arcs .arc { fill: none; stroke-width: 5; stroke-linecap: round; } .br-arcs .arc.hit { stroke-width: 8; } .br-arcs .al { font-size: 8px; font-weight: 700; fill: #9fb0cc; letter-spacing: .1em; }
 .arc-note { font-size: .62rem; color: var(--dim); letter-spacing: .06em; white-space: pre; line-height: 1.5; width: 4.5rem; word-spacing: .5em; }
 .br-sys { list-style: none; margin-top: .3rem; } .br-sys li { display: grid; grid-template-columns: 7.2rem 1fr 2.6rem; gap: .5rem; align-items: center; font-size: .72rem; letter-spacing: .05em; padding: 1px 0; color: var(--text); }
 .br-sys li b { text-align: right; font-size: .7rem; } .sbar { height: 5px; background: rgba(255,255,255,.12); } .sbar i { display: block; height: 100%; background: var(--ok); transition: width .2s; }

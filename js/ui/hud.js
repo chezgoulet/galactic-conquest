@@ -231,7 +231,7 @@
         if (kind === 'boarding') this.boardUpdate(u, w, dt);
         this.squadChip(w, g);
       } else {
-        this.show($.cap, false); this.show($.scope, false); this.show($.prompt, false); this.show($.squad, false); this._uid = 0; $.vig.style.setProperty('--supp', '0');
+        this.cl($.vig, 'core', false); this.show($.cap, false); this.show($.scope, false); this.show($.prompt, false); this.show($.squad, false); this._uid = 0; $.vig.style.setProperty('--supp', '0');
         if (st === 'commander') this.cmdUpdate(dt, w);
       }
       $.dead.style.display = st === 'dead' ? '' : 'none';
@@ -316,7 +316,7 @@
     overlay(dt, w, u, play, kind) {
       const ctx = this.ctx, g = this.game, cam = g.renderer.camera, W = this.cv.width, H = this.cv.height, o = { x: 0, y: 0, vis: false }, R = this.rem || 16;
       ctx.clearRect(0, 0, W, H);
-      if (g.state === 'deploy' || g.state === 'ended' || g.paused) return;
+      if (g.state === 'deploy' || g.state === 'ended' || (g.paused && this.layerKind)) return;
       const cp3 = cam.cam.position, team = g.team;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       for (const c of w.cps) {

@@ -16,7 +16,7 @@
     // own shield arcs: a hull glyph with four arcs around it
     br.querySelector('.br-arcs').innerHTML = `<svg viewBox="-50 -50 100 100"><path class="hull" d="M0 -26 L9 -8 L11 22 L4 28 L-4 28 L-11 22 L-9 -8 Z"/>` +
       ['M-22 -32 A38 38 0 0 1 22 -32', 'M-22 32 A38 38 0 0 0 22 32', 'M-36 -22 A38 38 0 0 0 -36 22', 'M36 -22 A38 38 0 0 1 36 22'].map((d, i) => `<path class="arc a${i}" d="${d}"/>`).join('') +
-      ARC_NAMES.map((n, i) => `<text class="al" x="${[0, 0, -44, 44][i]}" y="${[-41, 45, 2, 2][i]}" text-anchor="middle">${n}</text>`).join('') + '</svg><div class="arc-note"></div>';
+      ARC_NAMES.map((n, i) => `<text class="al" x="${[0, 0, -44, 44][i]}" y="${[-41, 45, 2, 2][i]}" text-anchor="middle">${n}</text>`).join('') + '</svg>';
     const mkSys = (ul, own) => { ul.innerHTML = ORDER.map(n => `<li data-s="${n}"><span>${esc(SP.sys[n].label)}</span><div class="sbar"><i></i></div><b></b></li>`).join(''); };
     mkSys(br.querySelector('.br-own .br-sys'), true); mkSys(br.querySelector('.br-tgt .br-sys'), false);
     br.querySelector('.br-pow').innerHTML = `<div class="pw-h"><span>POWER</span><b class="pw-mode"></b></div><div class="pw-bars">${['SHIELDS', 'WEAPONS', 'ENGINES'].map(n => `<div class="pw"><label>${n}</label><div class="pbar"><i></i></div><b></b></div>`).join('')}</div><div class="pw-thr"><label>THROTTLE</label><div class="pbar"><i></i></div><b></b></div>`;
@@ -40,7 +40,7 @@
     // own ship
     this.tx(br.querySelector('.br-own .br-h b'), E.unitName('capital', u.type).toUpperCase()); this.tx(br.querySelector('.br-own .br-h span'), `HULL ${Math.round(u.hp / u.maxHp * 100)}%`);
     u.arcs.forEach((a, i) => { const p = br.querySelector('.arc.a' + i), f = a.max ? a.v / a.max : 0; p.style.stroke = arcColor(f); p.style.opacity = String(0.35 + 0.65 * f); this.cl(p, 'hit', a.hitT < 0.6); });
-    this.tx(br.querySelector('.arc-note'), u.arcs.map((a, i) => ARC_NAMES[i][0] + Math.round(a.v / (a.max || 1) * 100)).join('  '));
+    br.querySelectorAll('.al').forEach((t, i) => { const a = u.arcs[i]; this.tx(t, (i < 2 ? ARC_NAMES[i] : ARC_NAMES[i][0]) + ' ' + Math.round(a.v / (a.max || 1) * 100)); });
     sysRows(br.querySelector('.br-own .br-sys'), u, '');
     // target
     const tg = u.tgtId ? w.byId(u.tgtId) : null, T = br.querySelector('.br-tgt');
