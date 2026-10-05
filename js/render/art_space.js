@@ -211,7 +211,6 @@
         const mat = E.Mat.emissive({ color: 0x66ccff, additive: true, opacity: 0.8, side: 'double' });
         const ring = new T.Mesh(new T.RingGeometry(6.3, 7, 40).rotateX(-Math.PI / 2), mat); ring.position.set(x, y + 0.12, z);
         const col = new T.Mesh(new T.CylinderGeometry(0.6, 1.2, 12, 8, 1, true), mat); col.position.set(x, y + 6, z); g.add(ring, col);
-        const l = new T.PointLight(0x88ccff, 400, 60, 1.6); l.position.set(x, y + 6, z); g.add(l);
         g.userData.nodes.push({ name, mat });
       }
       r.m.body.add(g); return g;

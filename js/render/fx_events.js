@@ -70,7 +70,7 @@
       this.dr[i * 3] = r.f(0, TAU); this.dr[i * 3 + 1] = r.f(0, TAU); this.dr[i * 3 + 2] = r.f(0, TAU);
       this.dw[i * 3] = r.f(-6, 6); this.dw[i * 3 + 1] = r.f(-6, 6); this.dw[i * 3 + 2] = r.f(-6, 6);
       this.dlife[i] = o.life ? o.life * r.f(0.7, 1.2) : r.f(3.5, 7); this.dsz[i] = (o.size || 0.3) * r.f(0.5, 1.5); this.dgrav[i] = o.grav === undefined ? 16 : o.grav; this.dtrail[i] = o.trail ? 1 : 0;
-      const v = r.f(0.7, 1.15); this.deb.setColorAt(i, this._dc.setRGB(rgb[0] / 255 * v, rgb[1] / 255 * v, rgb[2] / 255 * v));
+      const v = r.f(0.7, 1.15); this.deb.setColorAt(i, this._dc.setRGB(rgb[0] / 255 * v * 0.45, rgb[1] / 255 * v * 0.45, rgb[2] / 255 * v * 0.45));
     }
     this.deb.count = T; if (this.deb.instanceColor) this.deb.instanceColor.needsUpdate = true;
   };
