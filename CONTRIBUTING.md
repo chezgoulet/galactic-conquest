@@ -13,8 +13,9 @@ npm start                   # LAN server on http://localhost:8080
 npm run build               # produces dist/; open dist/index.html from disk
 ```
 
-Node 20+ is recommended (the online service requires it; the game itself runs on
-18+).
+Node 22+ is required to run the full test suite (the WebSocket e2e tests use the
+global `WebSocket`, which Node 20 lacks). The game itself runs on modern
+browsers; the online service requires Node 20+ to run.
 
 ## Test
 

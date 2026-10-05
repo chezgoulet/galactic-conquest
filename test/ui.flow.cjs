@@ -19,10 +19,13 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
   const port = await freePort();
   const server = spawn('node', [path.join(ROOT, 'tools', 'serve.cjs'), String(port)], { stdio: 'ignore' });
   await new Promise(r => setTimeout(r, 1200));
-  const browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--no-sandbox', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
+  const BACKEND = process.env.GC_UI_BACKEND === 'webgl' ? 'webgl' : 'webgpu';
+  const browser = await chromium.launch({ headless: true, args: BACKEND === 'webgl'
+    ? ['--no-sandbox', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-features=WebGPU']
+    : ['--use-angle=swiftshader', '--no-sandbox', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   page.setDefaultTimeout(240000);
-  await page.addInitScript(() => { window.GC_QUALITY = 'low'; window.GC_NO_GOV = true; window.GC_RES = 0.5; window.GC_PB_SPEED = 0.35; localStorage.clear(); });
+  await page.addInitScript((backend) => { window.GC_QUALITY = 'low'; window.GC_NO_GOV = true; window.GC_RES = 0.5; window.GC_PB_SPEED = 0.35; localStorage.clear(); if (backend === 'webgl') window.GC_BACKEND = 'webgl'; }, BACKEND);
   const errors = [];
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });

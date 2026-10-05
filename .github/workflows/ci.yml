@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['22', '24']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - name: AI-vs-AI balance thresholds
@@ -54,11 +54,15 @@ jobs:
   ui:
     name: ui
     runs-on: ubuntu-latest
+    env:
+      # WebGPU on software Vulkan is unreliable on hosted runners; run the
+      # renderer's WebGL2 backend for the UI integration tests here.
+      GC_UI_BACKEND: webgl
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
       - run: npm ci
       - name: install Chromium
