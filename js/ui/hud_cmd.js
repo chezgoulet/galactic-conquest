@@ -12,15 +12,15 @@
     calls.innerHTML = `
       <div class="cm-h">CALL-INS <span class="cm-arm"></span></div>
       <div class="cm-grp"><label>AIR SUPPORT</label>
-        <button class="cb" data-c="cas:bomber"><b>Bomber run</b><em></em></button>
-        <button class="cb" data-c="cas:gunship"><b>Gunship strike</b><em></em></button>
-        <button class="cb" data-c="cas:any"><b>Any aircraft</b><em></em></button></div>
+        <button class="cbtn" data-c="cas:bomber"><b>Bomber run</b><em></em></button>
+        <button class="cbtn" data-c="cas:gunship"><b>Gunship strike</b><em></em></button>
+        <button class="cbtn" data-c="cas:any"><b>Any aircraft</b><em></em></button></div>
       <div class="cm-grp"><label>FLEET</label>
-        <button class="cb" data-c="strike"><b>Orbital strike</b><em></em></button>
-        <button class="cb" data-c="wing"><b>Launch wing</b><em></em></button>
-        <button class="cb" data-c="brace"><b>Brace</b><em></em></button>
-        <button class="cb" data-c="board"><b>Board target</b><em></em></button>
-        <button class="cb" data-c="retreat"><b>Retreat</b><em></em></button>
+        <button class="cbtn" data-c="strike"><b>Orbital strike</b><em></em></button>
+        <button class="cbtn" data-c="wing"><b>Launch wing</b><em></em></button>
+        <button class="cbtn" data-c="brace"><b>Brace</b><em></em></button>
+        <button class="cbtn" data-c="board"><b>Board target</b><em></em></button>
+        <button class="cbtn" data-c="retreat"><b>Retreat</b><em></em></button>
         <div class="cb-pw"><span>POWER</span>${['balanced', 'shields', 'weapons', 'engines'].map((n, i) => `<button class="pwb" data-p="${i}">${n}</button>`).join('')}</div></div>`;
     calls.addEventListener('click', (ev) => {
       const b = ev.target.closest('button'); if (!b) return; const g = this.game;
@@ -61,7 +61,7 @@
     set('space', S ? dom('SPACE · ' + S.stageName.toUpperCase(), [['Ships', S.own.ships, S.enemy.ships], ['Hull', Math.round(S.own.hull * 100) + '%', Math.round(S.enemy.hull * 100) + '%'], ['Shields', Math.round(S.own.shield * 100) + '%', Math.round(S.enemy.shield * 100) + '%']]) + `<div class="dsup"><i style="width:${Math.round((0.5 + 0.5 * (S.superiority || 0)) * 100)}%"></i></div>` + (S.boarding ? '<div class="dnote">Boarding action underway</div>' : '') : dom('SPACE', []));
     // call-in readiness
     const callT = w.air && w.air.callT && w.air.callT[team], wait = callT === undefined ? 0 : Math.max(0, Math.ceil(callT + E.AIR.callCooldown - w.t));
-    const bt = (c) => el.querySelector(`.cb[data-c="${c}"]`);
+    const bt = (c) => el.querySelector(`.cbtn[data-c="${c}"]`);
     const cas = ['cas:bomber', 'cas:gunship', 'cas:any'];
     for (const c of cas) { const b = bt(c), role = c.split(':')[1], avail = w.units.some(u => u.alive && u.team === team && u.kind === 'fighter' && !u.pid && u.air && !u.air.cas && u.ord > 0 && (role === 'any' ? ['bomber', 'gunship', 'strike'].includes(u.def.role) : u.def.role === role)); b.disabled = wait > 0 || !avail; this.tx(b.querySelector('em'), wait > 0 ? 'Ready in ' + wait + 's' : avail ? 'Ready' : 'None available'); this.cl(b, 'armed', !!(this.armed && this.armed.id === c)); }
     const flag = S && w.units.find(u => u.alive && u.kind === 'capital' && u.team === team && u.flag) || w.units.find(u => u.alive && u.kind === 'capital' && u.team === team);

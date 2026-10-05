@@ -31,7 +31,7 @@
   P.airOverlay = function (ctx, u, w, cam, o, W, H, R) {
     const d = u.def, cx = W / 2, cy = H / 2, hx = R * 17, th = R * 9, lw = Math.max(1.5, R * 0.12);
     const green = '#9dffc8', amber = '#ffc24a', red = '#ff4a3a', dim = 'rgba(190,230,255,.55)';
-    ctx.lineWidth = lw; ctx.font = `600 ${R * 0.7}px system-ui`; ctx.textBaseline = 'middle';
+    ctx.lineWidth = lw; ctx.font = `600 ${R * 0.7}px system-ui`; ctx.textBaseline = 'middle'; ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 5;
     const space = u.band === 'space', dens = u.dens == null ? 1 : u.dens;
     const stallV = d.stall / Math.sqrt(Math.max(dens, 0.35));
     // speed tape (left)
@@ -61,8 +61,8 @@
     ctx.fillStyle = u.boostLock ? red : u.boosting ? '#fff' : amber; ctx.fillRect(ex, by - bh * (u.boostE == null ? 1 : u.boostE), R * 0.9, bh * (u.boostE == null ? 1 : u.boostE));
     ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.fillText('THR', bx + R * 0.45, by + R * 0.9); ctx.fillStyle = u.boosting ? '#fff' : u.boostLock ? red : dim; ctx.fillText(u.boostLock ? 'AB LOCK' : 'AB', ex + R * 0.45, by + R * 0.9);
     // g and drift (under the throttle)
-    ctx.textAlign = 'left'; ctx.fillStyle = (u.g || 1) > 7 ? red : dim; ctx.fillText('G ' + (u.g || 1).toFixed(1).padStart(4, ' '), bx, by + R * 2.1);
-    if (d.cm !== undefined && !d.vtol) { ctx.fillStyle = u.drift ? amber : dim; ctx.fillText('DRIFT', bx, by + R * 3); const de = u.driftE == null ? 1 : E.clamp01(u.driftE / (E.AIR.driftMax || 1)); ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(bx + R * 3, by + R * 2.6, R * 4, R * 0.7); ctx.fillStyle = u.drift ? amber : dim; ctx.fillRect(bx + R * 3, by + R * 2.6, R * 4 * (de > 1 ? 1 : de), R * 0.7); }
+    ctx.textAlign = 'left'; ctx.fillStyle = (u.g || 1) > 7 ? red : dim; ctx.fillText('G ' + (u.g || 1).toFixed(1), bx, by - bh - R * 2.2);
+    if (d.cm !== undefined && !d.vtol) { ctx.fillStyle = u.drift ? amber : dim; ctx.fillText('DRIFT', bx, by - bh - R * 1.1); const de = u.driftE == null ? 1 : E.clamp01(u.driftE / (E.AIR.driftMax || 1)); ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(bx + R * 3, by - bh - R * 1.4, R * 4, R * 0.7); ctx.fillStyle = u.drift ? amber : dim; ctx.fillRect(bx + R * 3, by - bh - R * 1.4, R * 4 * (de > 1 ? 1 : de), R * 0.7); }
     // heading
     const hdg = (((-u.yaw * 180 / Math.PI) % 360) + 360) % 360;
     ctx.textAlign = 'center'; ctx.fillStyle = green; ctx.font = `700 ${R * 0.9}px system-ui`; ctx.fillText(String(Math.round(hdg)).padStart(3, '0') + '°', cx, R * 5.2); ctx.font = `600 ${R * 0.7}px system-ui`;
@@ -102,6 +102,6 @@
       const th2 = w.byId(u.mslBy || u.warnBy);
       if (th2) { const a = Math.atan2(th2.pos.x - u.pos.x, th2.pos.z - u.pos.z) - cam.yaw, rr = Math.min(W, H) * 0.3; ctx.save(); ctx.translate(cx - Math.sin(a) * rr, cy - Math.cos(a) * rr); ctx.rotate(-a + Math.PI); ctx.fillStyle = u.warn === 3 ? red : amber; ctx.beginPath(); ctx.moveTo(0, -R * 1.2); ctx.lineTo(R * 0.9, R * 0.8); ctx.lineTo(-R * 0.9, R * 0.8); ctx.closePath(); ctx.fill(); ctx.restore(); }
     }
-    ctx.textBaseline = 'middle';
+    ctx.textBaseline = 'middle'; ctx.shadowBlur = 0;
   };
 })(window.E = window.E || {});

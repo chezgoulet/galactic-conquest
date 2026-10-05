@@ -187,7 +187,7 @@
       }
       this.show($.unit, play && kind !== 'capital'); this.show($.cross, play);
       this.show($.mapwrap, !(st === 'deploy' || st === 'ended' || st === 'commander'));
-      this.show($.stage, (st === 'play' || st === 'commander' || st === 'dead') && w.space && (kind === 'capital' || kind === 'fighter' || st === 'commander' || w.units.some(x => x.kind === 'capital')));
+      this.show($.stage, w.space && (kind === 'capital' || kind === 'fighter' || st === 'commander'));
       this.show($.veh, kind === 'vehicle'); this.show($.fl, kind === 'fighter'); this.show($.br, kind === 'capital'); this.show($.board, kind === 'boarding'); this.show($.cmd, st === 'commander');
       this.el.dataset.kind = kind || st;
       this.keyHints(u, st, kind);

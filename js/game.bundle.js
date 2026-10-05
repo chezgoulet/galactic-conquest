@@ -40,14 +40,184 @@
   E.Accumulator = Accumulator;
 })(window.E = window.E || {});
 
+// ---- js/core/mixer.js ----
+// The mixer. One AudioContext, six buses (music, weapons, impacts, ambience,
+// voice/alerts, ui), a limiter at the end, positional panning and distance
+// roll-off from a listener, density-aware ducking and an "environment" filter
+// that muffles every exterior sound when the air thins out (the sim's `dens`
+// goes to 0 in space). Nothing here makes a sound by itself: sfx.js, music.js
+// and ui/audio.js build voices and hand them to Mixer.input()/Mixer.voice().
+// An OfflineAudioContext can be injected with Mixer.init(ctx) for level tests.
+(function (E) {
+  'use strict';
+  const M = { ctx: null, ready: false, buses: {}, listener: { x: 0, y: 0, z: 0, rx: 1, ry: 0, rz: 0 }, density: 0, voices: 0, maxVoices: 30,
+    env: { dens: 1, vac: false, interior: false }, vol: { master: 0.8, music: 0.8, sfx: 0.9, ambience: 0.8, voice: 1, ui: 0.8 }, alertUntil: 0, noise: null, brown: null };
+  const BUSES = ['music', 'weapons', 'impacts', 'ambience', 'voice', 'ui'];
+  const WORLD = { weapons: 1, impacts: 1, ambience: 1 };
+  const GAIN = { music: 0.9, weapons: 0.62, impacts: 0.75, ambience: 0.5, voice: 0.7, ui: 0.6 };
+  M.BUSES = BUSES;
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+  // build the graph on `ctx` (a new AudioContext unless one is injected)
+  M.init = function (ctx) {
+    if (M.ready) return M.ctx;
+    if (!ctx) { const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext); if (!AC) return null; ctx = new AC(); }
+    const c = M.ctx = ctx;
+    M.offline = typeof OfflineAudioContext !== 'undefined' && c instanceof OfflineAudioContext;
+    // master chain: pre -> master gain -> limiter -> out gain -> destination
+    M.pre = c.createGain();
+    M.master = c.createGain(); M.master.gain.value = M.vol.master;
+    const lim = M.limiter = c.createDynamicsCompressor();
+    lim.threshold.value = -5; lim.knee.value = 3; lim.ratio.value = 20; lim.attack.value = 0.002; lim.release.value = 0.12;
+    M.out = c.createGain(); M.out.gain.value = 0.92;
+    M.pre.connect(M.master); M.master.connect(lim); lim.connect(M.out); M.out.connect(c.destination);
+    M.meter = c.createAnalyser(); M.meter.fftSize = 2048; M.out.connect(M.meter);
+    // shared noise buffers
+    const n = Math.floor(c.sampleRate * 2.5), nb = c.createBuffer(1, n, c.sampleRate), d = nb.getChannelData(0);
+    let seed = 1234567; for (let i = 0; i < n; i++) { seed = (seed * 1664525 + 1013904223) >>> 0; d[i] = (seed / 2147483648) - 1; }
+    M.noise = nb;
+    const bb = c.createBuffer(1, n, c.sampleRate), bd = bb.getChannelData(0); let last = 0;
+    for (let i = 0; i < n; i++) { last = (last + 0.02 * d[i]) / 1.02; bd[i] = last * 3.5; }
+    M.brown = bb;
+    // reverb: dark hall, fed by sends
+    M.revIn = c.createGain(); const conv = c.createConvolver(); conv.buffer = hall(c, 3.2); const rg = c.createGain(); rg.gain.value = 0.55;
+    M.revIn.connect(conv); conv.connect(rg); rg.connect(M.pre);
+    // buses
+    for (const name of BUSES) {
+      const gain = c.createGain(), duck = c.createGain(); gain.gain.value = GAIN[name] * busVol(name); duck.gain.value = 1;
+      gain.connect(duck); duck.connect(M.pre);
+      const b = M.buses[name] = { name, gain, duck, ext: null };
+      if (WORLD[name]) { const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 20000; lp.Q.value = 0.5; const eg = c.createGain(); lp.connect(eg); eg.connect(gain); b.ext = lp; b.extGain = eg; b.extLP = lp; }
+    }
+    M.ready = true;
+    M.applyEnv();
+    return c;
+  };
+  function busVol(name) { const v = M.vol; return name === 'music' ? v.music : name === 'ambience' ? v.ambience : name === 'voice' ? v.voice : name === 'ui' ? v.ui : v.sfx; }
+  function hall(c, sec) {
+    const len = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, len, c.sampleRate); let s = 99991;
+    for (let ch = 0; ch < 2; ch++) { const x = b.getChannelData(ch); let lp = 0;
+      for (let i = 0; i < len; i++) { s = (s * 1664525 + 1013904223) >>> 0; const r = s / 2147483648 - 1, t = i / len; lp += (r - lp) * (1 - (0.08 + 0.9 * t) * 0.95); x[i] = lp * Math.pow(1 - t, 2.4) * (i < c.sampleRate * 0.01 ? i / (c.sampleRate * 0.01) : 1); } }
+    return b;
+  }
+  // browsers need a gesture before audio can run
+  M.unlock = function () { if (!M.ctx) { if (!M.init()) return false; } if (M.ctx.state === 'suspended' && M.ctx.resume) M.ctx.resume(); return true; };
+  M.now = () => (M.ctx ? M.ctx.currentTime : 0);
+
+  // user mix: {master, music, sfx, ambience, voice, ui} each 0..1
+  M.setMix = function (mix) {
+    if (!mix) return;
+    for (const k in M.vol) if (typeof mix[k] === 'number') M.vol[k] = clamp(mix[k], 0, 1);
+    if (!M.ready) return; const t = M.ctx.currentTime;
+    M.master.gain.setTargetAtTime(M.vol.master, t, 0.05);
+    for (const n of BUSES) M.buses[n].gain.gain.setTargetAtTime(GAIN[n] * busVol(n), t, 0.05);
+  };
+
+  // where a voice plugs in: the bus (through the environment filter when it is an exterior sound)
+  M.input = function (bus, interior) { const b = M.buses[bus]; return b.ext && !interior ? b.ext : b.gain; };
+
+  // environment: dens 0..1 (0 = vacuum), interior = player inside a cockpit/bridge
+  M.setEnv = function (dens, interior) { dens = clamp(dens, 0, 1); if (Math.abs(dens - M.env.dens) < 0.01 && interior === M.env.interior) return; M.env.dens = dens; M.env.vac = dens < 0.08; M.env.interior = !!interior; M.applyEnv(); };
+  M.applyEnv = function () {
+    if (!M.ready) return; const t = M.ctx.currentTime, e = M.env;
+    // thin air carries high frequencies poorly and little energy overall; in vacuum only structure-borne sound is left
+    const f = e.vac ? 520 : 1500 + 18500 * Math.pow(e.dens, 0.6), g = e.vac ? 0.38 : 0.55 + 0.45 * Math.pow(e.dens, 0.5);
+    for (const n in WORLD) { const b = M.buses[n]; b.extLP.frequency.setTargetAtTime(f, t, 0.25); b.extGain.gain.setTargetAtTime(n === 'ambience' && e.vac ? 0.25 : g, t, 0.25); }
+  };
+  M.setListener = function (cam) {   // cam: THREE camera (matrixWorld)
+    const L = M.listener, m = cam.matrixWorld.elements;
+    L.x = m[12]; L.y = m[13]; L.z = m[14]; L.rx = m[0]; L.ry = m[1]; L.rz = m[2];
+    if (M.ready && M.ctx.listener && M.ctx.listener.positionX) { /* panning is computed per voice; the native listener stays at the origin */ }
+  };
+
+  // distance roll-off: 1 inside `ref`, inverse-distance beyond, silent past `max`
+  M.atten = function (d, ref, max) { if (d <= ref) return 1; if (d >= max) return 0; const k = ref / (ref + (d - ref) * 1.15); return k * Math.pow(1 - (d - ref) / (max - ref), 0.8); };
+  M.distTo = function (p) { const L = M.listener; return Math.hypot(p.x - L.x, (p.y || 0) - L.y, p.z - L.z); };
+  M.pan = function (p) { const L = M.listener, dx = p.x - L.x, dy = (p.y || 0) - L.y, dz = p.z - L.z, d = Math.hypot(dx, dy, dz) || 1; return clamp((dx * L.rx + dy * L.ry + dz * L.rz) / d, -1, 1) * Math.min(1, 0.35 + d / 25); };
+
+  // A voice: returns the node a sound should connect to, already panned, attenuated
+  // and air-filtered for `pos`. `end` (seconds) tells the mixer when the voice is over.
+  // opts: bus, ref, max, send (reverb 0..1), interior, vol, prio
+  M.voice = function (opts, pos, dur) {
+    if (!M.ready) return null;
+    const c = M.ctx;
+    if (M.voices >= M.maxVoices && !(opts.prio > 1)) return null;
+    let g = opts.vol == null ? 1 : opts.vol, d = 0;
+    const chain = [];
+    const out = c.createGain();
+    let tail = out;
+    if (pos) {
+      d = M.distTo(pos); g *= M.atten(d, opts.ref || 20, opts.max || 600);
+      if (g < 0.006) return null;
+      if (d > 40) { const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = clamp(16000 / (1 + d / 90), 700, 16000); tail.connect(lp); tail = lp; }
+      if (c.createStereoPanner) { const p = c.createStereoPanner(); p.pan.value = M.pan(pos); tail.connect(p); tail = p; }
+    }
+    out.gain.value = g;
+    tail.connect(M.input(opts.bus || 'weapons', opts.interior));
+    if (opts.send && M.revIn) { const s = c.createGain(); s.gain.value = opts.send * Math.min(1, 0.4 + d / 300); tail.connect(s); s.connect(M.revIn); }
+    M.voices++; setTimeout(() => { M.voices = Math.max(0, M.voices - 1); }, Math.max(80, (dur || 0.5) * 1000));
+    M.density += (opts.bus === 'impacts' ? 0.16 : 0.07) * clamp(g * 2, 0.2, 1.2);
+    return out;
+  };
+
+  // ducking: a big fight lowers music and ambience; alerts lower everything but the voice bus
+  M.update = function (dt) {
+    if (!M.ready) return;
+    M.density = Math.max(0, M.density - dt * 0.9);
+    const t = M.ctx.currentTime, dens = clamp(M.density / 1.4, 0, 1);
+    const alert = t < M.alertUntil ? 1 : 0;
+    M.buses.music.duck.gain.setTargetAtTime(1 - 0.38 * dens - 0.3 * alert, t, 0.12);
+    M.buses.ambience.duck.gain.setTargetAtTime(1 - 0.5 * dens - 0.25 * alert, t, 0.15);
+    M.buses.weapons.duck.gain.setTargetAtTime(1 - 0.18 * alert, t, 0.06);
+    M.buses.impacts.duck.gain.setTargetAtTime(1 - 0.18 * alert, t, 0.06);
+  };
+  M.alert = function (sec) { if (M.ready) M.alertUntil = Math.max(M.alertUntil, M.ctx.currentTime + sec); };
+
+  // measurement: peak and RMS (dBFS) of the output right now
+  M.level = function () {
+    if (!M.ready) return { peak: -Infinity, rms: -Infinity };
+    const a = M.meter, buf = new Float32Array(a.fftSize); a.getFloatTimeDomainData(buf);
+    let pk = 0, ss = 0; for (let i = 0; i < buf.length; i++) { const v = Math.abs(buf[i]); if (v > pk) pk = v; ss += v * v; }
+    return { peak: 20 * Math.log10(pk || 1e-9), rms: 10 * Math.log10(ss / buf.length || 1e-12) };
+  };
+
+  // small synthesis helpers shared by sfx.js / music.js / ui/audio.js
+  M.noiseSrc = function (t, dur, out, o) {   // o: {type, f0, f1, q, gain, a, brown, loop}
+    const c = M.ctx, s = c.createBufferSource(); s.buffer = o.brown ? M.brown : M.noise; s.loop = !!o.loop;
+    if (!o.loop) s.playbackRate.value = 0.8 + ((t * 7919) % 1) * 0.4;
+    let n = s;
+    if (o.type) { const f = c.createBiquadFilter(); f.type = o.type; f.frequency.setValueAtTime(o.f0 || 1000, t); if (o.f1) f.frequency.exponentialRampToValueAtTime(o.f1, t + dur); f.Q.value = o.q || 0.7; s.connect(f); n = f; }
+    const g = c.createGain(); n.connect(g); g.connect(out);
+    const pk = o.gain == null ? 0.5 : o.gain, a = o.a || 0.002;
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(pk, t + a); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.start(t, ((t * 3331) % 1) * 1.5); if (!o.loop) s.stop(t + dur + 0.02);
+    return { src: s, gain: g };
+  };
+  M.tone = function (t, dur, out, o) {   // o: {type, f0, f1, gain, a, curve:'exp'|'lin', det}
+    const c = M.ctx, osc = c.createOscillator(); osc.type = o.type || 'sine';
+    osc.frequency.setValueAtTime(o.f0, t); if (o.f1) { if (o.curve === 'lin') osc.frequency.linearRampToValueAtTime(o.f1, t + dur); else osc.frequency.exponentialRampToValueAtTime(o.f1, t + dur); }
+    if (o.det) osc.detune.value = o.det;
+    const g = c.createGain(); osc.connect(g); g.connect(out); const pk = o.gain == null ? 0.4 : o.gain, a = o.a || 0.003;
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(pk, t + a); if (o.sus) g.gain.setValueAtTime(pk * o.sus, t + dur * 0.7); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.start(t); osc.stop(t + dur + 0.03);
+    return { osc, gain: g };
+  };
+
+  E.Mixer = M;
+})(window.E = window.E || {});
+
 // ---- js/core/music.js ----
 // The score. Orchestral, adaptive and synthesized in real time — no samples.
 // A lookahead scheduler plays 16th-note steps on the AudioContext clock. Harmony
 // is a Markov chain over the faction's mode (cinematic moves), melody is the
 // faction's seeded leitmotif re-harmonised per bar, and voices are strings,
-// brass, timpani and a bass ostinato. An intensity signal from the match moves
-// the score between sections (drift -> pulse -> battle) and drives a victory
-// fanfare. Every note is built from oscillators, filters and gains.
+// brass, timpani, bells and a bass ostinato. It adapts to:
+//   intensity  (0..1, drift -> pulse -> battle sections)
+//   domain     ground (timpani and brass), air (driving strings, high brass), space (pads, bells, little percussion)
+//   state      winning / losing (minor-leaning harmony, thinner), last tickets (faster, urgent), ship lost (sting)
+//   mode       'map' = the campaign table: slow pads, sparse bells, a low drone
+// plus victory / defeat / ship-lost / alert stings. Every note is oscillators + filters + gains
+// on the mixer's music bus, so ducking, the limiter and the music volume all apply.
 (function (E) {
   'use strict';
 
@@ -62,14 +232,16 @@
     2: [[5, 3], [3, 2], [6, 2]], 3: [[0, 3], [5, 2], [6, 2]],
     4: [[0, 3], [5, 3]], 5: [[6, 4], [3, 3], [0, 3]], 6: [[0, 4], [5, 2], [2, 2]],
   };
+  // when losing the harmony stays on the dark degrees
+  const CHAIN_LOSE = { 0: [[5, 4], [3, 3], [0, 2]], 1: [[0, 3], [5, 2]], 2: [[5, 3], [0, 2]], 3: [[5, 3], [0, 3]], 4: [[0, 3], [5, 3]], 5: [[0, 3], [3, 3], [6, 2]], 6: [[0, 4], [5, 3]] };
   const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 
   function rng(seed) { let s = (seed >>> 0) || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s >>>= 0; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
   function pick(r, arr) { let tot = 0; for (const [, w] of arr) tot += w; let x = r() * tot; for (const [v, w] of arr) { x -= w; if (x <= 0) return v; } return arr[0][0]; }
   function theme(factionId) { const f = E.faction(factionId); return f.music; }
 
-  const M = { on: false, faction: 'aegis', I: 0.2, won: false, vol: 0.8 };
-  let c, out, master, strings, brass, timb, bass, bell, rev, dly, noiseBuf;
+  const M = { on: false, faction: 'aegis', I: 0.2, won: false, lost: false, vol: 0.8, domain: 'ground', mode: 'battle', st: {}, section: 'drift', tempoMul: 1 };
+  let c, strings, brass, timb, bass, bell, rev, dly, noiseBuf, mbus;
 
   function hall(sec) {
     const len = Math.floor(c.sampleRate * sec), b = c.createBuffer(2, len, c.sampleRate);
@@ -79,54 +251,48 @@
     return b;
   }
 
+  // The score lives on the mixer's music bus (ducking, the limiter and the music volume all apply).
   M.start = function (factionId) {
     if (M.on) return;
-    if (typeof AudioContext === 'undefined') return;
-    c = new (window.AudioContext || window.webkitAudioContext)();
+    if (!E.Mixer || !E.Mixer.unlock()) return;
+    c = E.Mixer.ctx; if (!c) return;
     M.on = true;
-    out = c.createGain(); out.gain.value = 0.0; out.connect(c.destination);
-    const comp = c.createDynamicsCompressor(); comp.threshold.value = -18; comp.knee.value = 14; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.3;
-    comp.connect(out);
-    master = c.createGain(); master.gain.value = 0.9; master.connect(comp);
-    // vast dark hall
-    rev = c.createConvolver(); rev.buffer = hall(4.5);
-    const revG = c.createGain(); revG.gain.value = 0.5; rev.connect(revG); revG.connect(master);
-    const revIn = c.createGain(); revIn.connect(rev);
-    M.revIn = revIn;
-    // ping-pong delay (tempo-synced)
-    dly = c.createDelay(2); dly.delayTime.value = 0.42;
+    mbus = c.createGain(); mbus.gain.value = 0; mbus.connect(E.Mixer.input('music'));
+    const comp = c.createDynamicsCompressor(); comp.threshold.value = -20; comp.knee.value = 14; comp.ratio.value = 3; comp.attack.value = 0.01; comp.release.value = 0.3;
+    comp.connect(mbus);
+    const mg = c.createGain(); mg.gain.value = 0.9; mg.connect(comp); M.mg = mg;
+    rev = c.createConvolver(); rev.buffer = hall(4.5);   // vast dark hall
+    const revG = c.createGain(); revG.gain.value = 0.5; rev.connect(revG); revG.connect(mg);
+    const revIn = c.createGain(); revIn.connect(rev); M.revIn = revIn;
+    dly = c.createDelay(2); dly.delayTime.value = 0.42;   // delay
     const fb = c.createGain(); fb.gain.value = 0.32; const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400;
     dly.connect(lp); lp.connect(fb); fb.connect(dly);
-    const dOut = c.createGain(); dOut.gain.value = 0.28; dly.connect(dOut); dOut.connect(master);
-    M.dly = dly;
-    // buses
-    const bus = (l, r) => { const g = c.createGain(); g.gain.value = l; g.connect(master); const rg = c.createGain(); rg.gain.value = r; rg.connect(M.revIn); return { g, rg }; };
+    const dOut = c.createGain(); dOut.gain.value = 0.28; dly.connect(dOut); dOut.connect(mg); M.dly = dly;
+    const bus = (l, r) => { const g = c.createGain(); g.gain.value = l; g.connect(mg); const rg = c.createGain(); rg.gain.value = r; rg.connect(M.revIn); return { g, rg }; };
     const s = bus(0.5, 0.5), br = bus(0.42, 0.4), ti = bus(0.5, 0.2), ba = bus(0.4, 0.2), be = bus(0.3, 0.6);
     strings = s.g; brass = br.g; timb = ti.g; bass = ba.g; bell = be.g;
-    // noise buffer
-    noiseBuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate); const d = noiseBuf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    noiseBuf = E.Mixer.noise;
     M.setTheme(factionId || 'aegis', true);
-    out.gain.setTargetAtTime(M.vol, c.currentTime, 1.2);
+    mbus.gain.setTargetAtTime(1, c.currentTime, 1.2);
     M._step = 0; M._nextT = c.currentTime + 0.12;
     M._timer = setInterval(tick, 25);
   };
-  M.stop = function () { if (!M.on) return; clearInterval(M._timer); out.gain.setTargetAtTime(0, c.currentTime, 0.4); const cc = c; setTimeout(() => cc.close().catch(() => {}), 600); M.on = false; };
-  M.resume = function () { if (M.on && c && c.state === 'suspended') c.resume(); };
+  M.stop = function () { if (!M.on) return; clearInterval(M._timer); if (mbus) mbus.gain.setTargetAtTime(0, c.currentTime, 0.4); M.on = false; };
+  M.resume = function () { if (E.Mixer) E.Mixer.unlock(); };
 
   M.setTheme = function (factionId, hard) {
     M.faction = factionId;
     const th = theme(factionId);
-    M.mode = MODES[th.mode] || MODES.aeolian;
+    M.baseMode = MODES[th.mode] || MODES.aeolian; M.mode_ = M.baseMode;
     M.root = th.root; M.bpm = th.bpm; M.motifSeed = th.motif; M.bell = th.bell; M.saw = th.saw;
     M.r = rng(th.motif * 7919);
     M.motif = makeMotif(rng(th.motif * 7919 + 3), 4);
     M.deg = 0; M.chord = chordOf(0); M.chordBars = 0;
-    M.section = 'drift'; M.sectBars = 0; M.won = false;
+    M.section = 'drift'; M.sectBars = 0; M.won = false; M.lost = false;
     M.impactT = 0;
   };
 
-  function chordOf(deg) { const m = M.mode; return [m[deg % 7], m[(deg + 2) % 7], m[(deg + 4) % 7]]; }
+  function chordOf(deg) { const m = M.mode_ || M.baseMode; return [m[deg % 7], m[(deg + 2) % 7], m[(deg + 4) % 7]]; }
 
   function makeMotif(r, bars) {
     const CELLS = [
@@ -150,13 +316,6 @@
   }
 
   // ── voices ───────────────────────────────────────────────────
-  function env(g, t, a, d, s, r, peak) {
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(peak, t + a);
-    g.gain.linearRampToValueAtTime(peak * s, t + a + d);
-    g.gain.setValueAtTime(peak * s, t + a + d + Math.max(0.01, 0));
-    g.gain.linearRampToValueAtTime(0.0001, t + a + d + r);
-  }
   // sustained string swell (a detuned sawtooth stack)
   function str(t, freq, dur, vol) {
     const n = 3; const g = c.createGain(); g.gain.value = vol; g.connect(strings); g.connect(M.dly);
@@ -170,9 +329,9 @@
     g.gain.linearRampToValueAtTime(0.0001, t + dur);
   }
   // brass hit (sawtooth -> bandpass), staccato on the strong beats
-  function bra(t, freq, dur, vol) {
+  function bra(t, freq, dur, vol, q) {
     const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = freq;
-    const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq * 2; f.Q.value = 1.2;
+    const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq * 2; f.Q.value = q || 1.2;
     const g = c.createGain(); o.connect(f); f.connect(g); g.connect(brass);
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(vol, t + 0.02);
@@ -209,169 +368,126 @@
     o.start(t); m.start(t); o.stop(t + dur + 0.05); m.stop(t + dur + 0.05);
   }
 
+  // per-domain instrument weights: timpani, brass, strings, bells, bass, brass filter Q
+  const DOM = {
+    ground: { tim: 1, bra: 1, str: 1, bel: 1, bas: 1, arp: 0 },
+    air:    { tim: 0.5, bra: 1.1, str: 1.15, bel: 0.8, bas: 0.8, arp: 1 },
+    space:  { tim: 0.35, bra: 0.55, str: 1.5, bel: 1.5, bas: 1, arp: 0 },
+  };
+
   // ── scheduler ────────────────────────────────────────────────
   function tick() {
     if (!M.on) return;
-    const spb = 60 / M.bpm; const step = spb / 4; // 16th
+    const bpm = M.bpm * M.tempoMul * (M.mode === 'map' ? 0.62 : 1), spb = 60 / bpm; const step = spb / 4; // 16th
     while (M._nextT < c.currentTime + 0.16) {
       scheduleStep(M._step, M._nextT, step);
       M._step = (M._step + 1) % 64; M._nextT += step;
     }
   }
   function scheduleStep(step, t, stepDur) {
-    const I = M.I;
+    const I = M.I, S = M.st, D = DOM[M.domain] || DOM.ground, map = M.mode === 'map';
     // section logic (per 4 bars)
     if (step % 64 === 0) {
       M.sectBars = 0;
       if (M.won) M.section = 'fanfare';
-      else if (I > 0.66) M.section = 'battle';
+      else if (M.lost) M.section = 'dirge';
+      else if (map) M.section = 'map';
+      else if (I > 0.66 || S.lastStand) M.section = 'battle';
       else if (I > 0.34) M.section = 'pulse';
       else M.section = 'drift';
-      // new chord every 2 bars on section start
+      // the winning side hears the major-leaning lydian colour, the losing side the harmonic minor
+      const th = theme(M.faction);
+      M.mode_ = S.losing || M.lost ? MODES.phrygian : S.winning ? (M.baseMode === MODES.aeolian ? MODES.dorian : M.baseMode) : M.baseMode;
+      void th;
     }
     if (step % 32 === 0) { // every 2 bars: maybe change chord
-      M.deg = pick(M.r, CHAIN[M.deg] || CHAIN[0]);
+      M.deg = pick(M.r, (S.losing || M.lost ? CHAIN_LOSE : CHAIN)[M.deg] || CHAIN[0]);
       M.chord = chordOf(M.deg);
     }
-    const bar = Math.floor(step / 16);
-    const beat = step % 16;
+    const beat = step % 16, sec = M.section;
     const rootMidi = M.root + M.chord[0];
     const chordMidi = M.chord.map(d => M.root + d + 12);
 
+    if (sec === 'map') {   // the war table: slow pad, a low drone, sparse bells
+      if (beat === 0) { for (const md of chordMidi) str(t, mtof(md - 12), stepDur * 16, 0.12); bas(t, mtof(rootMidi - 24), stepDur * 14, 0.5); }
+      if (beat === 8 && step % 32 === 8) tim(t, mtof(rootMidi - 12), 0.35);
+      if (beat % 4 === 2 && M.r() < 0.35) bel(t, mtof(chordMidi[Math.floor(M.r() * 3)] + 12), stepDur * 8, 0.16);
+      return;
+    }
+    if (sec === 'dirge') {   // defeat: slow low brass + hollow timpani
+      if (beat === 0) { for (const md of chordMidi) str(t, mtof(md - 24), stepDur * 16, 0.16); bra(t, mtof(rootMidi - 12), stepDur * 14, 0.3, 0.9); }
+      if (beat === 0 || beat === 8) tim(t, mtof(rootMidi - 17), 0.7);
+      if (beat === 4 && step % 32 === 4) bel(t, mtof(chordMidi[0]), stepDur * 12, 0.12);
+      return;
+    }
+
     // timpani pattern (Euclidean-ish), denser in battle
-    const isDown = (beat === 0) || (beat === 8) || (M.section === 'battle' && (beat === 4 || beat === 12));
-    if (M.section !== 'drift' && isDown && step % 2 === 0) tim(t, mtof(rootMidi - 12), 0.7 * (0.6 + I * 0.6));
-    // offbeat rim in battle
-    if (M.section === 'battle' && beat % 4 === 2) tim(t, mtof(rootMidi - 5), 0.22);
+    const isDown = (beat === 0) || (beat === 8) || (sec === 'battle' && (beat === 4 || beat === 12));
+    if (sec !== 'drift' && isDown && step % 2 === 0 && D.tim > 0.4) tim(t, mtof(rootMidi - 12), 0.7 * (0.6 + I * 0.6) * D.tim);
+    else if (sec !== 'drift' && D.tim <= 0.4 && beat === 0) tim(t, mtof(rootMidi - 12), 0.5 * D.tim * 1.4);
+    // offbeat rim in battle (and a heartbeat when the last tickets are going)
+    if (sec === 'battle' && beat % 4 === 2 && D.tim > 0.4) tim(t, mtof(rootMidi - 5), 0.22);
+    if (S.lastStand && (beat === 6 || beat === 14)) tim(t, mtof(rootMidi - 17), 0.4);
 
     // bass ostinato on beats 0 and 8
-    if (beat === 0 || beat === 8) bas(t, mtof(rootMidi - 12), stepDur * 3, 0.5);
+    if (beat === 0 || beat === 8) bas(t, mtof(rootMidi - 12), stepDur * 3, 0.5 * D.bas);
 
     // strings: swell the chord, hold across the bar
-    if (beat === 0 || (M.section !== 'drift' && beat === 8)) {
-      for (const md of chordMidi) str(t, mtof(md - 12), stepDur * (M.section === 'battle' ? 6 : 10), 0.16 + I * 0.1);
+    if (beat === 0 || (sec !== 'drift' && beat === 8)) {
+      for (const md of chordMidi) str(t, mtof(md - 12), stepDur * (sec === 'battle' && M.domain !== 'space' ? 6 : 10), (0.16 + I * 0.1) * D.str);
     }
+    // air: a driving 8th-note string ostinato on the root and fifth
+    if (D.arp && sec !== 'drift' && step % 2 === 0) bas(t, mtof(rootMidi + (step % 8 < 4 ? 0 : 7)), stepDur * 1.6, 0.16);
     // brass: staccato hits on the beat in pulse/battle/fanfare
-    if ((M.section === 'pulse' || M.section === 'battle' || M.section === 'fanfare') && beat % 4 === 0) {
+    if ((sec === 'pulse' || sec === 'battle' || sec === 'fanfare') && beat % 4 === 0) {
       const md = chordMidi[beat % 8 < 4 ? 0 : 1];
-      bra(t, mtof(md - 12 + (M.section === 'fanfare' ? 12 : 0)), stepDur * 3, 0.28 + I * 0.15);
+      bra(t, mtof(md - 12 + (sec === 'fanfare' ? 12 : 0) + (M.domain === 'air' ? 12 : 0)), stepDur * 3, (0.28 + I * 0.15) * D.bra);
     }
-    // bells: verdant flavour / sparkle on the top note
-    if (M.bell && beat % 4 === 2 && I > 0.3) bel(t, mtof(chordMidi[2]), stepDur * 5, 0.18 * M.bell);
+    // bells: verdant flavour / sparkle on the top note; space leans on them
+    if ((M.bell || M.domain === 'space') && beat % 4 === 2 && I > 0.2) bel(t, mtof(chordMidi[2]), stepDur * 5, 0.18 * Math.max(M.bell || 0.5, 0.5) * D.bel);
 
     // melody (leitmotif) — a note on most 8th notes, re-harmonised to the chord
-    if (M.section !== 'drift' && step % 2 === 0 && M.motif.length) {
+    if (sec !== 'drift' && step % 2 === 0 && M.motif.length && !(S.losing && step % 4 === 2)) {
       const n = M.motif[Math.floor(step / 2) % M.motif.length];
       if (n && M.r() < 0.85) {
         const md = chordMidi[0] + ((n.deg % 7) + 7) % 7 + 12;
-        if (M.bell > 0.8) bel(t, mtof(md), stepDur * Math.max(2, n.len), 0.22);
-        else bra(t, mtof(md), stepDur * Math.max(2, n.len), 0.16);
+        if (M.bell > 0.8 || M.domain === 'space') bel(t, mtof(md), stepDur * Math.max(2, n.len), 0.22);
+        else bra(t, mtof(md), stepDur * Math.max(2, n.len), 0.16 * D.bra);
       }
     }
   }
 
-  // ── intensity + victory ──────────────────────────────────────
+  // ── intensity, domain, battle state ──────────────────────────
   M.setIntensity = function (v) { M.I = E.clamp01(v); };
-  M.victory = function (factionId) { M.setTheme(factionId || M.faction, true); M.won = true; M.section = 'fanfare'; M.I = 1; };
-  M.setVolume = function (v) { M.vol = v; if (M.on && out) out.gain.setTargetAtTime(v, c.currentTime, 0.1); };
+  M.setDomain = function (d) { if (DOM[d]) M.domain = d; };
+  M.setMode = function (m) { if (M.mode !== m) { M.mode = m; M._step = Math.ceil(M._step / 64) * 64 % 64; if (m === 'map') { M.won = false; M.lost = false; } } };
+  // st: { winning, losing, lastStand }
+  M.setState = function (st) { M.st = st || {}; M.tempoMul = M.st.lastStand ? 1.12 : 1; };
+  M.victory = function (factionId) { M.setTheme(factionId || M.faction, true); M.won = true; M.section = 'fanfare'; M.I = 1; M.sting('victory'); };
+  M.defeat = function (factionId) { M.setTheme(factionId || M.faction, true); M.lost = true; M.section = 'dirge'; M.I = 0.5; M.sting('defeat'); };
+  M.setVolume = function (v) { M.vol = v; if (E.Mixer) E.Mixer.setMix({ master: v }); };
 
-  // ── SFX (synthesized) ────────────────────────────────────────
-  const SFX = {
-    play(kind, t, vol) {
-      if (!M.on) return; t = t || c.currentTime; vol = vol == null ? 1 : vol;
-      const out2 = c.createGain(); out2.gain.value = vol; out2.connect(master);
-      switch (kind) {
-        case 'rifle': {
-          const o = c.createOscillator(); o.type = 'square'; o.frequency.setValueAtTime(700, t); o.frequency.exponentialRampToValueAtTime(180, t + 0.12);
-          const g = c.createGain(); o.connect(g); g.connect(out2);
-          g.gain.setValueAtTime(0.35, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
-          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1200;
-          const ng = c.createGain(); ns.connect(f); f.connect(ng); ng.connect(out2); ng.gain.setValueAtTime(0.3, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-          o.start(t); o.stop(t + 0.15); ns.start(t); ns.stop(t + 0.09); break;
-        }
-        case 'cannon': case 'capital': case 'pulse': {
-          const big = kind === 'capital';
-          const o = c.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(big ? 90 : 160, t); o.frequency.exponentialRampToValueAtTime(40, t + (big ? 0.5 : 0.25));
-          const g = c.createGain(); o.connect(g); g.connect(out2);
-          g.gain.setValueAtTime(big ? 0.9 : 0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + (big ? 0.6 : 0.3));
-          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = big ? 300 : 700; f.Q.value = 0.7;
-          const ng = c.createGain(); ns.connect(f); f.connect(ng); ng.connect(out2);
-          ng.gain.setValueAtTime(big ? 0.5 : 0.3, t); ng.gain.exponentialRampToValueAtTime(0.001, t + (big ? 0.4 : 0.18));
-          o.start(t); o.stop(t + 0.7); ns.start(t); ns.stop(t + 0.45); break;
-        }
-        case 'lance': case 'spore': {
-          const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(300, t); o.frequency.exponentialRampToValueAtTime(900, t + 0.1);
-          const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1500; f.Q.value = 2;
-          const g = c.createGain(); o.connect(f); f.connect(g); g.connect(out2);
-          g.gain.setValueAtTime(0.3, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-          o.start(t); o.stop(t + 0.13); break;
-        }
-        case 'missile': {
-          const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(600, t + 0.4);
-          const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.18, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-          o.start(t); o.stop(t + 0.42); break;
-        }
-        case 'pd': {
-          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 2500;
-          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
-          ns.start(t); ns.stop(t + 0.05); break;
-        }
-        case 'shield': {
-          const o = c.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(520, t); o.frequency.linearRampToValueAtTime(300, t + 0.2);
-          const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.2, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
-          o.start(t); o.stop(t + 0.22); break;
-        }
-        case 'explosion': {
-          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(900, t); f.frequency.exponentialRampToValueAtTime(80, t + 0.5);
-          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2);
-          g.gain.setValueAtTime(0.8, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-          const o = c.createOscillator(); o.type = 'sine'; o.frequency.setValueAtTime(70, t); o.frequency.exponentialRampToValueAtTime(30, t + 0.5);
-          const og = c.createGain(); o.connect(og); og.connect(out2); og.gain.setValueAtTime(0.6, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-          ns.start(t); ns.stop(t + 0.6); o.start(t); o.stop(t + 0.6); break;
-        }
-        case 'ui': {
-          const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = 660; const g = c.createGain(); o.connect(g); g.connect(out2);
-          g.gain.setValueAtTime(0.15, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.08); o.start(t); o.stop(t + 0.09); break;
-        }
-        case 'launch': {
-          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(300, t); f.frequency.linearRampToValueAtTime(1200, t + 0.4);
-          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.3, t); g.gain.linearRampToValueAtTime(0.5, t + 0.3); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
-          ns.start(t); ns.stop(t + 0.55); break;
-        }
-        case 'hitmark': case 'kill': {
-          const o = c.createOscillator(); o.type = 'triangle'; o.frequency.setValueAtTime(kind === 'kill' ? 1250 : 1900, t); o.frequency.exponentialRampToValueAtTime(kind === 'kill' ? 620 : 1500, t + 0.09);
-          const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.3, t); g.gain.exponentialRampToValueAtTime(0.001, t + (kind === 'kill' ? 0.22 : 0.06)); o.start(t); o.stop(t + 0.25); break;
-        }
-        case 'hurt': {
-          const ns = c.createBufferSource(); ns.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500;
-          const g = c.createGain(); ns.connect(f); f.connect(g); g.connect(out2); g.gain.setValueAtTime(0.5, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.16); ns.start(t); ns.stop(t + 0.18); break;
-        }
-        case 'capture': {
-          [0, 4, 7, 12].forEach((s, i) => { const o = c.createOscillator(); o.type = 'triangle'; o.frequency.value = 440 * Math.pow(2, s / 12); const g = c.createGain(); o.connect(g); g.connect(out2); g.connect(M.revIn);
-            const a = t + i * 0.09; g.gain.setValueAtTime(0.0001, a); g.gain.linearRampToValueAtTime(0.22, a + 0.02); g.gain.exponentialRampToValueAtTime(0.001, a + 0.5); o.start(a); o.stop(a + 0.55); }); break;
-        }
-        case 'alarm': {
-          for (let i = 0; i < 3; i++) { const o = c.createOscillator(); o.type = 'square'; const a = t + i * 0.28; o.frequency.setValueAtTime(880, a); o.frequency.linearRampToValueAtTime(660, a + 0.2); const g = c.createGain(); o.connect(g); g.connect(out2); g.gain.setValueAtTime(0.12, a); g.gain.exponentialRampToValueAtTime(0.001, a + 0.24); o.start(a); o.stop(a + 0.26); } break;
-        }
-        default: break;
-      }
-    },
-  };
-
-  // route sim events to SFX (called with drained events + volume by distance)
-  M.onEvents = function (events) {
-    for (const e of events) {
-      if (e.type === 'muzzle') SFX.play(e.kind === 'capital' ? 'capital' : (e.kind === 'missile' ? 'missile' : (e.kind === 'pd' ? 'pd' : 'pulse')));
-      else if (e.type === 'impact') SFX.play('explosion', null, 0.5);
-      else if (e.type === 'death') SFX.play('explosion', null, e.kind === 'capital' ? 1 : e.kind === 'vehicle' ? 0.8 : 0.5);
-      else if (e.type === 'shieldhit') SFX.play('shield', null, 0.5);
-      else if (e.type === 'launch') SFX.play('launch');
-      else if (e.type === 'objectiveCaptured') SFX.play('explosion', null, 0.9);
+  // one-shot stings played over the score
+  M.sting = function (kind) {
+    if (!M.on) return; const t = c.currentTime + 0.05, root = M.root, m = M.mode_ || MODES.aeolian;
+    if (kind === 'victory') {   // rising brass triad + bell shimmer
+      [0, 7, 12, 16].forEach((s, i) => { bra(t + i * 0.16, mtof(root + 12 + s), 1.4, 0.45); str(t + i * 0.16, mtof(root + s), 3.5, 0.2); });
+      bel(t + 0.6, mtof(root + 31), 3, 0.3); tim(t, mtof(root - 12), 1); tim(t + 0.5, mtof(root - 12), 1);
+    } else if (kind === 'defeat') {   // falling minor line over a low drone
+      [12, 10, 7, 3, 0].forEach((s, i) => { bra(t + i * 0.45, mtof(root + s), 1.6, 0.34, 0.9); });
+      for (const s of [0, 3, 7]) str(t, mtof(root - 12 + s), 6, 0.2); tim(t, mtof(root - 24), 1); tim(t + 0.9, mtof(root - 24), 0.9);
+    } else if (kind === 'shipLost') {   // a heavy low hit with a hollow bell
+      tim(t, mtof(root - 24), 1); bra(t, mtof(root - 12 + m[3]), 1.2, 0.3, 0.8); bel(t + 0.2, mtof(root + 12 + m[4]), 2.2, 0.2);
+    } else if (kind === 'capture') {
+      bel(t, mtof(root + 24), 1.5, 0.25); bel(t + 0.12, mtof(root + 31), 1.5, 0.2);
+    } else if (kind === 'alert') {
+      tim(t, mtof(root - 12), 0.8); tim(t + 0.25, mtof(root - 12), 0.6);
+    } else if (kind === 'turn') {
+      str(t, mtof(root), 3, 0.2); str(t, mtof(root + 7), 3, 0.15); bel(t + 0.2, mtof(root + 24), 2, 0.2);
     }
   };
 
   E.Music = M;
-  E.SFX = SFX;
 })(window.E = window.E || {});
 
 // ---- js/core/noise.js ----
@@ -478,6 +594,214 @@
   E.mulberry32 = mulberry32;
   // derive a uint seed from a string (for named biomes, faction motifs, etc.)
   E.seedFrom = (str) => E.hashStr(str);
+})(window.E = window.E || {});
+
+// ---- js/core/sfx.js ----
+// One-shot sounds, all synthesised. Each kind is a recipe: which bus it lives on,
+// how far it carries, how much reverb it sends, and a builder that wires
+// oscillators / filtered noise into the voice the mixer hands it.
+//   E.SFX.play(kind, t, vol, { pos, rate, interior })   pos = world position (panned + attenuated)
+// Families: infantry small arms, heavy weapons, vehicle guns, air guns and
+// missiles, capital batteries, point defence, impacts, explosions by size,
+// shield / hull / subsystem events, cockpit and bridge alerts, UI.
+(function (E) {
+  'use strict';
+  const M = E.Mixer;
+  const R = (a, b) => a + Math.random() * (b - a);
+  const N = (t, d, o, x) => M.noiseSrc(t, d, o, x), T = (t, d, o, x) => M.tone(t, d, o, x);
+  const K = {};
+  // def(kind, {bus, ref, max, send, dur}, builder(t, out, rate))
+  const def = (kinds, meta, fn) => { for (const k of [].concat(kinds)) K[k] = Object.assign({ fn, dur: 0.5, ref: 25, max: 500, bus: 'weapons' }, meta); };
+
+  // ── infantry small arms ──
+  def(['rifle', 'blaster'], { ref: 18, max: 380, dur: 0.3, send: 0.12 }, (t, o, r) => {
+    T(t, 0.13, o, { type: 'square', f0: 820 * r, f1: 170 * r, gain: 0.22 });
+    T(t, 0.07, o, { type: 'sawtooth', f0: 1900 * r, f1: 500 * r, gain: 0.14 });
+    N(t, 0.06, o, { type: 'highpass', f0: 1800, q: 0.5, gain: 0.34 });
+    N(t + 0.01, 0.12, o, { type: 'lowpass', f0: 600, f1: 200, gain: 0.2 });
+  });
+  def('repeater', { ref: 20, max: 420, dur: 0.2, send: 0.1 }, (t, o, r) => {
+    T(t, 0.09, o, { type: 'square', f0: 520 * r, f1: 130 * r, gain: 0.2 });
+    N(t, 0.05, o, { type: 'bandpass', f0: 1400, q: 0.8, gain: 0.36 });
+    N(t, 0.1, o, { type: 'lowpass', f0: 500, gain: 0.22 });
+  });
+  def(['lance', 'sniper'], { ref: 40, max: 900, dur: 1.1, send: 0.35 }, (t, o, r) => {
+    N(t, 0.05, o, { type: 'highpass', f0: 1200, gain: 0.6 });
+    T(t, 0.35, o, { type: 'sawtooth', f0: 1500 * r, f1: 90 * r, gain: 0.26 });
+    T(t, 0.9, o, { type: 'sine', f0: 110, f1: 38, gain: 0.5 });
+    N(t + 0.02, 0.8, o, { type: 'lowpass', f0: 900, f1: 120, gain: 0.35 });
+  });
+  def('spore', { ref: 20, max: 400, dur: 0.3, send: 0.2 }, (t, o, r) => {
+    T(t, 0.18, o, { type: 'sine', f0: 280 * r, f1: 700 * r, gain: 0.26 }); T(t, 0.14, o, { type: 'triangle', f0: 560 * r, f1: 1400 * r, gain: 0.12 });
+    N(t, 0.12, o, { type: 'bandpass', f0: 900, q: 3, gain: 0.14 });
+  });
+  // ── heavy weapons ──
+  def(['missile', 'rocket'], { ref: 35, max: 800, dur: 1.2, send: 0.3 }, (t, o, r) => {
+    N(t, 0.9, o, { type: 'bandpass', f0: 500 * r, f1: 2600 * r, q: 0.9, gain: 0.42, a: 0.06 });
+    T(t, 0.25, o, { type: 'sine', f0: 140, f1: 55, gain: 0.55 });
+    N(t, 0.2, o, { type: 'lowpass', f0: 700, gain: 0.35 });
+  });
+  def(['launch', 'grenade'], { ref: 20, max: 350, dur: 0.5, send: 0.15 }, (t, o, r) => {
+    T(t, 0.22, o, { type: 'sine', f0: 190 * r, f1: 62, gain: 0.55 }); N(t, 0.18, o, { type: 'lowpass', f0: 1100, f1: 250, gain: 0.4 }); N(t + 0.08, 0.25, o, { type: 'bandpass', f0: 1800, q: 1, gain: 0.1 });
+  });
+  def('cannon', { ref: 50, max: 1000, dur: 1.4, send: 0.4 }, (t, o, r) => {
+    T(t, 0.7, o, { type: 'sine', f0: 118 * r, f1: 30, gain: 0.8 }); N(t, 0.35, o, { type: 'lowpass', f0: 1600, f1: 120, gain: 0.7 });
+    N(t, 0.04, o, { type: 'highpass', f0: 2500, gain: 0.45 }); N(t + 0.1, 1.0, o, { type: 'lowpass', f0: 300, f1: 80, gain: 0.25, brown: true });
+  });
+  def('pulse', { ref: 25, max: 520, dur: 0.3, send: 0.15 }, (t, o, r) => {
+    T(t, 0.16, o, { type: 'square', f0: 360 * r, f1: 95 * r, gain: 0.26 }); T(t, 0.12, o, { type: 'sawtooth', f0: 720 * r, f1: 180, gain: 0.12 }); N(t, 0.08, o, { type: 'bandpass', f0: 1100, q: 1, gain: 0.3 });
+  });
+  // ── air guns ──
+  def('laser', { ref: 50, max: 900, dur: 0.25, send: 0.1 }, (t, o, r) => {
+    T(t, 0.11, o, { type: 'sawtooth', f0: 2300 * r, f1: 420 * r, gain: 0.2 }); T(t, 0.08, o, { type: 'square', f0: 1200 * r, f1: 300, gain: 0.1 }); N(t, 0.03, o, { type: 'highpass', f0: 3000, gain: 0.24 });
+  });
+  def('chin', { ref: 40, max: 700, dur: 0.2 }, (t, o, r) => { T(t, 0.08, o, { type: 'square', f0: 640 * r, f1: 160, gain: 0.2 }); N(t, 0.06, o, { type: 'bandpass', f0: 1500, q: 1, gain: 0.34 }); N(t, 0.1, o, { type: 'lowpass', f0: 420, gain: 0.25 }); });
+  def('pod', { ref: 40, max: 700, dur: 0.6, send: 0.2 }, (t, o, r) => { N(t, 0.4, o, { type: 'bandpass', f0: 700, f1: 2200, q: 1, gain: 0.34, a: 0.03 }); T(t, 0.15, o, { type: 'sine', f0: 150, f1: 60, gain: 0.4 }); });
+  def('torpedo', { ref: 60, max: 1100, dur: 1.5, send: 0.35 }, (t, o, r) => {
+    N(t, 1.2, o, { type: 'bandpass', f0: 220, f1: 1400, q: 0.8, gain: 0.4, a: 0.15 }); T(t, 0.6, o, { type: 'sine', f0: 100, f1: 36, gain: 0.7 });
+  });
+  // ── capital ships ──
+  def(['capital', 'turbo'], { ref: 250, max: 4200, dur: 2.2, send: 0.65 }, (t, o, r) => {
+    T(t, 1.4, o, { type: 'sine', f0: 92 * r, f1: 28, gain: 0.85 }); T(t, 0.5, o, { type: 'sawtooth', f0: 420 * r, f1: 70, gain: 0.2 });
+    N(t, 1.0, o, { type: 'lowpass', f0: 1100, f1: 90, gain: 0.5, brown: true }); N(t, 0.05, o, { type: 'highpass', f0: 1500, gain: 0.3 });
+  });
+  def('pd', { ref: 120, max: 1800, dur: 0.12 }, (t, o, r) => { N(t, 0.035, o, { type: 'highpass', f0: 3200 * r, gain: 0.3 }); T(t, 0.03, o, { type: 'square', f0: 2400 * r, f1: 1500, gain: 0.07 }); });
+  def('orbital', { ref: 600, max: 6000, dur: 5.5, send: 0.9, bus: 'impacts' }, (t, o) => {
+    T(t, 3.0, o, { type: 'sawtooth', f0: 60, f1: 420, gain: 0.25, a: 2.4, curve: 'lin' });
+    T(t + 3.0, 2.2, o, { type: 'sine', f0: 62, f1: 22, gain: 1.0 }); N(t + 3.0, 2.0, o, { type: 'lowpass', f0: 1800, f1: 60, gain: 0.9, brown: true }); N(t + 3.0, 0.08, o, { type: 'highpass', f0: 1200, gain: 0.6 });
+  });
+  def('ion', { ref: 400, max: 5000, dur: 3, send: 0.7 }, (t, o) => { T(t, 2.5, o, { type: 'sawtooth', f0: 90, f1: 55, gain: 0.35, a: 0.5 }); T(t, 2.5, o, { type: 'sine', f0: 880, f1: 120, gain: 0.2, a: 0.1 }); N(t, 2.4, o, { type: 'bandpass', f0: 1800, f1: 300, q: 1.5, gain: 0.3 }); });
+  // ── impacts ──
+  def('bolthit', { bus: 'impacts', ref: 12, max: 160, dur: 0.12 }, (t, o) => { N(t, 0.05, o, { type: 'bandpass', f0: 2400, q: 2, gain: 0.3 }); T(t, 0.05, o, { type: 'triangle', f0: 900, f1: 300, gain: 0.1 }); });
+  def('shieldhit', { bus: 'impacts', ref: 40, max: 1400, dur: 0.7, send: 0.35 }, (t, o, r) => {
+    T(t, 0.55, o, { type: 'sine', f0: 880 * r, f1: 330 * r, gain: 0.22 }); T(t, 0.45, o, { type: 'sine', f0: 1320 * r, f1: 520, gain: 0.1 }); N(t, 0.12, o, { type: 'bandpass', f0: 3200, q: 3, gain: 0.14 });
+  });
+  def('hullhit', { bus: 'impacts', ref: 50, max: 1500, dur: 0.8, send: 0.3 }, (t, o, r) => {
+    T(t, 0.5, o, { type: 'sine', f0: 105 * r, f1: 50, gain: 0.6 }); N(t, 0.15, o, { type: 'bandpass', f0: 640 * r, q: 4, gain: 0.3 }); T(t, 0.4, o, { type: 'triangle', f0: 1480, f1: 1470, gain: 0.05 }); N(t, 0.3, o, { type: 'lowpass', f0: 500, f1: 90, gain: 0.35 });
+  });
+  def('sysboom', { bus: 'impacts', ref: 60, max: 1800, dur: 1.4, send: 0.5 }, (t, o) => {
+    T(t, 0.9, o, { type: 'sine', f0: 85, f1: 26, gain: 0.9 }); N(t, 0.7, o, { type: 'lowpass', f0: 1400, f1: 70, gain: 0.7 }); N(t + 0.1, 0.4, o, { type: 'bandpass', f0: 800, f1: 300, q: 2, gain: 0.2 });
+    for (let i = 0; i < 4; i++) N(t + 0.2 + i * 0.11, 0.09, o, { type: 'bandpass', f0: 1500 + i * 300, q: 3, gain: 0.12 });
+  });
+  def('breach', { bus: 'impacts', ref: 60, max: 1600, dur: 2.2, send: 0.5 }, (t, o) => {
+    N(t, 1.8, o, { type: 'bandpass', f0: 2600, f1: 200, q: 0.8, gain: 0.5, a: 0.05 }); T(t, 1.6, o, { type: 'sine', f0: 62, f1: 34, gain: 0.7 });
+    T(t + 0.1, 1.4, o, { type: 'sawtooth', f0: 190, f1: 70, gain: 0.08 }); T(t + 0.4, 0.5, o, { type: 'triangle', f0: 140, f1: 150, gain: 0.1 });
+  });
+  def('covbreak', { bus: 'impacts', ref: 15, max: 250, dur: 0.5, send: 0.1 }, (t, o) => { N(t, 0.3, o, { type: 'lowpass', f0: 2600, f1: 300, gain: 0.5 }); for (let i = 0; i < 5; i++) N(t + i * 0.05, 0.05, o, { type: 'bandpass', f0: R(900, 2400), q: 2, gain: 0.14 }); });
+  // explosions by size
+  const boom = (size) => (t, o, r) => {
+    const L = size, dur = [0.35, 0.7, 1.3, 2.4][L];
+    T(t, dur, o, { type: 'sine', f0: [140, 90, 62, 46][L] * r, f1: 24, gain: [0.55, 0.8, 0.95, 1.0][L] });
+    N(t, dur * 0.8, o, { type: 'lowpass', f0: [2500, 1600, 1100, 900][L], f1: 60, gain: [0.5, 0.65, 0.8, 0.9][L], brown: L > 1 });
+    N(t, 0.04, o, { type: 'highpass', f0: 2000, gain: [0.3, 0.4, 0.5, 0.6][L] });
+    if (L > 1) for (let i = 0; i < 2 + L; i++) N(t + 0.12 + i * R(0.08, 0.16), 0.25, o, { type: 'lowpass', f0: R(500, 1200), f1: 90, gain: 0.18 });
+  };
+  def('boom0', { bus: 'impacts', ref: 25, max: 450, dur: 0.6, send: 0.2 }, boom(0));
+  def(['boom1', 'explosion'], { bus: 'impacts', ref: 40, max: 900, dur: 1.0, send: 0.35 }, boom(1));
+  def('boom2', { bus: 'impacts', ref: 80, max: 1800, dur: 1.8, send: 0.5 }, boom(2));
+  def('boom3', { bus: 'impacts', ref: 250, max: 4500, dur: 3, send: 0.8 }, boom(3));
+  // ── player feedback / cockpit / bridge ──
+  def('hitmark', { bus: 'ui', dur: 0.1 }, (t, o) => T(t, 0.06, o, { type: 'triangle', f0: 1900, f1: 1500, gain: 0.3 }));
+  def('kill', { bus: 'ui', dur: 0.3 }, (t, o) => { T(t, 0.2, o, { type: 'triangle', f0: 1250, f1: 620, gain: 0.3 }); T(t + 0.06, 0.18, o, { type: 'sine', f0: 1880, f1: 1250, gain: 0.14 }); });
+  def('hurt', { bus: 'impacts', ref: 100, max: 200, dur: 0.3 }, (t, o) => { N(t, 0.16, o, { type: 'lowpass', f0: 520, gain: 0.55 }); T(t, 0.12, o, { type: 'sine', f0: 120, f1: 55, gain: 0.4 }); });
+  def('shield', { bus: 'impacts', ref: 100, max: 300, dur: 0.3 }, (t, o) => { T(t, 0.22, o, { type: 'sine', f0: 560, f1: 300, gain: 0.2 }); N(t, 0.05, o, { type: 'bandpass', f0: 3000, q: 3, gain: 0.1 }); });
+  def('capture', { bus: 'voice', dur: 0.8, send: 0.4 }, (t, o) => { [0, 4, 7, 12].forEach((s, i) => T(t + i * 0.09, 0.5, o, { type: 'triangle', f0: 440 * Math.pow(2, s / 12), gain: 0.2 })); });
+  def('lost', { bus: 'voice', dur: 0.9, send: 0.4 }, (t, o) => { [0, -3, -7, -12].forEach((s, i) => T(t + i * 0.1, 0.5, o, { type: 'triangle', f0: 440 * Math.pow(2, s / 12), gain: 0.2 })); });
+  def('alarm', { bus: 'voice', dur: 1, ref: 1e9, max: 2e9 }, (t, o) => { for (let i = 0; i < 3; i++) T(t + i * 0.28, 0.26, o, { type: 'square', f0: 880, f1: 660, gain: 0.12, curve: 'lin' }); });
+  def('klaxon', { bus: 'voice', dur: 1.6 }, (t, o) => { for (let i = 0; i < 2; i++) { T(t + i * 0.8, 0.72, o, { type: 'sawtooth', f0: 330, f1: 520, gain: 0.14, curve: 'lin', a: 0.2 }); T(t + i * 0.8, 0.72, o, { type: 'square', f0: 165, f1: 260, gain: 0.07, curve: 'lin', a: 0.2 }); } });
+  def('lock', { bus: 'voice', dur: 0.16 }, (t, o, r) => T(t, 0.1, o, { type: 'sine', f0: 1150 * r, gain: 0.26, sus: 0.8 }));
+  def('locked', { bus: 'voice', dur: 0.5 }, (t, o) => { T(t, 0.4, o, { type: 'square', f0: 1560, gain: 0.12, sus: 0.9 }); T(t, 0.4, o, { type: 'sine', f0: 1560, gain: 0.2, sus: 0.9 }); });
+  def('msl', { bus: 'voice', dur: 0.2 }, (t, o, r) => { T(t, 0.07, o, { type: 'square', f0: 2100 * r, gain: 0.16 }); T(t + 0.09, 0.07, o, { type: 'square', f0: 1700 * r, gain: 0.13 }); });
+  def('stall', { bus: 'voice', dur: 0.5 }, (t, o) => { T(t, 0.4, o, { type: 'sawtooth', f0: 520, f1: 380, gain: 0.14, curve: 'lin', sus: 0.8 }); T(t, 0.4, o, { type: 'square', f0: 260, f1: 190, gain: 0.08, curve: 'lin' }); });
+  def('flare', { bus: 'weapons', ref: 30, max: 400, dur: 0.9 }, (t, o) => { N(t, 0.8, o, { type: 'highpass', f0: 3500, f1: 6500, gain: 0.3, a: 0.02 }); for (let i = 0; i < 6; i++) N(t + i * 0.05, 0.06, o, { type: 'bandpass', f0: R(3500, 7000), q: 4, gain: 0.1 }); });
+  def('whistle', { bus: 'impacts', ref: 60, max: 900, dur: 2.5 }, (t, o) => { T(t, 2.2, o, { type: 'sine', f0: 2400, f1: 700, gain: 0.14, a: 0.3, curve: 'lin' }); T(t, 2.2, o, { type: 'triangle', f0: 2420, f1: 710, gain: 0.05, a: 0.3, curve: 'lin' }); });
+  def('bombaway', { bus: 'weapons', ref: 40, max: 600, dur: 0.5 }, (t, o) => { T(t, 0.15, o, { type: 'sine', f0: 100, f1: 50, gain: 0.5 }); N(t, 0.2, o, { type: 'lowpass', f0: 600, gain: 0.3 }); });
+  def('boost', { bus: 'weapons', ref: 60, max: 700, dur: 0.9 }, (t, o) => { N(t, 0.8, o, { type: 'lowpass', f0: 400, f1: 2400, q: 0.7, gain: 0.55, a: 0.12 }); T(t, 0.6, o, { type: 'sawtooth', f0: 60, f1: 130, gain: 0.35 }); });
+  def('call', { bus: 'voice', dur: 0.5 }, (t, o) => { T(t, 0.1, o, { type: 'sine', f0: 880, gain: 0.2 }); T(t + 0.12, 0.1, o, { type: 'sine', f0: 1175, gain: 0.2 }); T(t + 0.24, 0.2, o, { type: 'sine', f0: 1760, gain: 0.18 }); });
+  def('deny', { bus: 'ui', dur: 0.3 }, (t, o) => { T(t, 0.12, o, { type: 'square', f0: 220, gain: 0.14 }); T(t + 0.13, 0.15, o, { type: 'square', f0: 165, gain: 0.14 }); });
+  def('thud', { bus: 'impacts', ref: 1e9, max: 2e9, dur: 0.6, interior: true }, (t, o, r) => { T(t, 0.5, o, { type: 'sine', f0: 70 * r, f1: 30, gain: 0.8 }); N(t, 0.3, o, { type: 'lowpass', f0: 240, f1: 60, gain: 0.5, brown: true }); });
+  def('creak', { bus: 'ambience', ref: 1e9, max: 2e9, dur: 1.4, interior: true }, (t, o) => { T(t, 1.2, o, { type: 'sawtooth', f0: 70, f1: 58, gain: 0.07, a: 0.4 }); T(t, 1.2, o, { type: 'triangle', f0: 215, f1: 170, gain: 0.04, a: 0.5 }); });
+  def('stinger', { bus: 'voice', dur: 1.2, send: 0.5 }, (t, o) => { T(t, 1.0, o, { type: 'sawtooth', f0: 110, f1: 55, gain: 0.2 }); T(t, 0.9, o, { type: 'sine', f0: 55, gain: 0.5 }); });
+  def('footstep', { bus: 'ambience', ref: 8, max: 80, dur: 0.12 }, (t, o, r) => { N(t, 0.07, o, { type: 'lowpass', f0: 520 * r, f1: 160, gain: 0.5 }); T(t, 0.06, o, { type: 'sine', f0: 90, f1: 50, gain: 0.3 }); });
+  def('vault', { bus: 'ambience', ref: 8, max: 60, dur: 0.3 }, (t, o) => { N(t, 0.2, o, { type: 'lowpass', f0: 900, f1: 200, gain: 0.45, a: 0.04 }); T(t + 0.12, 0.1, o, { type: 'sine', f0: 110, f1: 55, gain: 0.5 }); });
+  def('tool', { bus: 'ui', dur: 0.15 }, (t, o) => { T(t, 0.05, o, { type: 'square', f0: 1400, gain: 0.08 }); T(t + 0.05, 0.08, o, { type: 'square', f0: 1900, gain: 0.08 }); });
+  def('weld', { bus: 'ambience', ref: 15, max: 100, dur: 0.2 }, (t, o) => { N(t, 0.15, o, { type: 'bandpass', f0: 3800, q: 2, gain: 0.2 }); });
+  def('mine', { bus: 'weapons', ref: 15, max: 120, dur: 0.3 }, (t, o) => { T(t, 0.06, o, { type: 'square', f0: 700, gain: 0.15 }); T(t + 0.1, 0.12, o, { type: 'square', f0: 1000, gain: 0.12 }); });
+  def('beep', { bus: 'voice', dur: 0.15 }, (t, o) => T(t, 0.1, o, { type: 'sine', f0: 1320, gain: 0.2 }));
+  // ── UI (map, menus) ──
+  def('ui', { bus: 'ui', dur: 0.1 }, (t, o) => T(t, 0.08, o, { type: 'sine', f0: 660, gain: 0.2 }));
+  def('hover', { bus: 'ui', dur: 0.06 }, (t, o) => T(t, 0.04, o, { type: 'sine', f0: 1500, gain: 0.07 }));
+  def('select', { bus: 'ui', dur: 0.2 }, (t, o) => { T(t, 0.07, o, { type: 'triangle', f0: 880, gain: 0.18 }); T(t + 0.06, 0.12, o, { type: 'triangle', f0: 1320, gain: 0.16 }); });
+  def('confirm', { bus: 'ui', dur: 0.4 }, (t, o) => { [0, 7, 12].forEach((s, i) => T(t + i * 0.07, 0.25, o, { type: 'triangle', f0: 523 * Math.pow(2, s / 12), gain: 0.18 })); });
+  def('move', { bus: 'ui', dur: 0.5 }, (t, o) => { T(t, 0.4, o, { type: 'sawtooth', f0: 140, f1: 420, gain: 0.1, curve: 'lin', a: 0.1 }); N(t, 0.4, o, { type: 'bandpass', f0: 600, f1: 2000, q: 1, gain: 0.1, a: 0.1 }); });
+  def('build', { bus: 'ui', dur: 0.5 }, (t, o) => { N(t, 0.05, o, { type: 'bandpass', f0: 1800, q: 2, gain: 0.3 }); N(t + 0.1, 0.05, o, { type: 'bandpass', f0: 1500, q: 2, gain: 0.3 }); T(t + 0.18, 0.3, o, { type: 'triangle', f0: 660, f1: 990, gain: 0.15, curve: 'lin' }); });
+  def('endturn', { bus: 'ui', dur: 1.2, send: 0.4 }, (t, o) => { T(t, 0.9, o, { type: 'sine', f0: 110, f1: 82, gain: 0.5 }); [0, 5, 9].forEach((s, i) => T(t + 0.1 + i * 0.12, 0.6, o, { type: 'triangle', f0: 330 * Math.pow(2, s / 12), gain: 0.12 })); });
+  def('enemy', { bus: 'voice', dur: 1, send: 0.3 }, (t, o) => { T(t, 0.35, o, { type: 'sawtooth', f0: 98, f1: 92, gain: 0.2 }); T(t + 0.4, 0.4, o, { type: 'sawtooth', f0: 98, f1: 78, gain: 0.2 }); T(t, 0.8, o, { type: 'sine', f0: 49, gain: 0.5 }); });
+  def('ops', { bus: 'ui', dur: 0.8 }, (t, o) => { N(t, 0.6, o, { type: 'bandpass', f0: 4000, f1: 800, q: 4, gain: 0.12, a: 0.1 }); T(t + 0.3, 0.3, o, { type: 'sine', f0: 1800, f1: 900, gain: 0.1 }); });
+  def('whiz', { bus: 'impacts', ref: 1e9, max: 2e9, dur: 0.25 }, (t, o, r) => { N(t, 0.18, o, { type: 'bandpass', f0: 2600 * r, f1: 900, q: 3, gain: 0.35, a: 0.03 }); });
+  def('hum', { bus: 'ui', dur: 0.3 }, (t, o) => T(t, 0.2, o, { type: 'sine', f0: 440, gain: 0.12 }));
+
+  const SFX = {
+    kinds: K,
+    // alias table for weapon `sfx` names used by data/*.js
+    alias: { pulse: 'pulse', launch: 'launch', pd: 'pd', capital: 'capital', missile: 'missile', lance: 'lance', rifle: 'rifle' },
+    play(kind, t, vol, o) {
+      if (!M.ready) return null;
+      const k = K[kind] || K[SFX.alias[kind]]; if (!k) return null;
+      o = o || {}; const c = M.ctx; t = t || c.currentTime;
+      const out = M.voice({ bus: o.bus || k.bus, ref: k.ref, max: k.max, send: k.send, interior: o.interior != null ? o.interior : k.interior, vol: vol == null ? 1 : vol, prio: o.prio }, o.pos, k.dur);
+      if (!out) return null;
+      k.fn(t, out, o.rate || R(0.94, 1.06));
+      return out;
+    },
+  };
+
+  // ── continuous voices (engines, wind, reactor, hum): the audio director drives their params ──
+  const loops = {};
+  // each returns {set(params, dt), stop()}; nodes live on the ambience bus
+  function mk(name, fn) { loops[name] = (opts) => { if (!M.ready) return null; const c = M.ctx, out = c.createGain(); out.gain.value = 0; const bus = M.input('ambience', !!(opts && opts.interior)); out.connect(bus); const L = fn(c, out, opts || {}); L.out = out; L.stop = () => { out.gain.setTargetAtTime(0, c.currentTime, 0.15); setTimeout(() => { try { L.nodes.forEach(n => { try { n.stop && n.stop(); } catch (e) {} n.disconnect && n.disconnect(); }); out.disconnect(); } catch (e) {} }, 700); }; return L; }; }
+  const osc = (c, type, f, dest, g) => { const o = c.createOscillator(); o.type = type; o.frequency.value = f; const x = c.createGain(); x.gain.value = g; o.connect(x); x.connect(dest); o.start(); return { o, g: x }; };
+  const nz = (c, brown, ftype, f, q, dest, g) => { const s = c.createBufferSource(); s.buffer = brown ? M.brown : M.noise; s.loop = true; const fl = c.createBiquadFilter(); fl.type = ftype; fl.frequency.value = f; fl.Q.value = q; const x = c.createGain(); x.gain.value = g; s.connect(fl); fl.connect(x); x.connect(dest); s.start(0, Math.random() * 1.5); return { s, f: fl, g: x }; };
+  const smooth = (p, v, c) => p.setTargetAtTime(v, c.currentTime, 0.08);
+  // ground vehicle: engine hum that follows speed, hover whine, rumble; turret servo when `servo` > 0
+  mk('vehicle', (c, out, o) => {
+    const heavy = o.heavy || 0, a = osc(c, 'sawtooth', 50, out, 0.13), b = osc(c, 'square', 25, out, 0.1), w = osc(c, 'sine', 300, out, 0.06), r = nz(c, true, 'lowpass', 260, 0.7, out, 0.5), sv = osc(c, 'triangle', 420, out, 0);
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 500; a.g.disconnect(); b.g.disconnect(); a.g.connect(lp); b.g.connect(lp); lp.connect(out);
+    return { nodes: [a.o, b.o, w.o, r.s, sv.o], set(p) { const s = Math.min(1, p.speed || 0), base = heavy ? 34 : 52;
+      smooth(a.o.frequency, base + s * (heavy ? 40 : 70), c); smooth(b.o.frequency, base * 0.5 + s * 30, c); smooth(w.o.frequency, 240 + s * 520, c); smooth(w.g.gain, 0.03 + s * 0.07, c); smooth(lp.frequency, 260 + s * 900, c);
+      smooth(r.g.gain, 0.25 + s * 0.45, c); smooth(sv.g.gain, (p.servo || 0) * 0.05, c); smooth(sv.o.frequency, 330 + (p.servo || 0) * 120, c); smooth(out.gain, p.gain == null ? 0.7 : p.gain, c); } };
+  });
+  // aircraft: thrust rumble, turbine whine, afterburner roar, wind and buffet. dens 0 = vacuum: only the cockpit hum remains
+  mk('jet', (c, out, o) => {
+    const rum = nz(c, true, 'lowpass', 220, 0.8, out, 0.7), whine = osc(c, 'sawtooth', 300, out, 0.025), w2 = osc(c, 'triangle', 600, out, 0.02), roar = nz(c, false, 'lowpass', 1100, 0.6, out, 0), wind = nz(c, false, 'bandpass', 900, 0.7, out, 0), buf = nz(c, true, 'lowpass', 120, 1, out, 0), hum = osc(c, 'sine', 118, out, 0);
+    const lfo = c.createOscillator(); lfo.frequency.value = 11; const lg = c.createGain(); lg.gain.value = 0.5; lfo.connect(lg); lg.connect(buf.g.gain); lfo.start();
+    return { nodes: [rum.s, whine.o, w2.o, roar.s, wind.s, buf.s, hum.o, lfo], set(p) { const thr = p.thr || 0, d = p.dens == null ? 1 : p.dens, bo = p.boost ? 1 : 0, sp = Math.min(1, (p.speed || 0) / 220);
+      smooth(rum.g.gain, (0.15 + thr * 0.5) * (0.35 + 0.65 * d) + (d < 0.1 ? 0.12 : 0), c); smooth(rum.f.frequency, 160 + thr * 260, c);
+      smooth(whine.o.frequency, 260 + thr * 700 + bo * 300, c); smooth(whine.g.gain, (0.012 + thr * 0.03) * (0.3 + 0.7 * d), c); smooth(w2.o.frequency, 520 + thr * 1400, c); smooth(w2.g.gain, 0.01 * (0.3 + 0.7 * d), c);
+      smooth(roar.g.gain, bo * 0.5 * (0.4 + 0.6 * d) + 0.04 * thr, c); smooth(roar.f.frequency, 700 + bo * 1600, c);
+      smooth(wind.g.gain, Math.pow(sp, 1.4) * 0.55 * Math.pow(d, 1.2), c); smooth(wind.f.frequency, 500 + sp * 2800, c);
+      smooth(buf.g.gain, (p.buffet || 0) * 0.5 * (0.3 + 0.7 * d), c); smooth(hum.g.gain, d < 0.15 ? 0.18 : 0.04, c);
+      smooth(out.gain, p.gain == null ? 0.75 : p.gain, c); } };
+  });
+  // capital ship: reactor rumble and structure-borne hum (level follows throttle / engine power)
+  mk('reactor', (c, out) => {
+    const a = osc(c, 'sine', 38, out, 0.5), b = osc(c, 'sine', 57, out, 0.3), cc = osc(c, 'triangle', 114, out, 0.05), r = nz(c, true, 'lowpass', 140, 0.7, out, 0.45);
+    const lfo = c.createOscillator(); lfo.frequency.value = 0.23; const lg = c.createGain(); lg.gain.value = 0.15; lfo.connect(lg); lg.connect(a.g.gain); lfo.start();
+    return { nodes: [a.o, b.o, cc.o, r.s, lfo], set(p) { const th = p.thr || 0, pw = p.engines == null ? 0.33 : p.engines; smooth(a.o.frequency, 36 + th * 8 + pw * 8, c); smooth(b.o.frequency, 54 + th * 10, c); smooth(r.g.gain, 0.25 + th * 0.4 + pw * 0.3, c); smooth(cc.g.gain, 0.02 + (p.core || 0) * 0.08, c); smooth(out.gain, p.gain == null ? 0.7 : p.gain, c); } };
+  });
+  // wind bed for the ground (biome ambience); gain follows density
+  mk('wind', (c, out) => {
+    const w = nz(c, false, 'bandpass', 500, 0.5, out, 0.25), l = nz(c, true, 'lowpass', 200, 0.5, out, 0.3);
+    const lfo = c.createOscillator(); lfo.frequency.value = 0.11; const lg = c.createGain(); lg.gain.value = 260; lfo.connect(lg); lg.connect(w.f.frequency); lfo.start();
+    return { nodes: [w.s, l.s, lfo], set(p) { smooth(out.gain, (p.gain == null ? 0.5 : p.gain) * (p.dens == null ? 1 : p.dens), c); } };
+  });
+  // boarding deck / bridge interior drone
+  mk('deck', (c, out) => {
+    const a = osc(c, 'sine', 62, out, 0.3), b = osc(c, 'sawtooth', 124, out, 0.025), r = nz(c, true, 'lowpass', 120, 0.7, out, 0.3);
+    return { nodes: [a.o, b.o, r.s], set(p) { smooth(out.gain, p.gain == null ? 0.6 : p.gain, c); } };
+  });
+  SFX.loops = loops;
+  E.SFX = SFX;
 })(window.E = window.E || {});
 
 // ---- js/core/util.js ----
@@ -9750,6 +10074,650 @@
   E.PLANET = PLANET;
 })(window.E = window.E || {});
 
+// ---- js/ui/audio.js ----
+// The audio director. Reads the game each frame and (1) points the mixer's
+// listener at the camera, (2) sets the environment (air density -> exterior
+// muffling, cockpit vs open air), (3) drives the continuous voices for the unit
+// the player is in (vehicle engine + hover + turret servo, jet thrust / wind /
+// buffet, reactor rumble, deck drone, ground wind, footsteps), (4) ticks the
+// cockpit alert tones (lock, missile warning, stall, core breach, out of
+// bounds), (5) tells the score the domain and battle state, and (6) turns sim
+// events into sounds, density-aware and rate-limited.
+(function (E) {
+  'use strict';
+  const M = E.Mixer, clamp = E.clamp;
+  // weapon key -> sound kind
+  const WSFX = { blaster: 'rifle', carbine: 'rifle', engcarbine: 'rifle', repeater: 'repeater', longrifle: 'lance', rocket: 'rocket', grenade: 'launch', cannon: 'cannon', skiffgun: 'pulse', coax: 'repeater',
+    aaflak: 'pd', aamissile: 'missile', turret: 'pulse', nestgun: 'repeater', ioncannon: 'ion', laser: 'laser', missile: 'missile', chin: 'chin', pod: 'pod', ptorp: 'torpedo', bomb: 'bombaway',
+    turbo: 'capital', broadside: 'capital', flak: 'pd', torpedo: 'torpedo', orbital: null };
+  const boomFor = (splash, big) => big ? 'boom2' : splash >= 20 ? 'boom3' : splash >= 12 ? 'boom2' : splash >= 6 ? 'boom1' : 'boom0';
+  const DEATH_BOOM = { vehicle: 'boom2', fighter: 'boom1', capital: 'boom3', turret: 'boom2' };
+
+  const D = {
+    loops: {}, loopKind: '', gate: {}, t: 0, tFoot: 0, tLock: 0, tWarn: 0, tStall: 0, tCore: 0, tOob: 0, tAmb: 0, lastUid: -1, dom: 'ground',
+    // plays a sound unless the same key fired within `gap` seconds
+    ok(key, gap) { const t = D.t; if (t - (D.gate[key] || -9) < gap) return false; D.gate[key] = t; return true; },
+    play(kind, vol, o) { return E.SFX.play(kind, null, vol, o); },
+    stopLoops() { for (const k in D.loops) if (D.loops[k]) D.loops[k].stop(); D.loops = {}; D.loopKind = ''; },
+    loop(name, opts) { return D.loops[name] || (D.loops[name] = E.SFX.loops[name](opts)); },
+
+    // ── per frame ──
+    frame(dt, g) {
+      if (!M.ready || !E.Music.on) return;
+      D.t += dt;
+      const w = g.world, u = g.unit(), cam = g.renderer.scene.camera; if (!cam) return;
+      M.setListener(cam); M.update(dt);
+      const playing = g.state === 'play' && u, dens = E.SIM.density(M.listener.y), vac = dens < 0.08;
+      const kind = playing ? (u.mode === 'boarding' ? 'boarding' : u.kind) : (g.state === 'commander' ? 'commander' : 'none');
+      const interior = playing && (kind === 'fighter' || kind === 'capital' || kind === 'boarding');
+      M.setEnv(dens, interior);
+      // loop set follows the unit
+      if (kind !== D.loopKind || (playing && u.id !== D.lastUid)) { D.stopLoops(); D.loopKind = kind; D.lastUid = playing ? u.id : -1; }
+      const ground = D.loop('wind', {}); if (ground) ground.set({ gain: kind === 'fighter' || kind === 'capital' ? 0.0 : 0.55, dens });
+      if (kind === 'vehicle') { const L = D.loop('vehicle', { heavy: u.type === 'tank' ? 1 : 0 }); if (L) { const sp = Math.abs(u.spd != null ? u.spd : Math.hypot(u.vel.x, u.vel.z)) / (u.def.speed || 20); L.set({ speed: sp, servo: u.aimLimited ? 1 : Math.min(1, Math.abs(u.turretRate || 0)), gain: 0.8 }); } }
+      else if (kind === 'fighter') { const L = D.loop('jet', { interior: true }); if (L) L.set({ thr: u.thr || 0, boost: !!u.boosting, dens, speed: u.spd || 0, buffet: Math.max(u.stall || 0, clamp(((u.g || 1) - 4) / 5, 0, 1) * 0.6), gain: 0.85 }); }
+      else if (kind === 'capital') { const L = D.loop('reactor', { interior: true }); if (L) L.set({ thr: Math.abs(u.throttle || 0), engines: u.power ? u.power[2] : 0.33, core: u.coreT > 0 ? 1 : 0, gain: 0.9 }); }
+      else if (kind === 'boarding') { const L = D.loop('deck', { interior: true }); if (L) L.set({ gain: 0.7 }); }
+      if (playing) D.cockpit(dt, g, w, u, kind);
+      // score
+      const T = w.teams[g.team], O = w.teams[E.opponent(g.team)], mr = T.tickets / Math.max(1, T.startTickets), orr = O.tickets / Math.max(1, O.startTickets);
+      const sp = w.space && w.space[g.team];
+      const st = { winning: mr > orr * 1.35 && mr > 0.4 || (sp && sp.won), losing: mr < orr * 0.65 || (sp && sp.lost), lastStand: T.tickets <= 25 && !w.winner && T.tickets < T.startTickets };
+      E.Music.setState(st);
+      const dom = playing ? (kind === 'capital' || (kind === 'fighter' && u.band === 'space') || kind === 'boarding' ? 'space' : kind === 'fighter' ? 'air' : 'ground') : (g.state === 'commander' ? D.dom : 'ground');
+      D.dom = dom; E.Music.setDomain(dom);
+      E.Music.setIntensity(g.state === 'attract' ? 0.3 : w.intensity);
+    },
+
+    // cockpit / bridge / infantry feedback tones that repeat while a condition holds
+    cockpit(dt, g, w, u, kind) {
+      const t = D.t;
+      if (kind === 'infantry') {
+        const sp = Math.hypot(u.vel.x, u.vel.z);
+        if (sp > 1.5 && !u.vault && u.stance !== 2 && t > D.tFoot) { D.tFoot = t + clamp(2.7 / sp, 0.2, 0.7); D.play('footstep', clamp(sp / 9, 0.3, 0.9) * (u.stance === 1 ? 0.5 : 1), { interior: true, rate: 0.85 + Math.random() * 0.3 }); }
+      }
+      if (kind === 'fighter') {
+        if (u.locked) { if (t > D.tLock) { D.tLock = t + 0.4; D.play('locked', 0.7, { interior: true }); } }
+        else if (u.lockId && u.lockT > 0.02) { if (t > D.tLock) { D.tLock = t + 0.55 - 0.42 * u.lockT; D.play('lock', 0.7, { interior: true, rate: 0.9 + u.lockT * 0.3 }); } }
+        if (u.warn >= 2 || (u.warn === 1 && u.mslD)) {
+          const per = u.warn === 3 ? clamp(0.07 + (u.mslD || 600) / 1800, 0.08, 0.5) : u.warn === 2 ? 0.55 : 1.3;
+          if (t > D.tWarn) { D.tWarn = t + per; D.play('msl', 0.75, { interior: true, rate: u.warn === 3 ? 1.12 : 1 }); }
+        }
+        if (u.stallWarn && t > D.tStall) { D.tStall = t + 0.55; D.play('stall', 0.7, { interior: true }); }
+        if (u.oob > 0.05 && t > D.tOob) { D.tOob = t + 1.4; D.play('alarm', 0.5, { interior: true }); }
+      }
+      if (kind === 'capital' && u.coreT > 0 && t > D.tCore) { D.tCore = t + 1.7; D.play('klaxon', 0.9, { interior: true }); M.alert(1.2); }
+    },
+
+    // ── events ──
+    events(g, events) {
+      if (!M.ready || !E.Music.on) return;
+      const u = g.unit(), uid = u ? u.id : -1, mine = g.team, me = g.pid, w = g.world;
+      let n = 0;
+      const sp = (p) => p; // positions are world space already
+      for (const e of events) {
+        if (n > 9) break;
+        switch (e.type) {
+          case 'fire': {
+            const W = E.WEAPONS[e.wk]; if (!W) break; const k = WSFX[e.wk] !== undefined ? WSFX[e.wk] : (W.sfx || 'rifle'); if (!k) break;
+            const own = e.uid === uid;
+            if (own) { D.play(k, 0.85, { interior: true, rate: 0.97 + Math.random() * 0.06 }); n++; }
+            else if (D.ok('f' + e.wk, 0.05) && D.play(k, 1, { pos: sp(e.pos) })) n++;
+            break;
+          }
+          case 'impact': {
+            if (e.splash > 0) { if (D.play(boomFor(e.splash, e.big), 1, { pos: e.pos })) n++; }
+            else if (e.big) { if (D.ok('hh', 0.09) && D.play('hullhit', 0.8, { pos: e.pos })) n++; }
+            else if (e.surf !== 'air' && D.ok('bh', 0.06) && D.play('bolthit', 0.7, { pos: e.pos })) n++;
+            break;
+          }
+          case 'death': {
+            const k = DEATH_BOOM[e.kind]; if (k) { if (D.play(k, 1, { pos: e.pos })) n++; }
+            break;
+          }
+          case 'hit':
+            if (e.by === me) D.play(e.kill ? 'kill' : 'hitmark', e.kill ? 0.7 : 0.4);
+            else if (e.to === me) D.play(e.sh ? 'shield' : 'hurt', 0.6, { interior: true });
+            break;
+          case 'suppress': if (e.to === me && e.level > 0 && D.ok('whiz', 0.18)) D.play('whiz', 0.5 + e.level * 0.15); break;
+          case 'capture': D.play(e.team === mine ? 'capture' : 'lost', 0.6); E.Music.sting('capture'); break;
+          case 'neutral': D.play(e.prev === mine ? 'lost' : 'capture', 0.45); break;
+          case 'shieldHit': {
+            const own = e.uid === uid;
+            if (own) { D.play('shieldhit', 0.8, { interior: true }); if (M.env.vac) D.play('thud', clamp(e.amt / 400, 0.2, 0.7), { interior: true }); }
+            else if (D.ok('sh', 0.07)) D.play('shieldhit', 1, { pos: e.pos });
+            break;
+          }
+          case 'shieldDown': D.play('shieldhit', e.team === mine ? 0.9 : 0.6, { pos: e.pos, rate: 0.6 }); if (e.team === mine) M.alert(0.5); break;
+          case 'shieldCollapse': D.play('sysboom', 0.7, { pos: e.pos }); break;
+          case 'sysDamaged': if (D.ok('sd', 0.12)) D.play('hullhit', 0.7, { pos: e.pos, interior: e.uid === uid }); break;
+          case 'sysDestroyed': D.play('sysboom', 1, { pos: e.pos }); if (e.uid === uid) { D.play('thud', 0.9, { interior: true }); M.alert(0.8); } break;
+          case 'hullBreach': D.play('breach', 1, { pos: e.pos }); if (e.uid === uid) D.play('creak', 0.8, { interior: true }); break;
+          case 'coreBreach': if (e.team === mine) { D.play('klaxon', 1, { interior: true }); M.alert(2); } break;
+          case 'brace': if (e.uid === uid) D.play('klaxon', 0.6, { interior: true }); break;
+          case 'boardingAlarm': if (e.team === mine) { D.play('klaxon', 1, { interior: true }); M.alert(2); } break;
+          case 'boardingLaunched': D.play('call', 0.7); break;
+          case 'boardingStart': D.play('stinger', e.team === mine ? 0.6 : 0.8); break;
+          case 'boardingResult': D.play(e.team === mine && e.result !== 'podsLost' && e.result !== 'shipLost' ? 'capture' : 'lost', 0.7); break;
+          case 'boardNode': D.play('sysboom', 0.5, { interior: true }); break;
+          case 'powerShift': if (e.to === me) D.play('tool', 0.7); break;
+          case 'targetSelected': if (e.to === me) D.play('beep', 0.7); break;
+          case 'shipDestroyed': D.play('boom3', 1, { pos: e.pos }); if (e.team === mine) { D.play('lost', 0.8); E.Music.sting('shipLost'); M.alert(1.2); } else D.play('capture', 0.5); break;
+          case 'shipRetreating': if (e.team === mine) D.play('alarm', 0.6); break;
+          case 'shipRetreated': D.play('boost', 0.7, { pos: e.pos }); break;
+          case 'shipCaptured': D.play('stinger', 0.9); break;
+          case 'stageChange': D.play('call', 0.8); break;
+          case 'announce':
+            if (e.key === 'capitalDown') { D.play('stinger', 1); if (e.team === mine) E.Music.sting('shipLost'); }
+            else if (e.key === 'ticketsHalf' || e.key === 'ticketsLow') D.play('alarm', e.team === mine ? 0.7 : 0.35);
+            else if (e.key === 'fleetVictory') D.play('capture', 0.8);
+            else if (e.key === 'bridgeLost') { D.play('klaxon', 0.9); M.alert(1.5); }
+            break;
+          case 'strikeWarn': D.play('orbital', 1, { pos: { x: e.pos.x, y: e.pos.y + 300, z: e.pos.z } }); if (e.team !== mine && u && E.distXZ2(u.pos, e.pos) < 90 * 90) { D.play('klaxon', 0.8, { interior: true }); M.alert(2); } break;
+          case 'strikeBlocked': case 'strikeDenied': D.play('deny', 0.8); break;
+          case 'ion': D.play('ion', 1, { pos: e.from || e.to }); break;
+          case 'ionFlip': D.play(e.team === mine ? 'capture' : 'lost', 0.8); break;
+          case 'structureDown': D.play('boom2', 1, { pos: e.pos }); break;
+          case 'mineBlast': D.play('boom1', 1, { pos: e.pos }); break;
+          case 'chargeBlast': D.play('boom2', 1, { pos: e.pos }); break;
+          case 'mine': case 'charge': D.play('mine', 0.7, { pos: e.pos }); break;
+          case 'mineSpotted': D.play('beep', 0.5); break;
+          case 'defuse': D.play('tool', 0.6, { pos: e.pos }); break;
+          case 'coverBreak': D.play('covbreak', 1, { pos: e.pos }); break;
+          case 'flare': D.play('flare', e.uid === uid ? 0.8 : 1, e.uid === uid ? { interior: true } : { pos: e.pos }); break;
+          case 'bombAway': D.play('bombaway', 0.9, e.uid === uid ? { interior: true } : { pos: e.pos }); D.play('whistle', 0.7, { pos: e.pos }); break;
+          case 'warn': if (e.to === me && e.level === 3) { D.tWarn = 0; } break;
+          case 'noLock': if (e.to === me) D.play('deny', 0.5); break;
+          case 'lockLost': if (e.to === me) D.play('deny', 0.4); break;
+          case 'boost': if (e.to === me && e.on) D.play('boost', 0.8, { interior: true }); break;
+          case 'armor': if (e.to === me) D.play('hullhit', 0.9, { interior: true }); else if (D.ok('ar', 0.08)) D.play('hullhit', 0.8, { pos: e.pos }); break;
+          case 'ram': case 'bump': D.play('hullhit', 0.9, { pos: e.pos }); break;
+          case 'crash': D.play('boom2', 1, { pos: e.pos }); break;
+          case 'vault': case 'slide': if (e.uid === uid) D.play('vault', 0.7, { interior: true }); break;
+          case 'tool': if (e.to === me) D.play('tool', 0.7); break;
+          case 'repair': if (e.to === me && D.ok('weld', 0.12)) D.play('weld', 0.8, { interior: true }); break;
+          case 'heal': if (D.ok('heal', 0.4)) D.play('shield', 0.5, { pos: e.pos, rate: 1.4 }); break;
+          case 'build': D.play('build', 0.7, e.uid === uid ? { interior: true } : { pos: e.pos }); break;
+          case 'airAccepted': if (e.to === me || e.team === mine) D.play('call', 0.7); break;
+          case 'airInbound': if (e.team === mine) D.play('beep', 0.6); break;
+          case 'airWeaponsAway': if (e.team === mine) D.play('beep', 0.7, { rate: 1.3 }); break;
+          case 'airUnavailable': if (e.to === me) D.play('deny', 0.8); break;
+          case 'airDrop': case 'airLoad': D.play('tool', 0.6); break;
+          case 'troopsLost': if (e.team === mine) D.play('lost', 0.7); break;
+          case 'launch': case 'launchOrder': D.play('boost', 0.5, e.pos ? { pos: e.pos } : undefined); break;
+          case 'objAdd': D.play('call', 0.6); break;
+          case 'objDone': D.play(e.success ? 'capture' : 'lost', 0.7); break;
+          case 'possess': if (e.to === me) D.play('select', 0.7); break;
+          case 'loadout': if (e.to === me) D.play('confirm', 0.6); break;
+          case 'overheat': if (e.to === me) D.play('deny', 0.6); break;
+          case 'gameOver': break;   // the game controller starts the victory / defeat score
+          default: break;
+        }
+      }
+    },
+  };
+  E.AudioDir = D;
+})(window.E = window.E || {});
+
+// ---- js/ui/controls.js ----
+// Every binding, per unit kind. One table feeds the contextual hint bar in the
+// HUD and the controls reference screen, so the two can never disagree.
+// rows: [keys, what it does]; the hint bar shows the `hint` subset.
+(function (E) {
+  'use strict';
+  const COMMON = [
+    ['F', 'Take control of the friendly you aim at'], ['M', 'Command view'], ['Tab', 'Scoreboard'], ['Esc', 'Pause and settings'], ['F1', 'This reference'],
+  ];
+  const CALL = [['Y', 'Call air support on the point you aim at (bomber or gunship)'], ['U', 'Call a gunship strike on the aim point']];
+  const SQUAD = [['Z', 'Squad: follow me'], ['X', 'Squad: move to the aim point'], ['V', 'Squad: dismiss']];
+  const C = {
+    infantry: { name: 'Infantry', desc: 'Trooper, Heavy, Marksman, Mender and Engineer.',
+      rows: [['W A S D', 'Move'], ['Mouse', 'Aim'], ['LMB', 'Fire (heat builds; stop to cool)'], ['RMB', 'Zoom / scope'], ['G or MMB', 'Alternate weapon: frag, launcher, healing pulse, tread mine'], ['Shift', 'Sprint (drains stamina)'],
+        ['Space', 'Jump; near cover it vaults or mantles'], ['C', 'Crouch; while sprinting, slide'], ['R', 'Engineer: raise a barricade'], ['T', 'Engineer: cycle tool (gun, repair torch, demolition charge)'], ...SQUAD, ...CALL, ...COMMON],
+      hint: [['LMB', 'Fire'], ['G', 'Alt'], ['Shift', 'Sprint'], ['Space', 'Jump/Vault'], ['C', 'Crouch'], ['Z X V', 'Squad'], ['Y', 'Air support'], ['F', 'Take control'], ['M', 'Command']] },
+    engineer: { name: 'Engineer', desc: 'Infantry, with tools.', rows: [],
+      hint: [['LMB', 'Use tool / fire'], ['T', 'Cycle tool'], ['G', 'Lay mine'], ['R', 'Barricade'], ['Space', 'Vault'], ['Y', 'Air support'], ['F', 'Take control'], ['M', 'Command']] },
+    vehicle: { name: 'Hover vehicles', desc: 'Skiff, Bulwark tank and Sentinel anti-air.',
+      rows: [['W S', 'Throttle and brake'], ['A D', 'Steer'], ['Mouse', 'Aim the turret (it has a traverse limit on some hulls)'], ['LMB', 'Fire main gun'], ['G or MMB', 'Secondary weapon (coax / Skyhook)'], ['C', 'Handbrake / drift'],
+        ['Ram', 'Drive into infantry and light craft: speed is damage'], ...CALL, ...COMMON],
+      hint: [['W A S D', 'Drive'], ['LMB', 'Main gun'], ['G', 'Secondary'], ['C', 'Handbrake'], ['Y', 'Air support'], ['F', 'Take control'], ['M', 'Command']] },
+    fighter: { name: 'Starfighters', desc: 'Interceptor, bomber, gunship and strike craft.',
+      rows: [['Mouse', 'Pitch and yaw'], ['Q E', 'Roll'], ['W S', 'Throttle up and down'], ['Shift', 'Afterburner (energy bar; locks out when empty). Gunship: climb'], ['LMB', 'Guns'], ['G or MMB', 'Missile / bomb / pods / torpedo (hold on target to lock)'], ['T', 'Cycle lock target'],
+        ['Space', 'Countermeasures (flares)'], ['C', 'Drift: slide the nose without turning the velocity (gunship: descend / brake)'], ['R', 'Barrel roll (evade)'], ['X', 'Gunship: set the troops down (hover low and slow)'], ['F', 'Switch to another friendly'], ['M', 'Command view'], ['Esc', 'Pause']],
+      hint: [['Mouse', 'Steer'], ['W S', 'Throttle'], ['Shift', 'Afterburner'], ['LMB', 'Guns'], ['G', 'Missile / bomb'], ['T', 'Cycle lock'], ['Space', 'Flares'], ['C', 'Drift'], ['R', 'Barrel roll'], ['M', 'Command']] },
+    capital: { name: 'Capital ships', desc: 'The bridge of a cruiser, carrier or dreadnought.',
+      rows: [['W S', 'Throttle'], ['A D', 'Helm: turn'], ['Mouse', 'Aim the batteries'], ['LMB', 'Fire batteries'], ['G', 'Orbital strike on the aim point (needs a battery and no ground shield)'], ['T', 'Cycle target: ship, then subsystem'], ['R', 'Cycle power preset (balanced, shields, weapons, engines)'], ['1 2 3 4', 'Pick a power preset directly'],
+        ['Q E', 'Shift power between shields and weapons'], ['Shift', 'Engine boost'], ['C', 'Brace: heavy damage reduction for a few seconds, then a cooldown'], ['Space', 'Launch the fighter wing'], ['B', 'Launch boarding pods at the selected ship (needs its shields down)'], ['N N', 'Order the ship to retreat (press twice)'], ['F', 'Switch to another friendly'], ['M', 'Command view']],
+      hint: [['W A S D', 'Helm'], ['LMB', 'Batteries'], ['G', 'Orbital'], ['T', 'Target'], ['R / 1-4', 'Power'], ['C', 'Brace'], ['Space', 'Launch wing'], ['B', 'Board'], ['N N', 'Retreat'], ['M', 'Command']] },
+    boarding: { name: 'Boarding marines', desc: 'Zero-G deck fighting inside an enemy ship.',
+      rows: [['W A S D', 'Move'], ['Mouse', 'Aim'], ['LMB', 'Fire'], ['Shift', 'Sprint'], ['Hold a node', 'Standing in a node ring sabotages the matching system; the bridge captures the ship']],
+      hint: [['W A S D', 'Move'], ['LMB', 'Fire'], ['Shift', 'Sprint'], ['', 'Hold the glowing nodes']] },
+    commander: { name: 'Command view', desc: 'The tactical map: order your army, call in strikes.',
+      rows: [['W A S D', 'Pan'], ['Q E', 'Rotate'], ['Wheel', 'Zoom'], ['LMB / drag', 'Select units / box select'], ['RMB', 'Order selected units to move'], ['H', 'Hold position'], ['V', 'Free fire'], ['1 2 3', 'Select all infantry / armor / air'], ['F', 'Take control of the selected unit'],
+        ['Call-in buttons', 'Then click the map: bomber, gunship, orbital strike'], ['C or Enter', 'Return to deployment']],
+      hint: [['LMB', 'Select'], ['RMB', 'Move order'], ['H', 'Hold'], ['V', 'Free fire'], ['1 2 3', 'Groups'], ['F', 'Take control'], ['Enter', 'Deploy']] },
+  };
+  C.order = ['infantry', 'engineer', 'vehicle', 'fighter', 'capital', 'boarding', 'commander'];
+  // the hint list for what the player is controlling right now
+  C.forUnit = function (u, state) {
+    if (state === 'commander') return C.commander;
+    if (!u) return null;
+    if (u.mode === 'boarding') return C.boarding;
+    if (u.kind === 'infantry') return u.type === 'engineer' ? C.engineer : C.infantry;
+    return C[u.kind] || (u.kind === 'turret' ? C.vehicle : null);
+  };
+  E.CONTROLS = C;
+})(window.E = window.E || {});
+
+// ---- js/ui/galaxy.js ----
+// The galaxy map: a war-room holotable over E.Campaign.
+//   Map      worlds (owner, supply, blockade, garrison, trait, recent capture), hyperlanes (supply flowing or cut,
+//            the front line), fleets as selectable pieces with ships / wing / army / damage, fog of war.
+//   Moves    select a fleet: reachable worlds light up (free redeploy / one jump beyond); a target opens the
+//            forecast (odds + space/air/land comparison); then Assault or Blockade.
+//   Spend    Build (ships, legion, squadron, fortify, refit), Ops (recon, sabotage, incite), Upgrades, Log.
+//   Turn     End Turn plays back the enemy's moves (income, fleet movement, captures, alerts), then hands you
+//            the defence decision if the enemy attacked.
+// Keyboard: arrows/Tab move between worlds, Enter selects, F next fleet, 1-5 tabs, E end turn, Esc deselect.
+(function (E) {
+  'use strict';
+  const C = E.Campaign;
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const css = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+  const VW = 1300, VH = 780, MX = 150, MY = 90;
+  const OWN = { aegis: '#ff6a3a', verdant: '#3df0b0', free: '#9aa8c0' };
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const TRAIT = { shipyard: 'M-7 5 L-9 -1 L-3 -1 L-3 -6 L3 -6 L3 -1 L9 -1 L7 5 Z', refinery: 'M0 -8 C5 -1 7 2 7 4 A7 7 0 0 1 -7 4 C-7 2 -5 -1 0 -8 Z', fortress: 'M-8 7 L-8 -3 L-5 -3 L-5 -6 L-2 -6 L-2 -3 L2 -3 L2 -6 L5 -6 L5 -3 L8 -3 L8 7 Z' };
+  const SHIP_ABBR = { frigate: 'FR', cruiser: 'CR', carrier: 'CV', dreadnought: 'DN' };
+  const TABS = [['world', 'World'], ['build', 'Build'], ['ops', 'Ops'], ['up', 'Upgrades'], ['log', 'War log']];
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const ENDING = /(captured|surrenders|occupies|falls|Lost |breaks away|Held )/i;
+
+  class Galaxy {
+    constructor(menu) {
+      this.menu = menu; this.c = menu.campaign; this.gs = { fleet: 0, planet: -1, target: -1, tab: 'world', msg: '' };
+      this.speed = window.GC_PB_SPEED != null ? window.GC_PB_SPEED : 1; this.busy = false; this.view = null;
+    }
+    get pf() { return this.c.playerFaction; }
+    get ef() { return this.c.enemyFaction; }
+    xy(p) { return [MX + p.x * (VW - 2 * MX), MY + p.y * (VH - 2 * MY) * 1.0]; }
+    save() { this.menu.saveCampaign(); }
+    hist() { const h = this.menu.warHistory(this.c); return h; }
+
+    // ── mount ──
+    show() {
+      const m = this.menu, c = this.c;
+      m.layer(`<div class="g-wrap" tabindex="-1">
+        <header class="g-bar"></header>
+        <div class="g-stage"><svg class="g-svg" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet" role="application" aria-label="Galaxy map"></svg><div class="g-hint"></div></div>
+        <aside class="g-side"><div class="g-fc"></div><div class="sd"></div></aside>
+        <div class="g-toast" role="status" aria-live="polite"></div>
+        <div class="g-pb"></div>
+        <div class="g-modal"></div>
+      </div>`, 'g-root');
+      this.root = m.el; this.$ = (s) => this.root.querySelector(s);
+      this.bindEvents();
+      this.recordHistory();
+      // pick a sensible start: first unmoved fleet
+      const f = C.fleetsOf(c, this.pf).find(x => !x.moved) || C.fleetsOf(c, this.pf)[0];
+      if (f) { this.gs.fleet = f.id; this.gs.planet = f.at; }
+      this.render();
+      if (c.pending) this.showAttack(null);
+      else if (m.lastReport) { this.say(m.lastReport); m.lastReport = null; }
+      this.root.querySelector('.g-wrap').focus({ preventScroll: true });
+    }
+    recordHistory() { const h = this.hist(), c = this.c; const last = h[h.length - 1]; const row = { t: c.turn, a: C.owned(c, this.pf), b: C.owned(c, this.ef), cr: c.credits[this.pf] }; if (last && last.t === c.turn) h[h.length - 1] = row; else h.push(row); this.menu.saveHistory(c, h); }
+    say(text, cls) { const t = this.$('.g-toast'); if (!t) return; t.textContent = text; t.className = 'g-toast show ' + (cls || ''); clearTimeout(this._tt); this._tt = setTimeout(() => t.classList.remove('show'), 4200); }
+
+    // ── data helpers ──
+    sum() { return C.summary(this.c, this.pf); }
+    fleetOf(id) { return C.fleet(this.c, id); }
+    selFleet() { const f = this.gs.fleet ? this.fleetOf(this.gs.fleet) : null; return f && f.owner === this.pf ? f : null; }
+    try(fn) { const t = clone(this.c); return fn(t, C); }   // dry-run any campaign call on a copy: exact reasons without side effects
+    recent(p) { const c = this.c; return c.log.some(l => l.turn >= c.turn - 1 && l.text.indexOf(p.name) >= 0 && ENDING.test(l.text)); }
+    // the strength of a fleet, text
+    shipChip(s) { return `<span class="sc" title="${C.SHIPS[s.type].name} ${Math.round(s.hp * 100)}%"><b>${SHIP_ABBR[s.type]}</b><i style="--h:${Math.round(s.hp * 100)}%"></i></span>`; }
+
+    // ── render ──
+    render() { this.renderBar(); this.renderMap(); this.renderSide(); this.renderForecast(); }
+
+    renderBar() {
+      const c = this.c, S = this.sum(), fuelNet = S.fuelIncome - S.upkeep, alerts = this.alerts(S);
+      const hist = this.hist(), tide = hist.length > 1 ? hist[hist.length - 1].a - hist[hist.length - 2].a : 0;
+      this.$('.g-bar').innerHTML = `
+        <div class="gb-title"><b>${E.faction(this.pf).name.toUpperCase()}</b><span>GALACTIC WAR · TURN ${c.turn}</span></div>
+        <div class="gb-res"><div class="gb-r cr" title="Credits: raise armies, ships, upgrades"><label>CREDITS</label><b>${c.credits[this.pf]}</b><em>+${S.income} / turn</em></div>
+          <div class="gb-r fu" title="Fuel: builds and moves ships. Upkeep is paid every turn"><label>FUEL</label><b>${c.fuel[this.pf]}</b><em class="${fuelNet < 0 ? 'bad' : ''}">${fuelNet >= 0 ? '+' : ''}${fuelNet} / turn</em></div>
+          <div class="gb-r wd"><label>WORLDS</label><b>${S.worlds}<small>/10</small></b><em class="${tide > 0 ? 'good' : tide < 0 ? 'bad' : ''}">${tide > 0 ? '▲ ' + tide : tide < 0 ? '▼ ' + -tide : 'enemy ' + C.owned(c, this.ef)}</em></div></div>
+        <div class="gb-alerts">${alerts.map(a => `<button class="al ${a.cls}" data-pl="${a.planet}" title="${esc(a.text)}"><i></i>${esc(a.text)}</button>`).join('')}</div>
+        <div class="gb-btns"><button class="gc-btn g-menu">‹ Menu</button><button class="gc-btn primary g-end" ${this.busy || c.pending ? 'disabled' : ''}>End turn <span class="k">E</span></button></div>`;
+    }
+    alerts(S) {
+      const c = this.c, A = [], sup = new Set(S.supplied);
+      if (c.pending) A.push({ cls: 'bad', text: 'Under attack: ' + c.planets[c.pending.planet].name, planet: c.pending.planet });
+      for (const p of c.planets) if (p.owner === this.pf) {
+        if (C.blockaded(c, p)) A.push({ cls: 'bad', text: 'Blockaded: ' + p.name, planet: p.id });
+        else if (!sup.has(p.id)) A.push({ cls: 'warn', text: 'Cut off: ' + p.name, planet: p.id });
+      }
+      if (S.fuelIncome - S.upkeep < 0 && c.fuel[this.pf] < (S.upkeep - S.fuelIncome) * 4) A.push({ cls: 'warn', text: 'Fuel running low', planet: this.gs.planet });
+      const hurt = C.fleetsOf(c, this.pf).filter(f => f.ships.some(s => s.hp < 0.6)); if (hurt.length) A.push({ cls: 'info', text: hurt[0].name + ' needs refit', planet: hurt[0].at });
+      const idle = C.fleetsOf(c, this.pf).filter(f => !f.moved).length; if (idle && !A.length) A.push({ cls: 'info', text: idle + ' fleet' + (idle > 1 ? 's' : '') + ' ready', planet: -1 });
+      return A.slice(0, 4);
+    }
+
+    // The map. `v` = the state to draw (the live campaign, or a playback snapshot).
+    renderMap(v) {
+      const c = v || this.c, svg = this.$('.g-svg'), pf = this.pf, vis = new Set(C.visible(this.c, pf)), sup = C.supplied(this.c, pf);
+      const supE = C.supplied(this.c, this.ef), fl = this.selFleet(), R = fl ? C.reach(this.c, fl) : null;
+      const defs = [...new Set(c.planets.map(p => p.biome))].map(b => { const pal = E.biome(b).palette; return `<radialGradient id="pg-${b}" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="${css(E.mixC(pal.high, [255, 255, 255], 0.3))}"/><stop offset=".5" stop-color="${css(pal.mid)}"/><stop offset="1" stop-color="${css(E.mixC(pal.low, [0, 0, 0], 0.6))}"/></radialGradient>`; }).join('');
+      // lanes
+      let lanes = '', flow = '';
+      for (const [a, b] of c.links) {
+        const A = c.planets[a], B = c.planets[b], [x1, y1] = this.xy(A), [x2, y2] = this.xy(B);
+        let cls = 'ln';
+        const fa = A.owner, fb = B.owner;
+        if (fa === pf && fb === pf) cls += sup.has(a) && sup.has(b) ? ' sup' : ' cut';
+        else if (fa === this.ef && fb === this.ef) cls += supE.has(a) && supE.has(b) ? ' esup' : ' ecut';
+        else if (fa && fb && fa !== fb) cls += ' front';
+        else if ((fa === pf && !fb) || (fb === pf && !fa)) cls += ' mine-free';
+        if (fl && R) { if ((a === fl.at && R.free.has(b)) || (b === fl.at && R.free.has(a))) cls += ' route'; else if ((a === fl.at && R.targets.has(b)) || (b === fl.at && R.targets.has(a))) cls += ' strike'; }
+        // supply lines flow toward the home system: orient the dash so it travels toward lower index (home 0) for the player
+        const flip = (cls.indexOf('sup') >= 0 && cls.indexOf('esup') < 0) ? (a > b ? 0 : 1) : (cls.indexOf('esup') >= 0 ? (a > b ? 1 : 0) : 0);
+        lanes += `<line class="${cls}" x1="${flip ? x2 : x1}" y1="${flip ? y2 : y1}" x2="${flip ? x1 : x2}" y2="${flip ? y1 : y2}"/>`;
+        if (cls.indexOf(' cut') >= 0 || cls.indexOf('ecut') >= 0) flow += `<g class="cutmark" transform="translate(${(x1 + x2) / 2} ${(y1 + y2) / 2})"><circle r="11"/><path d="M-5 -5 L5 5 M5 -5 L-5 5"/></g>`;
+      }
+      // worlds
+      let worlds = '';
+      for (const p of c.planets) {
+        const [x, y] = this.xy(p), seen = vis.has(p.id), own = p.owner || 'free', home = !!p.home, r = home ? 34 : 25;
+        const isSel = this.gs.planet === p.id, isT = R && R.targets.has(p.id), isF = R && R.free.has(p.id), tgt = this.gs.target === p.id;
+        const blk = p.owner && C.blockaded(this.c, p), cutoff = p.owner === pf && !sup.has(p.id), siege = this.c.pending && this.c.pending.planet === p.id;
+        const garr = seen || p.owner === pf ? p.garrison : -1;
+        let cls = `pl ${own === pf ? 'mine' : own === this.ef ? 'theirs' : 'free'}${isSel ? ' sel' : ''}${isT ? ' tgt' : ''}${isF ? ' fre' : ''}${tgt ? ' picked' : ''}${blk ? ' blk' : ''}${cutoff ? ' cut' : ''}${siege ? ' siege' : ''}${!seen ? ' fog' : ''}`;
+        const pips = garr < 0 ? '<text class="gq" y="' + (r + 40) + '">?</text>' : Array.from({ length: Math.max(garr, 0) }, (_, i) => `<rect class="gp" x="${(i - (garr - 1) / 2) * 11 - 4}" y="${r + 31}" width="8" height="8"/>`).join('') + (p.sabotage >= this.c.turn && seen ? `<path class="spark" d="M${r + 4} ${-r} l4 8 l-8 0 l4 8" />` : '');
+        worlds += `<g class="${cls}" data-p="${p.id}" transform="translate(${x} ${y})" tabindex="0" role="button" aria-label="${esc(p.name)}, ${own === pf ? 'yours' : own === this.ef ? 'enemy' : 'unclaimed'}${cutoff ? ', cut off' : ''}${blk ? ', blockaded' : ''}">
+          <circle class="halo" r="${r + 14}"/><circle class="ring" r="${r + 7}"/><circle class="ring2" r="${r + 11}"/>
+          <circle class="body" r="${r}" fill="url(#pg-${p.biome})"/>
+          ${blk ? `<circle class="blkr" r="${r + 18}"/><text class="blkt" y="${-r - 22}">BLOCKADE ${p.blockade || ''}</text>` : ''}
+          ${home ? `<path class="crown" transform="translate(0 ${-r - 14})" d="M-9 4 L-9 -4 L-4 0 L0 -6 L4 0 L9 -4 L9 4 Z"/>` : ''}
+          ${isT ? `<g class="reticle"><path d="M${-r - 16} ${-r - 16} h12 M${-r - 16} ${-r - 16} v12 M${r + 16} ${-r - 16} h-12 M${r + 16} ${-r - 16} v12 M${-r - 16} ${r + 16} h12 M${-r - 16} ${r + 16} v-12 M${r + 16} ${r + 16} h-12 M${r + 16} ${r + 16} v-12"/></g>` : ''}
+          <text class="nm" y="${r + 20}">${esc(p.name.toUpperCase())}</text>
+          ${pips}
+          ${p.trait && (seen || p.owner === pf) ? `<g class="trait" transform="translate(${r + 10} ${r - 4}) scale(.9)"><circle r="11"/><path d="${TRAIT[p.trait]}"/></g>` : ''}
+          ${this.recent(p) ? `<g class="newb" transform="translate(${-r - 4} ${-r - 2})"><rect x="-17" y="-8" width="34" height="15" rx="3"/><text y="3">NEW</text></g>` : ''}
+          ${cutoff ? `<text class="cutt" y="${-r - 22}">CUT OFF</text>` : ''}
+          ${seen && p.owner ? `<text class="inc" y="${r + 54}">${p.value + (p.perk === 'trade' ? 60 : 0)} cr</text>` : ''}
+          ${!seen ? `<text class="fogq" y="6">?</text>` : ''}
+        </g>`;
+      }
+      // fleets: pieces beside their worlds; the enemy's only where we can see
+      const stack = {}; let fleets = '';
+      for (const f of c.fleets) {
+        const own = f.owner === pf; if (!own && !vis.has(f.at)) continue;
+        const p = c.planets[f.at], k = f.at + (own ? 'a' : 'b'), n = stack[k] = (stack[k] || 0) + 1, [x, y] = this.xy(p), r = p.home ? 34 : 25;
+        const ox = own ? -r - 62 : r + 62, oy = (own ? 1 : -1) * (r * 0.9) + (n - 1) * 40 * (own ? 1 : -1);
+        const avg = f.ships.reduce((s, x) => s + x.hp, 0) / Math.max(1, f.ships.length), sel = this.gs.fleet === f.id;
+        fleets += `<g class="fl ${own ? 'mine' : 'theirs'}${sel ? ' sel' : ''}${f.moved ? ' done' : ''}" data-f="${f.id}" style="transform:translate(${x + ox}px,${y + oy}px)" tabindex="0" role="button" aria-label="${esc(f.name)}, ${f.ships.length} ships">
+          <rect class="tok" x="-40" y="-14" width="80" height="28" rx="5"/><path class="chev" d="M-31 4 L-23 -8 L-15 4 L-23 0 Z"/>
+          <text class="ct" x="-6" y="1">${f.ships.length}<tspan class="sm"> ·${f.wing}✈ ${f.army}▣</tspan></text>
+          <rect class="hpb" x="-38" y="9" width="76" height="3"/><rect class="hpv" x="-38" y="9" width="${(76 * avg).toFixed(1)}" height="3" style="--h:${Math.round(avg * 100)}"/>
+          ${f.moved ? '<text class="mv" x="31" y="-17">✓</text>' : ''}</g>`;
+      }
+      // starfield + grid are static in CSS; add a few stars from the seed for variety
+      svg.innerHTML = `<defs>${defs}<filter id="gl"><feGaussianBlur stdDeviation="3"/></filter></defs>
+        <g class="hexgrid">${this.hexgrid()}</g><g class="lanes">${lanes}</g><g class="marks">${flow}</g><g class="worlds">${worlds}</g><g class="fleets">${fleets}</g>`;
+      this.$('.g-hint').innerHTML = fl ? `<b>${esc(fl.name)}</b> selected — <span class="h-free">cyan</span>: move free · <span class="h-tgt">amber</span>: strike target (fuel ${fl.ships.length * C.JUMP_FUEL})` : 'Select a fleet to see where it can go · <kbd>F</kbd> next fleet';
+    }
+    hexgrid() { let s = ''; const w = 80, h = 69; for (let j = -1; j < 14; j++) for (let i = -1; i < 22; i++) { const x = i * w + (j % 2 ? w / 2 : 0), y = j * h; s += `<path d="M${x} ${y - 24} l20 12 v24 l-20 12 l-20 -12 v-24 Z"/>`; } return s; }
+
+    // ── side panel ──
+    renderSide() {
+      const gs = this.gs, c = this.c, p = gs.planet >= 0 ? c.planets[gs.planet] : null, side = this.$('.sd');
+      const tabs = TABS.map(([k, n], i) => `<button class="tb${gs.tab === k ? ' on' : ''}" data-tab="${k}" role="tab" aria-selected="${gs.tab === k}">${n}<kbd>${i + 1}</kbd></button>`).join('');
+      let body = '';
+      if (gs.tab === 'world') body = this.tabWorld(p); else if (gs.tab === 'build') body = this.tabBuild(p); else if (gs.tab === 'ops') body = this.tabOps(p); else if (gs.tab === 'up') body = this.tabUp(); else body = this.tabLog();
+      const keep = side.querySelector('.sd-body'); const sc = keep ? keep.scrollTop : 0;
+      side.innerHTML = `<div class="sd-tabs" role="tablist">${tabs}</div><div class="sd-body">${body}</div>`;
+      side.querySelector('.sd-body').scrollTop = sc;
+    }
+    worldHead(p) {
+      const b = E.biome(p.biome), seen = new Set(C.visible(this.c, this.pf)).has(p.id), own = p.owner || 'free';
+      return `<div class="wh ${own === this.pf ? 'mine' : own === this.ef ? 'theirs' : 'free'}"><i class="orb" style="background:${css(E.biome(p.biome).palette.mid)}"></i><div><h2>${esc(p.name)}</h2><span>${own === this.pf ? 'YOURS' : own === this.ef ? 'ENEMY · ' + E.faction(own).short.toUpperCase() : 'UNCLAIMED'} · ${b.theme}${p.home ? ' · HOME SYSTEM' : ''}</span></div></div>${seen ? '' : '<div class="fogn">Beyond your sensors. Run reconnaissance to see its fleets and garrison.</div>'}`;
+    }
+    tabWorld(p) {
+      const c = this.c, pf = this.pf;
+      if (!p) return '<p class="sd-empty">Select a world or a fleet.</p>';
+      const b = E.biome(p.biome), seen = new Set(C.visible(c, pf)).has(p.id), sup = C.supplied(c, pf).has(p.id), fl = C.fleetsAt(c, p.id).filter(f => f.owner === pf || seen);
+      const kv = (k, v, cls) => `<div class="kv"><span>${k}</span><b class="${cls || ''}">${v}</b></div>`;
+      const T = p.trait ? C.TRAITS[p.trait] : null, P = p.perk ? C.PERKS[p.perk] : null;
+      return `${this.worldHead(p)}
+        <div class="kvs">${kv('Income', p.owner ? (p.value + (p.perk === 'trade' ? 60 : 0)) + ' cr / turn' : p.value + ' cr when taken')}${kv('Fuel', p.fuel + ' / turn')}${kv('Hazard', b.challenge.name)}
+        ${p.owner === pf ? kv('Supply', sup ? 'Connected to home' : 'CUT OFF: no income or perk', sup ? 'good' : 'bad') : ''}
+        ${seen || p.owner === pf ? kv('Garrison', p.garrison + (p.sabotage >= c.turn ? ' (sabotaged −1)' : '') + (p.trait === 'fortress' ? ' · fortress' : '')) : kv('Garrison', 'unknown')}
+        ${p.blockade ? kv('Blockade', p.blockade + ' turn' + (p.blockade > 1 ? 's' : '') + ': garrison starving', 'bad') : ''}</div>
+        ${T ? `<div class="trait-note"><svg viewBox="-12 -12 24 24"><path d="${TRAIT[p.trait]}"/></svg><div><b>${T.name}</b><span>${T.desc}</span></div></div>` : ''}
+        ${P ? `<div class="perk-note ${p.owner === pf && sup ? 'on' : ''}"><b>${P.name}</b><span>${P.desc}${p.owner === pf ? (sup ? ' · ACTIVE' : ' · INACTIVE (cut off)') : ''}</span></div>` : ''}
+        <div class="sd-h">FLEETS IN ORBIT</div>
+        ${fl.length ? fl.map(f => this.fleetCard(f)).join('') : '<p class="sd-empty">' + (seen || p.owner === pf ? 'None.' : 'Unknown.') + '</p>'}`;
+    }
+    fleetCard(f) {
+      const own = f.owner === this.pf, S = f.ships;
+      return `<div class="fc ${own ? 'mine' : 'theirs'}${this.gs.fleet === f.id ? ' sel' : ''}" data-f="${f.id}"><div class="fc-h"><b>${esc(f.name)}</b><span>${own ? 'YOURS' : 'ENEMY'}${f.moved ? ' · MOVED' : ''}</span></div>
+        <div class="fc-sh">${S.map(s => this.shipChip(s)).join('')}</div>
+        <div class="fc-st"><span>SPACE <b>${S.length}</b></span><span>AIR <b>${f.wing}</b></span><span>LAND <b>${f.army}</b></span></div></div>`;
+    }
+    tabBuild(p) {
+      const c = this.c, pf = this.pf;
+      if (!p || p.owner !== pf) return '<p class="sd-empty">Select one of your worlds to build there. Ships need a Shipyard world; legions, squadrons and refits need a fleet in orbit.</p>';
+      const here = C.fleetsAt(c, p.id, pf), item = (what, B, kind) => {
+        const t = this.try((t, C2) => C2.build(t, what, p.id)), cost = `${B.credits} cr${B.fuel ? ' · ' + B.fuel + ' fuel' : ''}`;
+        return `<button class="bi${t.ok ? '' : ' off'}" data-build="${what}" ${t.ok ? '' : 'aria-disabled="true"'}><b>${B.name}</b><em>${cost}</em><span>${t.ok ? (B.desc || '') : t.reason}</span></button>`;
+      };
+      return `${this.worldHead(p)}
+        <div class="sd-h">CAPITAL SHIPS ${p.trait === 'shipyard' ? '' : '<small>no shipyard here</small>'}</div>
+        <div class="bl">${Object.entries(C.SHIPS).map(([k, s]) => item(k, { name: s.name, credits: s.credits, fuel: s.fuel, desc: `Power ${s.power} · upkeep ${s.upkeep} fuel/turn` })).join('')}</div>
+        <div class="sd-h">FLEET AND WORLD ${here.length ? '<small>' + esc(here[0].name) + ' in orbit</small>' : '<small>no fleet in orbit</small>'}</div>
+        <div class="bl">${Object.entries(C.BUILD).map(([k, B]) => item(k, B)).join('')}</div>`;
+    }
+    tabOps(p) {
+      const c = this.c, pf = this.pf;
+      if (!p || p.owner === pf) return '<p class="sd-empty">Select an enemy or unclaimed world to run covert operations against it.</p>';
+      const item = (k) => { const O = C.OPS[k], t = this.try((t, C2) => C2.op(t, k, p.id)); return `<button class="bi${t.ok ? '' : ' off'}" data-op="${k}" ${t.ok ? '' : 'aria-disabled="true"'}><b>${O.name}</b><em>${C.opCost(c, k)} cr</em><span>${t.ok ? O.desc : t.reason}</span></button>`; };
+      const intel = c.intel[pf][p.id];
+      return `${this.worldHead(p)}${intel >= c.turn ? `<div class="intel">Recon active until turn ${intel}</div>` : ''}<div class="bl">${['recon', 'sabotage', 'incite'].map(item).join('')}</div>
+        <p class="sd-note">Intelligence level ${c.upgrades[pf].intel + 1}: ${25 * c.upgrades[pf].intel}% cheaper. Sabotage cuts the garrison by one for your next assault. Incite may turn an enemy colony.</p>`;
+    }
+    tabUp() {
+      const c = this.c, pf = this.pf;
+      return '<div class="bl">' + Object.entries(C.UPGRADES).map(([k, U]) => {
+        const lv = c.upgrades[pf][k], max = lv >= U.levels.length - 1, afford = !max && c.credits[pf] >= U.cost[lv + 1];
+        return `<button class="bi up${afford ? '' : ' off'}" data-up="${k}" ${afford ? '' : 'aria-disabled="true"'}><b>${U.name}</b><em>${max ? 'MAX' : U.cost[lv + 1] + ' cr'}</em><span>${U.levels.map((l, i) => `<u class="${i <= lv ? 'got' : ''}">${l}</u>`).join(' › ')}</span><span class="d">${U.desc}${!max && !afford ? ' · not enough credits' : ''}</span></button>`;
+      }).join('') + '</div>' + `<div class="sd-h">ACTIVE PERKS</div><div class="perks">${Object.keys(C.perks(c, pf)).map(k => `<span title="${C.PERKS[k].desc}">${C.PERKS[k].name}</span>`).join('') || '<span class="dim">None: capture and connect worlds</span>'}</div>`;
+    }
+    tabLog() {
+      const c = this.c, h = this.hist();
+      const W = 300, H = 70, mx = 10, pts = (k) => h.map((r, i) => `${(h.length < 2 ? W / 2 : i / (h.length - 1) * W).toFixed(1)},${(H - r[k] / mx * H).toFixed(1)}`).join(' ');
+      return `<div class="sd-h">THE TIDE OF WAR</div><svg class="tide" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline class="a" points="${pts('a')}"/><polyline class="b" points="${pts('b')}"/></svg><div class="tide-k"><span class="a">▬ you ${C.owned(c, this.pf)}</span><span class="b">┅ enemy ${C.owned(c, this.ef)}</span><span>${c.wins}/${c.battles} battles won</span></div>
+        <div class="sd-h">LOG</div><div class="log">${c.log.slice(0, 30).map(l => `<div class="${l.good ? 'good' : 'bad'}"><i>T${l.turn}</i>${esc(l.text)}</div>`).join('') || '<div class="dim">The war begins.</div>'}</div>`;
+    }
+
+    // ── forecast ──
+    renderForecast() {
+      const el = this.$('.g-fc'), fl = this.selFleet(), t = this.gs.target;
+      if (!fl || t < 0 || !C.reach(this.c, fl).targets.has(t)) { el.className = 'g-fc'; el.innerHTML = ''; return; }
+      const c = this.c, p = c.planets[t], F = C.forecast(c, fl.id, t), seen = new Set(C.visible(c, this.pf)).has(t);
+      const a = F.attacker, d = F.defender, pct = Math.round(F.odds * 100);
+      const row = (name, av, dv, fmt) => { const m = Math.max(av, dv, 0.5); return `<div class="cmp"><label>${name}</label><div class="cb a"><i style="width:${Math.min(100, av / m * 100)}%"></i><b>${fmt(av)}</b></div><div class="cb d ${seen ? '' : 'mask'}"><i style="width:${seen ? Math.min(100, dv / m * 100) : 0}%"></i><b>${seen ? fmt(dv) : '?'}</b></div></div>`; };
+      const f1 = (v) => v.toFixed(1), f0 = (v) => String(Math.round(v));
+      const ass = this.try((tc, C2) => C2.moveFleet(tc, fl.id, t, 'assault')), blk = this.try((tc, C2) => C2.moveFleet(tc, fl.id, t, 'blockade'));
+      const cost = fl.at === t ? 0 : fl.ships.length * C.JUMP_FUEL;
+      const flags = [F.supplied ? '' : '<span class="bad">Your fleet is out of supply: −20% strength</span>', !p.owner ? '' : F.defenderSupplied ? '' : '<span class="good">Defender is cut off: −20% strength</span>', F.sabotaged ? '<span class="good">Defences sabotaged: garrison −1</span>' : '', cost ? `<span>Jump costs ${cost} fuel (you have ${c.fuel[this.pf]})</span>` : ''].filter(Boolean).join('');
+      el.className = 'g-fc show';
+      el.innerHTML = `<div class="fc-top"><div><h3>${esc(fl.name)} <i>›</i> ${esc(p.name)}</h3><span>${seen ? 'Defenders: ' + (d.ships.length ? d.ships.map(s => C.SHIPS[s.type].name + (s.picket ? ' (picket)' : '')).join(', ') : 'no ships') + ' · garrison ' + d.garrison : 'No intel on this world: defenders hidden'}</span></div>
+        <div class="odds ${pct >= 60 ? 'good' : pct >= 40 ? 'mid' : 'bad'}"><b>${seen ? pct + '%' : '~' + pct + '%'}</b><span>${seen ? 'chance to win' : 'estimate'}</span><div class="om"><i style="width:${pct}%"></i></div></div></div>
+        <div class="cmps"><div class="cmp hd"><label></label><div>YOU</div><div>THEM</div></div>${row('SPACE', a.space, d.space, f1)}${row('AIR', a.air, d.air, f0)}${row('LAND', a.land, d.land, f1)}</div>
+        <div class="flags">${flags}</div>
+        <div class="fc-btns"><button class="gc-btn primary go-assault" ${ass.type === 'none' ? 'aria-disabled="true" class="gc-btn off"' : ''} ${ass.type === 'none' ? 'disabled' : ''}>${p.owner ? 'Assault' : 'Invade'} <span class="k">A</span></button><button class="gc-btn go-blockade" ${blk.type === 'none' ? 'disabled' : ''}>Blockade <span class="k">B</span></button><button class="gc-btn go-cancel">Cancel <span class="k">Esc</span></button></div>
+        <div class="fc-why">${ass.type === 'none' ? esc(ass.reason) : ''}${ass.type === 'none' && blk.type === 'none' ? ' · ' : ''}${blk.type === 'none' ? 'Blockade: ' + esc(blk.reason) : ''}</div>`;
+    }
+
+    // ── events ──
+    bindEvents() {
+      const r = this.root;
+      r.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t.closest('.g-end')) return this.endTurn();
+        if (t.closest('.g-menu')) return this.menu.show();
+        const tb = t.closest('[data-tab]'); if (tb) { this.gs.tab = tb.dataset.tab; this.renderSide(); return this.snd('hover'); }
+        const bi = t.closest('.bi'); if (bi) return this.doItem(bi);
+        const al = t.closest('.al'); if (al) { const id = +al.dataset.pl; if (id >= 0) { this.clickPlanet(id); } return; }
+        if (t.closest('.go-cancel')) { this.gs.target = -1; this.renderForecast(); this.renderMap(); return; }
+        if (t.closest('.go-assault')) return this.commit('assault');
+        if (t.closest('.go-blockade')) return this.commit('blockade');
+        const fc = t.closest('.fc[data-f]'); if (fc) { const f = this.fleetOf(+fc.dataset.f); if (f && f.owner === this.pf) this.selectFleet(f.id); return; }
+        const fg = t.closest('g.fl'); if (fg) { const f = this.fleetOf(+fg.dataset.f); if (f && f.owner === this.pf) this.selectFleet(f.id); else if (f) { this.gs.planet = f.at; this.render(); } return; }
+        const pg = t.closest('g.pl'); if (pg) return this.clickPlanet(+pg.dataset.p);
+        if (t.closest('.g-svg')) { this.gs.target = -1; this.render(); }
+      });
+      r.addEventListener('mouseover', (e) => { const pg = e.target.closest && e.target.closest('g.pl'); if (pg && pg !== this._hov) { this._hov = pg; this.snd('hover'); } });
+      r.addEventListener('keydown', (e) => this.key(e));
+    }
+    snd(k) { if (E.SFX && E.Music.on) E.SFX.play(k); }
+    selectFleet(id) { this.gs.fleet = id; const f = this.fleetOf(id); this.gs.planet = f.at; this.gs.target = -1; this.snd('select'); this.render(); }
+    clickPlanet(id) {
+      const gs = this.gs, c = this.c, fl = this.selFleet();
+      if (fl && id !== fl.at) {
+        const R = C.reach(c, fl);
+        if (R.free.has(id)) { const res = C.moveFleet(c, fl.id, id, 'assault'); if (res.type === 'moved') { this.snd('move'); this.save(); gs.planet = id; gs.target = -1; this.say(`${fl.name} redeploys to ${c.planets[id].name}`); this.render(); return; } }
+        else if (R.targets.has(id)) { gs.target = id; gs.planet = id; this.snd('select'); this.render(); return; }
+      }
+      const here = C.fleetsOf(c, this.pf).filter(f => f.at === id);
+      if (here.length && !(fl && fl.at === id)) gs.fleet = here.find(f => !f.moved) ? here.find(f => !f.moved).id : here[0].id;
+      gs.planet = id; gs.target = -1; this.snd('select'); this.render();
+    }
+    key(e) {
+      if (this.busy) { if (e.key === 'Escape' || e.key === ' ' || e.key === 'Enter') { this.skip = true; } return; }
+      if (this.$('.g-modal').classList.contains('on')) return;
+      const k = e.key, gs = this.gs;
+      if (k >= '1' && k <= '5') { gs.tab = TABS[+k - 1][0]; this.renderSide(); }
+      else if (k === 'e' || k === 'E') this.endTurn();
+      else if (k === 'f' || k === 'F') { const fs = C.fleetsOf(this.c, this.pf); if (fs.length) { const i = fs.findIndex(f => f.id === gs.fleet); this.selectFleet(fs[(i + 1) % fs.length].id); } }
+      else if (k === 'Escape') { if (gs.target >= 0) gs.target = -1; else gs.fleet = 0; this.render(); }
+      else if ((k === 'a' || k === 'A') && gs.target >= 0) this.commit('assault');
+      else if ((k === 'b' || k === 'B') && gs.target >= 0) this.commit('blockade');
+      else if (k === 'Tab' || k.startsWith('Arrow')) {
+        e.preventDefault(); const cur = this.c.planets[gs.planet >= 0 ? gs.planet : 0], dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+        let best = null, bs = 1e9;
+        for (const p of this.c.planets) {
+          if (p.id === cur.id) continue; const dx = p.x - cur.x, dy = p.y - cur.y;
+          if (k === 'Tab') { const s = ((p.id - cur.id + 10) % 10) * (e.shiftKey ? -1 : 1); const sc = e.shiftKey ? (cur.id - p.id + 10) % 10 : (p.id - cur.id + 10) % 10; if (sc < bs) { bs = sc; best = p; } continue; }
+          const d = dirs[k], dot = dx * d[0] + dy * d[1]; if (dot <= 0.02) continue; const s = Math.hypot(dx, dy) + Math.abs(dx * d[1] - dy * d[0]) * 1.5; if (s < bs) { bs = s; best = p; }
+        }
+        if (best) { gs.planet = best.id; this.renderSide(); this.renderMap(); const g = this.root.querySelector(`g.pl[data-p="${best.id}"]`); if (g) g.focus(); this.snd('hover'); }
+      } else if ((k === 'Enter' || k === ' ') && document.activeElement && document.activeElement.closest) {
+        const pg = document.activeElement.closest('g.pl'), fg = document.activeElement.closest('g.fl');
+        if (pg) { e.preventDefault(); this.clickPlanet(+pg.dataset.p); const g2 = this.root.querySelector(`g.pl[data-p="${pg.dataset.p}"]`); if (g2) g2.focus(); }
+        else if (fg) { e.preventDefault(); const f = this.fleetOf(+fg.dataset.f); if (f && f.owner === this.pf) this.selectFleet(f.id); }
+      }
+    }
+
+    // ── actions ──
+    doItem(bi) {
+      const c = this.c, gs = this.gs, p = c.planets[gs.planet];
+      if (bi.getAttribute('aria-disabled') === 'true') { this.snd('deny'); const why = bi.querySelector('span').textContent; this.say(why, 'bad'); return; }
+      if (bi.dataset.build) { const r = C.build(c, bi.dataset.build, p.id); if (r.ok) { this.snd('build'); this.save(); this.say(`${(C.SHIPS[bi.dataset.build] || C.BUILD[bi.dataset.build]).name} ordered at ${p.name}`); if (r.fleet && !gs.fleet) gs.fleet = r.fleet; } else { this.snd('deny'); this.say(r.reason, 'bad'); } }
+      else if (bi.dataset.op) { const r = C.op(c, bi.dataset.op, p.id); if (r.ok) { this.snd('ops'); this.save(); this.say(({ revealed: `Agents report from ${p.name}: fleets and garrison revealed for 3 turns`, sabotaged: `Saboteurs strike ${p.name}: its garrison is down one for your next assault`, revolt: `${p.name} rises and breaks away!`, unrest: `Unrest thins the garrison of ${p.name}`, failed: `The uprising on ${p.name} was crushed: credits lost` })[r.result] || 'Operation complete', r.result === 'failed' ? 'bad' : 'good'); } else { this.snd('deny'); this.say(r.reason, 'bad'); } }
+      else if (bi.dataset.up) { if (C.buy(c, bi.dataset.up)) { this.snd('confirm'); this.save(); this.say(C.UPGRADES[bi.dataset.up].name + ' upgraded'); } else { this.snd('deny'); this.say('Not enough credits', 'bad'); } }
+      this.render();
+    }
+    commit(mode) {
+      const fl = this.selFleet(), gs = this.gs, c = this.c, t = gs.target; if (!fl || t < 0) return;
+      const before = { ships: fl.ships.map(s => ({ type: s.type, hp: s.hp })), name: fl.name, wing: fl.wing, army: fl.army };
+      const res = C.moveFleet(c, fl.id, t, mode);
+      if (res.type === 'none') { this.snd('deny'); this.say(res.reason, 'bad'); return; }
+      const p = c.planets[t];
+      if (res.type === 'battle') { this.save(); this.snd('confirm'); this.menu.onStart(res.options, { campaign: c, planet: t, defending: false, fleetId: fl.id, before }); return; }
+      this.save(); gs.target = -1; gs.planet = t;
+      if (res.type === 'captured') { this.snd('confirm'); this.say(`${p.name} surrenders to ${fl.name}`, 'good'); } else if (res.type === 'blockade') { this.snd('move'); this.say(`${fl.name} blockades ${p.name}: no income for its owner, the garrison starves`, 'good'); }
+      this.render();
+    }
+
+    // ── the enemy's turn, played back ──
+    snap() { const c = this.c; return clone({ fleets: c.fleets, planets: c.planets.map(p => ({ id: p.id, owner: p.owner, garrison: p.garrison, blockade: p.blockade })), credits: c.credits, fuel: c.fuel, log: c.log.length, turn: c.turn }); }
+    async endTurn() {
+      if (this.busy || this.c.pending) return;
+      const c = this.c, before = this.snap(); this.busy = true; this.skip = false;
+      const idle = C.fleetsOf(c, this.pf).filter(f => !f.moved && f.army > 0).length;
+      this.snd('endturn');
+      const S0 = this.sum();
+      const res = C.endTurn(c);
+      this.save(); this.recordHistory();
+      await this.playback(before, res, S0);
+      this.busy = false; void idle;
+      this.gs.target = -1;
+      const f = C.fleetsOf(c, this.pf).find(x => !x.moved) || C.fleetsOf(c, this.pf)[0]; this.gs.fleet = f ? f.id : 0; if (f) this.gs.planet = f.at;
+      this.render();
+      if (c.victory) { this.menu.showCampaign(); return; }
+      if (c.pending) this.showAttack(res);
+    }
+    async playback(before, res, S0) {
+      const c = this.c, pb = this.$('.g-pb'), pf = this.pf, ef = this.ef, vis = new Set(C.visible(c, pf));
+      const rm = document.documentElement.classList.contains('rm') || window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const D = (ms) => (rm || this.skip ? 0 : ms * this.speed);
+      const wait = async (ms) => { const end = Date.now() + D(ms); while (Date.now() < end && !this.skip) await sleep(40); };
+      const lines = [], newLog = c.log.slice(0, Math.max(0, c.log.length - before.log));
+      const cr = c.credits[pf] - before.credits[pf], fu = c.fuel[pf] - before.fuel[pf];
+      // the view starts from "before" and fleets/owners are applied step by step
+      const view = clone(c); view.fleets = clone(before.fleets); view.planets.forEach((p, i) => { p.owner = before.planets[i].owner; p.garrison = before.planets[i].garrison; });
+      pb.className = 'g-pb on'; pb.innerHTML = `<div class="pb-card"><div class="pb-h">ENEMY TURN</div><div class="pb-l"></div><button class="pb-skip">Skip <kbd>Esc</kbd></button></div>`;
+      pb.querySelector('.pb-skip').onclick = () => { this.skip = true; };
+      const L = pb.querySelector('.pb-l'); const add = (cls, text, planet) => { lines.push({ cls, text }); L.innerHTML = lines.slice(-7).map(l => `<div class="${l.cls}">${esc(l.text)}</div>`).join(''); if (planet != null && planet >= 0) this.flash(planet); };
+      this.renderMap(view);
+      await wait(500);
+      add('', `Income: +${cr + (S0 ? 0 : 0)} credits, ${fu >= 0 ? '+' : ''}${fu} fuel (upkeep ${S0.upkeep})`);
+      await wait(800);
+      // enemy fleets moving (only those we can see)
+      const moved = [], unseen = [];
+      for (const f of c.fleets) if (f.owner === ef) { const b = before.fleets.find(x => x.id === f.id); if (!b) { (vis.has(f.at) ? moved : unseen).push({ f, from: f.at, fresh: true }); } else if (b.at !== f.at) { (vis.has(f.at) || vis.has(b.at) ? moved : unseen).push({ f, from: b.at }); } }
+      for (const m of moved) {
+        const vf = view.fleets.find(x => x.id === m.f.id); if (vf) vf.at = m.f.at; else view.fleets.push(clone(m.f));
+        this.animateFleet(view, m.f.id); await wait(700);
+        add('bad', m.fresh ? `${m.f.name} appears at ${c.planets[m.f.at].name}` : `${m.f.name} moves ${c.planets[m.from].name} › ${c.planets[m.f.at].name}`, m.f.at);
+        await wait(500);
+      }
+      if (unseen.length) { add('dim', `${unseen.length} enemy movement${unseen.length > 1 ? 's' : ''} beyond your sensors`); await wait(600); }
+      // ownership changes and the log
+      for (const p of c.planets) { const b = before.planets[p.id]; if (b.owner !== p.owner) { view.planets[p.id].owner = p.owner; this.renderMap(view); add(p.owner === pf ? 'good' : 'bad', p.owner === pf ? `${p.name} is now yours` : p.owner === ef ? `${p.name} falls to the enemy` : `${p.name} breaks away`, p.id); this.snd(p.owner === pf ? 'capture' : 'lost'); await wait(800); } }
+      for (const l of newLog.slice().reverse()) { if (/Captured|falls|surrenders|occupies|breaks/.test(l.text)) continue; add(l.good ? 'good' : 'bad', l.text); await wait(450); }
+      if (res.type === 'attack') { add('bad', `ALERT: assault on ${c.planets[res.planet].name} (${Math.round(res.odds * 100)}% enemy odds)`, res.planet); this.snd('enemy'); this.alertDuck(); await wait(1100); }
+      else if (res.type === 'none' && !moved.length) { add('dim', 'The enemy holds position.'); await wait(500); }
+      add('good', `Turn ${c.turn}: your move.`); await wait(900);
+      pb.className = 'g-pb'; pb.innerHTML = '';
+      this.view = null;
+    }
+    alertDuck() { if (E.Music && E.Music.on) E.Music.sting('alert'); if (E.Mixer) E.Mixer.alert(1.5); }
+    animateFleet(view, id) { this.renderMap(view); }
+    flash(pid) { const g = this.root.querySelector(`g.pl[data-p="${pid}"]`); if (g) { g.classList.remove('flash'); void g.getBoundingClientRect(); g.classList.add('flash'); } }
+
+    // the enemy attacks one of our worlds: defend in person, or let the garrison fight
+    showAttack(res) {
+      const c = this.c, pend = c.pending; if (!pend) return;
+      const p = c.planets[pend.planet], fl = C.fleet(c, pend.fleet), F = fl ? C.forecast(c, fl.id, pend.planet) : null, m = this.$('.g-modal');
+      const odds = F ? Math.round((1 - F.odds) * 100) : 50;
+      m.className = 'g-modal on';
+      m.innerHTML = `<div class="atk" role="alertdialog" aria-label="Under attack"><div class="atk-h">UNDER ATTACK</div><h2>${esc(p.name)}</h2>
+        <p>${esc(fl ? fl.name : 'The enemy')} (${fl ? fl.ships.length + ' ships, ' + fl.wing + ' fighters, ' + fl.army + ' legions' : 'unknown'}) is assaulting ${esc(p.name)}. Take command of the defence, or leave it to your garrison.</p>
+        ${F ? `<div class="odds ${odds >= 60 ? 'good' : odds >= 40 ? 'mid' : 'bad'}"><b>${odds}%</b><span>your chance if the garrison fights alone</span><div class="om"><i style="width:${odds}%"></i></div></div>` : ''}
+        <div class="atk-b"><button class="gc-btn primary a-defend">Defend in person</button><button class="gc-btn a-auto">Auto-resolve</button></div></div>`;
+      m.querySelector('.a-defend').onclick = () => { m.className = 'g-modal'; m.innerHTML = ''; this.menu.onStart(C.matchOptions(c, pend.planet, true), { campaign: c, planet: pend.planet, defending: true, fleetId: pend.fleet, before: fl ? { ships: clone(fl.ships), name: fl.name } : null }); };
+      m.querySelector('.a-auto').onclick = () => { const r = C.autoResolve(c, pend.planet); this.save(); m.className = 'g-modal'; m.innerHTML = ''; this.menu.lastReport = r.won ? `${r.planet} holds. +${r.reward} credits` : `${r.planet} has fallen to the enemy`; this.show(); };
+      m.querySelector('.a-defend').focus();
+    }
+  }
+
+  E.Galaxy = Galaxy;
+})(window.E = window.E || {});
+
 // ---- js/ui/game.js ----
 // The game controller: owns the world (or a network replica of it), the
 // renderer, input, audio routing and the frame loop, and runs the player's
@@ -9773,6 +10741,7 @@
       this.running = false; this.acc = new E.Accumulator(30);
       this.renderer = new E.Renderer(canvas, { quality: this.settings.quality || 'auto' });
       this.hud = new E.HUD(document.getElementById('ui'), this);
+      if (E.SettingsUI) E.SettingsUI.apply(this.settings);
       this.bind();
     }
 
@@ -9803,7 +10772,8 @@
       this.world.drainEvents();
       this.running = true; this.last = performance.now();
       cancelAnimationFrame(this._raf); this._raf = requestAnimationFrame(this.frame);
-      if (E.Music && E.Music.on) { E.Music.setTheme(this.team); }
+      if (E.Music && E.Music.on) { E.Music.setTheme(this.team); E.Music.setMode('battle'); }
+      this.squadMode = 'FOLLOWING';
       E.bus.emit('game:start', this);
       return this;
     }
@@ -9836,6 +10806,7 @@
       const events = w.drainEvents();
       if (this.net && this.role === 'host') this.net.frame(w, events, now);
       if (events.length) { this.renderer.applyEvents(events, w); this.audio(events); if (this.state !== 'attract') this.hud.events(events, w); }
+      if (E.AudioDir) E.AudioDir.frame(dt, this);
       this.flow(dt);
       const view = this.view();
       this.renderer.fx.syncProjectiles(w.projectiles, dt);
@@ -9847,7 +10818,6 @@
       g.zoom.value = this.renderer.camera.zoom * (u && u.type === 'sniper' ? 1 : 0.3);
       g.fade.value = Math.max(0, (this.fade || 0)); this.fade = Math.max(0, (this.fade || 0) - dt * 1.6);
       this.renderer.update(dt, this.clock, w, view);
-      if (E.Music && E.Music.on) E.Music.setIntensity(this.state === 'attract' ? 0.3 : w.intensity);
       if (this.state !== 'attract') this.hud.update(dt, w, P, u);
     };
 
@@ -9856,7 +10826,7 @@
       const w = this.world, u = this.unit();
       if (this.state === 'attract') return;
       if (w.winner) {
-        if (!this.endAt) { this.endAt = this.clock; this.unlock(); if (E.Music && E.Music.on) E.Music.victory(w.winner); if (this.state === 'play') this.cmd('release'); this.state = 'ended'; const c = w.cps[2]; Object.assign(this.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 20, z: c.pos.z, r: 420, h: 160, speed: 0.06 }); }
+        if (!this.endAt) { this.endAt = this.clock; this.unlock(); if (E.Music && E.Music.on) { if (w.winner === this.team) E.Music.victory(w.winner); else E.Music.defeat(this.team); } if (this.state === 'play') this.cmd('release'); this.state = 'ended'; const c = w.cps[2]; Object.assign(this.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 20, z: c.pos.z, r: 420, h: 160, speed: 0.06 }); }
         if (!this.ended && this.clock - this.endAt > 3.5) { this.ended = true; const r = this.result(); this.hud.showResults(r); if (this.onEnd) this.onEnd(r); }
         return;
       }
@@ -9942,6 +10912,7 @@
     }
     squadOrder(type) {
       const w = this.world, u = this.unit(); if (!u) return;
+      this.squadMode = type === 'follow' ? 'FOLLOWING' : type === 'attack' ? 'MOVING' : 'FREE';
       if (type === 'follow') {
         const near = w.units.filter(e => e.alive && e.team === this.team && !e.pid && e.kind === 'infantry' && E.distXZ2(e.pos, u.pos) < 70 * 70).sort((a, b) => E.distXZ2(a.pos, u.pos) - E.distXZ2(b.pos, u.pos)).slice(0, 6);
         this.squad = near.map(e => e.id); this.cmd('order', this.squad, 'follow');
@@ -9960,7 +10931,8 @@
       if (!this.running || this.state === 'attract') return;
       if (this.keys.has(k)) return;
       this.keys.add(k);
-      if (k === 'escape') { this.togglePause(); return; }
+      if (k === 'f1' || (k === '/' && this.state !== 'play')) { e.preventDefault(); if (this.hud.layerKind === 'controls') this.hud.closeControls(); else this.hud.showControls(); return; }
+      if (k === 'escape') { if (this.hud.layerKind === 'controls') { this.hud.closeControls(); return; } if (this.hud.armed) { this.hud.armed = null; this.hud.toast('CANCELLED'); return; } this.togglePause(); return; }
       if (this.paused || this.state === 'ended') return;
       if (k === 'tab') this.hud.scoreboard(true);
       if (this.state === 'play') {
@@ -9969,6 +10941,9 @@
         else if (k === 'z') this.squadOrder('follow');
         else if (k === 'x') this.squadOrder('attack');
         else if (k === 'v') this.squadOrder('free');
+        else if (k === 'y') this.callAir('any');
+        else if (k === 'u') this.callAir('gunship');
+        else this.unitKey(k);
       } else if (this.state === 'commander') {
         const w = this.world, mine = (kind) => w.units.filter(u => u.alive && u.team === this.team && u.kind === kind && !u.pid).map(u => u.id);
         if (k === 'f') this.takeControl();
@@ -9980,6 +10955,20 @@
         if (k === 'c') this.toCommander();
         else if (k >= '1' && k <= '4') this.hud.pickClass(+k - 1);
         else if (k === 'enter' || k === ' ') this.hud.doDeploy();
+      }
+    }
+    // call-in and ship verbs bound to keys while playing
+    callAir(role) {
+      const u = this.unit(), a = this.renderer.camera.aimPoint; if (!u || !a) return;
+      this.cmd('verb', 'callAir', { x: a.x, z: a.z }, role); if (E.SFX) E.SFX.play('call');
+    }
+    unitKey(k) {
+      const u = this.unit(); if (!u) return;
+      if (u.kind === 'fighter' && k === 'x') this.cmd('verb', 'drop');
+      else if (u.kind === 'capital') {
+        if (k === 'b') this.cmd('verb', 'board');
+        else if (k >= '1' && k <= '4') this.cmd('verb', 'power', +k - 1);
+        else if (k === 'n') { const t = this.clock; if (this._nT && t - this._nT < 1.5) { this.cmd('verb', 'retreat'); this._nT = 0; } else { this._nT = t; this.hud.toast(u.retreat ? 'PRESS N AGAIN TO CANCEL THE RETREAT' : 'PRESS N AGAIN TO ORDER THE RETREAT'); } }
       }
     }
     keyup(e) { const k = e.key.toLowerCase(); this.keys.delete(k); if (k === 'tab') this.hud.scoreboard(false); }
@@ -10006,6 +10995,7 @@
           if (!this.locked()) { this.lock(); if (!this.freeFire) return; }
           if (e.button === 0) this.mouse.l = true; else if (e.button === 2) this.mouse.r = true; else if (e.button === 1) { this.mouse.m = true; e.preventDefault(); }
         } else if (this.state === 'commander') {
+          if (e.button === 0 && this.hud.armed) { this.fireArmed(e); return; }
           if (e.button === 0) this.sel = { x: e.clientX, y: e.clientY };
           else if (e.button === 2) {
             const p = this.renderer.camera.pick(e.clientX, e.clientY, this.world);
@@ -10027,12 +11017,19 @@
       on(this.canvas, 'wheel', (e) => { if (this.state === 'commander') { const c = this.renderer.camera.cmd; c.dist = E.clamp(c.dist * (e.deltaY > 0 ? 1.12 : 0.89), 60, 1100); } e.preventDefault(); }, { passive: false });
       on(window, 'contextmenu', (e) => e.preventDefault());
       on(document, 'pointerlockchange', () => { if (!this.locked() && this.running && this.state === 'play' && !this.paused && !this.world.winner && !this.noAutoPause) this.togglePause(true); });
-      const unlockAudio = () => { if (E.Music && !E.Music.on && this.settings.audio !== false) { E.Music.start(this.team || 'aegis'); E.Music.setVolume(this.settings.volume == null ? 0.8 : this.settings.volume); } else if (E.Music) E.Music.resume(); };
+      const unlockAudio = () => { if (E.Music && !E.Music.on && this.settings.audio !== false) { E.Music.start(this.team || 'aegis'); if (E.SettingsUI) E.SettingsUI.apply(this.settings); } else if (E.Music) E.Music.resume(); };
       on(window, 'pointerdown', unlockAudio); on(window, 'keydown', unlockAudio);
     }
 
     // ── audio routing (distance-attenuated, rate-limited) ────
+    fireArmed(e) {
+      const A = this.hud.armed, p = this.renderer.camera.pick(e.clientX, e.clientY, this.world); if (!p) return;
+      if (A.kind === 'cas') this.cmd('verb', 'callAir', { x: p.x, z: p.z }, A.role); else this.cmd('verb', 'strike', p.x, p.z);
+      this.renderer.fx.ring(p, A.kind === 'strike' ? 26 : 14, A.kind === 'strike' ? [1, 0.2, 0.1] : [1, 0.8, 0.3], 0.9, true);
+      this.hud.armed = null; if (E.SFX) E.SFX.play('call');
+    }
     audio(events) {
+      if (E.AudioDir) { E.AudioDir.events(this, events); return; }
       if (!E.Music || !E.Music.on) return;
       const cam = this.renderer.scene.camera.position, S = E.SFX; let n = 0;
       const u = this.unit(), uid = u ? u.id : -1;
@@ -10058,19 +11055,32 @@
 })(window.E = window.E || {});
 
 // ---- js/ui/hud.js ----
-// The battle HUD: reinforcement bars + command-post strip, unit card (health,
-// shields, weapon heat, ability cooldown), crosshair + hit markers, minimap,
-// kill feed, score popups, announcements, world markers (canvas overlay), and
-// the deploy / pause / scoreboard / results screens. DOM + 2D canvas only.
+// The battle HUD. DOM + 2D canvas only, built from code.
+//   hud.js         shell, common widgets (tickets, posts, objectives, kill feed, minimap, crosshair,
+//                  unit card, key hints), infantry and vehicle panels, world markers, announcer, deploy screen
+//   hud_air.js     flight HUD (tapes, lock, warnings, ordnance, bomb pipper)
+//   hud_space.js   bridge HUD (shield arcs, subsystems, target, power) and boarding HUD
+//   hud_cmd.js     commander view (selection, orders, call-ins, three-domain overview)
+//   hud_screens.js pause / settings, controls reference, scoreboard, results
+// Rules: numbers sit in fixed-width cells (no layout shift), team is never colour alone
+// (friendly = solid glyph, enemy = hollow glyph, plus text labels), motion respects
+// prefers-reduced-motion (CSS), and everything scales with the root font size.
 (function (E) {
   'use strict';
-  const COL = { aegis: '#ff5a2b', verdant: '#3df0b0', neutral: '#b9c6dd' };
+  const COL = { aegis: '#ff6a3a', verdant: '#3df0b0', neutral: '#b9c6dd' };
   const TNAME = { aegis: 'CONCORD', verdant: 'PACT' };
-  const CLASSES = ['trooper', 'heavy', 'sniper', 'medic'];
+  const CLASSES = ['trooper', 'heavy', 'sniper', 'medic', 'engineer'];
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const BAND = { low: 'LOW', cloud: 'CLOUD', high: 'HIGH', space: 'SPACE' };
 
   class HUD {
-    constructor(root, game) { this.root = root; this.game = game; this.cls = 0; this.feed = []; this.pops = []; this.ann = []; this.dmgDirs = []; }
+    constructor(root, game) { this.root = root; this.game = game; this.cls = 0; this.feed = []; this.pops = []; this.ann = []; this.dmgDirs = []; this.loadouts = {}; this.armed = null; }
+
+    // set text / width only when changed (keeps the DOM quiet and layouts still)
+    tx(el, v) { v = String(v); if (el && el._v !== v) { el._v = v; el.textContent = v; } }
+    wd(el, f) { const v = (E.clamp01(f) * 100).toFixed(1) + '%'; if (el && el._w !== v) { el._w = v; el.style.width = v; } }
+    cl(el, name, on) { if (!el) return; on = !!on; const c = el._c || (el._c = {}); if (c[name] !== on) { c[name] = on; el.classList.toggle(name, on); } }
+    show(el, on) { const v = on ? '' : 'none'; if (el && el._d !== v) { el._d = v; el.style.display = v; } }
 
     begin(game) {
       const w = game.world;
@@ -10078,26 +11088,53 @@
       const el = document.createElement('div'); el.className = 'hud'; el.id = 'hud';
       el.innerHTML = `
         <canvas class="h-cv"></canvas>
+        <div class="h-vig"></div>
         <div class="h-top">
           <div class="h-team aegis"><span class="h-tname">CONCORD</span><div class="h-tbar"><i></i></div><b class="h-tk"></b></div>
           <div class="h-cps">${w.cps.map(c => `<div class="h-cp" data-cp="${c.id}"><span>${c.name[0]}</span><i></i></div>`).join('')}</div>
           <div class="h-team verdant"><b class="h-tk"></b><div class="h-tbar"><i></i></div><span class="h-tname">PACT</span></div>
         </div>
-        <div class="h-announce"></div>
+        <div class="h-stage"><div class="st-n"></div><div class="st-name"></div><div class="st-sup"><i></i></div><div class="st-fl"></div></div>
+        <div class="h-obj"></div>
+        <div class="h-announce" role="status" aria-live="polite"></div>
         <div class="h-feed"></div>
         <div class="h-pops"></div>
-        <div class="h-cross"><i class="d"></i><i class="l"></i><i class="r"></i><i class="t"></i><i class="b"></i><div class="hitm"></div><div class="h-lock"></div></div>
+        <div class="h-cross"><i class="d"></i><i class="l"></i><i class="r"></i><i class="t"></i><i class="b"></i><div class="hitm"></div><div class="h-work"><svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17"/><circle class="v" cx="20" cy="20" r="17"/></svg><span></span></div></div>
         <div class="h-scope"></div>
         <div class="h-capture"><span></span><div class="bar"><i></i></div></div>
+        <div class="h-prompt"></div>
         <div class="h-unit">
           <div class="h-uname"></div>
           <div class="h-bar sh"><i></i></div>
           <div class="h-bar hp"><i></i><span></span></div>
+          <div class="h-bar st"><i></i></div>
           <div class="h-weap"><span class="wn"></span><div class="h-heat"><i></i></div></div>
           <div class="h-abil"><span class="key">G</span><span class="an"></span><div class="cd"><i></i></div></div>
+          <div class="h-abil a2"><span class="key">R</span><span class="an"></span><div class="cd"><i></i></div></div>
+          <div class="h-chips"></div>
+          <div class="h-tools"><span>GUN</span><span>TORCH</span><span>CHARGE</span><em class="mines"></em></div>
+          <div class="h-pips"><div class="pp ord"><label></label><div></div></div><div class="pp cm"><label>FLARES</label><div></div></div><div class="pp carry"><label>TROOPS</label><div></div></div></div>
         </div>
-        <div class="h-mapwrap"><canvas class="h-map" width="220" height="160"></canvas></div>
-        <div class="h-hint"></div>
+        <div class="h-veh">
+          <svg viewBox="-24 -34 48 68" class="veh-svg"><g class="hull"><path class="z z-front" d="M-14 -22 L14 -22 L10 -30 L-10 -30 Z"/><path class="z z-rear" d="M-14 22 L14 22 L12 30 L-12 30 Z"/><path class="z z-left" d="M-14 -22 L-14 22 L-20 16 L-20 -16 Z"/><path class="z z-right" d="M14 -22 L14 22 L20 16 L20 -16 Z"/><rect class="z z-body" x="-14" y="-22" width="28" height="44"/></g><g class="tur"><circle class="z z-top" r="8"/><rect class="barrel" x="-1.4" y="-24" width="2.8" height="18"/></g></svg>
+          <div class="veh-r"><div class="veh-spd"><b>0</b><i>KM/H</i></div><div class="veh-state"></div><div class="veh-zone"></div></div>
+        </div>
+        <div class="h-fl"><div class="fl-band"></div><div class="fl-warn"></div></div>
+        <div class="h-br">
+          <section class="br-own"><div class="br-h"><b></b><span></span></div><div class="br-arcs"></div><ul class="br-sys"></ul></section>
+          <section class="br-tgt"><div class="br-h"><b>NO TARGET</b><span></span></div><div class="br-hp"><i class="sh"></i><i class="hl"></i></div><ul class="br-sys"></ul><div class="br-note"></div></section>
+          <section class="br-ctl"><div class="br-pow"></div><div class="br-btns"></div></section>
+          <div class="br-core"></div>
+        </div>
+        <div class="h-board"><div class="bd-h"></div><div class="bd-nodes"></div><div class="bd-f"></div></div>
+        <div class="h-cmd">
+          <section class="cm-sel"><div class="cm-h">SELECTION</div><div class="cm-body"></div><div class="cm-orders"></div></section>
+          <section class="cm-ov"><div class="cm-h">THE BATTLE</div><div class="cm-dom ground"></div><div class="cm-dom air"></div><div class="cm-dom space"></div></section>
+          <section class="cm-calls"></section>
+        </div>
+        <div class="h-squad"></div>
+        <div class="h-mapwrap"><canvas class="h-map" width="220" height="160"></canvas><div class="mp-key"></div></div>
+        <div class="h-keys"></div>
         <div class="h-toast"></div>
         <div class="h-dead"></div>
         <div class="h-selbox"></div>
@@ -10106,14 +11143,16 @@
       this.el = el;
       const q = (s) => el.querySelector(s);
       this.cv = q('.h-cv'); this.ctx = this.cv.getContext('2d'); this.map = q('.h-map'); this.mctx = this.map.getContext('2d');
-      this.$ = { tA: q('.h-team.aegis'), tV: q('.h-team.verdant'), cps: [...el.querySelectorAll('.h-cp')], ann: q('.h-announce'), feed: q('.h-feed'), pops: q('.h-pops'), cross: q('.h-cross'), hitm: q('.hitm'), lock: q('.h-lock'),
-        scope: q('.h-scope'), cap: q('.h-capture'), unit: q('.h-unit'), uname: q('.h-uname'), hp: q('.h-bar.hp'), sh: q('.h-bar.sh'), weap: q('.h-weap'), heat: q('.h-heat'), abil: q('.h-abil'), mapwrap: q('.h-mapwrap'),
-        hint: q('.h-hint'), toast: q('.h-toast'), dead: q('.h-dead'), sel: q('.h-selbox'), layer: q('.h-layer') };
-      this.feed = []; this.pops = []; this.ann = []; this.dmgDirs = []; this.annT = 0; this.hitT = 0; this.total = 0; this.layerKind = '';
+      this.$ = { vig: q('.h-vig'), tA: q('.h-team.aegis'), tV: q('.h-team.verdant'), cps: [...el.querySelectorAll('.h-cp')], ann: q('.h-announce'), feed: q('.h-feed'), pops: q('.h-pops'), cross: q('.h-cross'), hitm: q('.hitm'),
+        work: q('.h-work'), scope: q('.h-scope'), cap: q('.h-capture'), prompt: q('.h-prompt'), unit: q('.h-unit'), uname: q('.h-uname'), hp: q('.h-bar.hp'), sh: q('.h-bar.sh'), st: q('.h-bar.st'), weap: q('.h-weap'), heat: q('.h-heat'),
+        abil: q('.h-abil'), abil2: q('.h-abil.a2'), chips: q('.h-chips'), tools: q('.h-tools'), pips: q('.h-pips'), mapwrap: q('.h-mapwrap'), mpkey: q('.mp-key'), keys: q('.h-keys'), toast: q('.h-toast'), dead: q('.h-dead'), sel: q('.h-selbox'), layer: q('.h-layer'),
+        veh: q('.h-veh'), fl: q('.h-fl'), br: q('.h-br'), board: q('.h-board'), cmd: q('.h-cmd'), stage: q('.h-stage'), obj: q('.h-obj'), squad: q('.h-squad') };
+      this.feed = []; this.pops = []; this.ann = []; this.dmgDirs = []; this.annT = 0; this.hitT = 0; this.total = 0; this.layerKind = ''; this.armed = null; this.zoneT = 0; this.zone = ''; this.suppT = 0; this.keyKind = '';
       this.mapImg = this.terrainImage(w, 220, 160);
-      this._resize = () => { this.cv.width = window.innerWidth; this.cv.height = window.innerHeight; };
+      this._resize = () => { this.cv.width = window.innerWidth; this.cv.height = window.innerHeight; this.rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16; };
       window.addEventListener('resize', this._resize); this._resize();
       el.classList.toggle('attract', game.state === 'attract');
+      this.spaceBegin(); this.cmdBegin();
       if (game.state === 'deploy') this.showDeploy();
     }
     clear() { if (this.el) { this.el.remove(); this.el = null; window.removeEventListener('resize', this._resize); } }
@@ -10129,160 +11168,285 @@
         let c3 = t < 0.4 ? E.mixC(pal.low, pal.mid, t / 0.4) : E.mixC(pal.mid, pal.high, (t - 0.4) / 0.6);
         if (h < wl) c3 = E.mixC(wc, [10, 20, 30], E.clamp01((wl - h) / 12));
         const sh = E.clamp(0.62 + (h - hx) * 0.045, 0.3, 1.05), k = (j * W + i) * 4;
-        d[k] = c3[0] * sh * 0.6; d[k + 1] = c3[1] * sh * 0.62; d[k + 2] = c3[2] * sh * 0.68; d[k + 3] = 255;
+        d[k] = c3[0] * sh * 0.5; d[k + 1] = c3[1] * sh * 0.52; d[k + 2] = c3[2] * sh * 0.58; d[k + 3] = 255;
       }
       x.putImageData(id, 0, 0);
       return c;
     }
     mapXY(p, W, H, o) { o.x = (p.x / (E.ARENA.x * 1.25) * 0.5 + 0.5) * W; o.y = (p.z / (E.ARENA.z * 1.25) * 0.5 + 0.5) * H; return o; }
+    // glyph: friendly = solid, enemy = hollow outline (so team never rests on colour alone)
+    glyph(ctx, shape, x, y, s, col, friendly) {
+      ctx.beginPath();
+      if (shape === 'tri') { ctx.moveTo(x, y - s * 1.2); ctx.lineTo(x + s, y + s); ctx.lineTo(x - s, y + s); ctx.closePath(); }
+      else if (shape === 'dia') { ctx.moveTo(x, y - s * 1.2); ctx.lineTo(x + s * 1.2, y); ctx.lineTo(x, y + s * 1.2); ctx.lineTo(x - s * 1.2, y); ctx.closePath(); }
+      else if (shape === 'circ') ctx.arc(x, y, s, 0, E.TAU);
+      else ctx.rect(x - s, y - s, s * 2, s * 2);
+      if (friendly) { ctx.fillStyle = col; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.stroke(); }
+      else { ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fill(); ctx.lineWidth = Math.max(1.5, s * 0.5); ctx.strokeStyle = col; ctx.stroke(); }
+    }
     drawMap(ctx, W, H, w, big) {
-      const g = this.game, o = { x: 0, y: 0 }, me = g.unit();
+      const g = this.game, o = { x: 0, y: 0 }, me = g.unit(), team = g.team, k = big ? 1.9 : 1, fly = me && (me.kind === 'fighter' || me.kind === 'capital');
       ctx.drawImage(this.mapImg, 0, 0, W, H);
+      const scale = W / ((E.ARENA.x * 1.25) * 2);   // px per metre
+      // structures, AA threat rings, shield domes
+      for (const u of w.units) {
+        if (!u.alive || u.kind !== 'turret') continue;
+        this.mapXY(u.pos, W, H, o); const fr = u.team === team;
+        if (u.def.aa && (fly || g.state === 'commander') && !fr) { const W2 = E.WEAPONS[u.def.weapon]; ctx.beginPath(); ctx.arc(o.x, o.y, (W2.range || 700) * scale, 0, E.TAU); ctx.fillStyle = 'rgba(255,60,40,.12)'; ctx.fill(); ctx.setLineDash([4, 3]); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,90,60,.8)'; ctx.stroke(); ctx.setLineDash([]); }
+        if (u.def.structure && u.def.shieldR) { ctx.beginPath(); ctx.arc(o.x, o.y, u.def.shieldR * scale, 0, E.TAU); ctx.lineWidth = 1; ctx.strokeStyle = fr ? 'rgba(120,200,255,.7)' : 'rgba(255,150,120,.6)'; ctx.stroke(); }
+        const shape = u.def.aa ? 'tri' : u.def.structure ? 'dia' : 'sq';
+        this.glyph(ctx, shape, o.x, o.y, (big ? 3.4 : 2.4), COL[u.team], fr);
+      }
+      // mines we know about
+      for (const m of w.mines || []) if (m.team === team || m.seen) { this.mapXY(m, W, H, o); ctx.fillStyle = m.team === team ? '#ffd04a' : '#ff3a2a'; ctx.fillRect(o.x - 1.5 * k, o.y - 1.5 * k, 3 * k, 3 * k); }
+      // objectives
+      for (const ob of w.objs || []) if (!ob.done && ob.pos) { this.mapXY(ob.pos, W, H, o); ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(Math.PI / 4); ctx.lineWidth = 2; ctx.strokeStyle = '#ffd04a'; const s = big ? 9 : 6; ctx.strokeRect(-s, -s, s * 2, s * 2); ctx.restore(); ctx.beginPath(); ctx.arc(o.x, o.y, (ob.r || 20) * scale, 0, E.TAU); ctx.setLineDash([3, 3]); ctx.strokeStyle = 'rgba(255,208,74,.7)'; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]); }
       for (const u of w.units) {
         if (!u.alive || u.kind === 'turret') continue;
-        this.mapXY(u.pos, W, H, o);
-        ctx.fillStyle = COL[u.team];
-        if (u.kind === 'capital') { ctx.globalAlpha = 0.85; ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(-u.yaw + Math.PI / 2); ctx.fillRect(-9 * (big ? 2 : 1), -2.5, 18 * (big ? 2 : 1), 5); ctx.restore(); ctx.globalAlpha = 1; }
-        else if (u.kind === 'fighter') { ctx.beginPath(); ctx.moveTo(o.x, o.y - 3); ctx.lineTo(o.x + 3, o.y + 3); ctx.lineTo(o.x - 3, o.y + 3); ctx.fill(); }
-        else { const s = u.kind === 'vehicle' ? 2.6 : 1.5; ctx.fillRect(o.x - s, o.y - s, s * 2, s * 2); }
+        this.mapXY(u.pos, W, H, o); const fr = u.team === team, col = COL[u.team];
+        if (u.kind === 'capital') { ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(-u.yaw + Math.PI / 2); const L = 9 * (big ? 2 : 1); ctx.beginPath(); ctx.moveTo(L, 0); ctx.lineTo(-L, -3.2); ctx.lineTo(-L, 3.2); ctx.closePath(); if (fr) { ctx.fillStyle = col; ctx.fill(); } else { ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.stroke(); } if (u.pid === g.pid) { ctx.strokeStyle = '#fff'; ctx.stroke(); } ctx.restore(); }
+        else if (u.kind === 'fighter') this.glyph(ctx, 'tri', o.x, o.y, 2.6 * k, col, fr);
+        else if (u.kind === 'vehicle') this.glyph(ctx, 'sq', o.x, o.y, 2.6 * k, col, fr);
+        else this.glyph(ctx, 'circ', o.x, o.y, 1.5 * k, col, fr);
       }
       for (const c of w.cps) {
         this.mapXY(c.pos, W, H, o);
         const r = big ? 13 : 7.5;
-        ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, E.TAU); ctx.fillStyle = 'rgba(8,12,20,.8)'; ctx.fill();
-        ctx.lineWidth = big ? 3 : 2; ctx.strokeStyle = COL[c.owner || 'neutral']; ctx.stroke();
+        ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, E.TAU); ctx.fillStyle = 'rgba(8,12,20,.85)'; ctx.fill();
+        ctx.lineWidth = big ? 3 : 2; ctx.strokeStyle = COL[c.owner || 'neutral']; ctx.setLineDash(c.owner === team || !c.owner ? [] : [3, 2]); ctx.stroke(); ctx.setLineDash([]);
         if (Math.abs(c.cap) < 0.999 && Math.abs(c.cap) > 0.01) { ctx.beginPath(); ctx.arc(o.x, o.y, r + 2.5, -Math.PI / 2, -Math.PI / 2 + E.TAU * Math.abs(c.cap)); ctx.strokeStyle = COL[c.cap > 0 ? 'aegis' : 'verdant']; ctx.stroke(); }
         ctx.fillStyle = '#fff'; ctx.font = `700 ${big ? 13 : 9}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(c.name[0], o.x, o.y + 0.5);
       }
       if (me) {
         this.mapXY(me.pos, W, H, o); ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(-g.renderer.camera.yaw + Math.PI);
-        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(4.5, 5); ctx.lineTo(0, 2.5); ctx.lineTo(-4.5, 5); ctx.closePath(); ctx.fill(); ctx.restore();
+        ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(4.5, 5); ctx.lineTo(0, 2.5); ctx.lineTo(-4.5, 5); ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
       } else if (g.state === 'commander') { const c = g.renderer.camera.cmd; this.mapXY(c, W, H, o); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(o.x - 12, o.y - 8, 24, 16); }
-      for (const s of w.strikes || []) { this.mapXY(s.pos, W, H, o); ctx.strokeStyle = '#ff3020'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(o.x, o.y, 5 + (performance.now() / 80 % 4), 0, E.TAU); ctx.stroke(); }
+      for (const s of w.strikes || []) { this.mapXY(s.pos, W, H, o); ctx.strokeStyle = '#ff3020'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(o.x, o.y, 5 + (performance.now() / 80 % 4), 0, E.TAU); ctx.stroke(); ctx.beginPath(); ctx.arc(o.x, o.y, E.WEAPONS.orbital.splash * 2.2 * scale + 3, 0, E.TAU); ctx.setLineDash([2, 2]); ctx.stroke(); ctx.setLineDash([]); }
     }
 
     // ── per-frame ────────────────────────────────────────────
     update(dt, w, P, u) {
       const $ = this.$, g = this.game, st = g.state; if (!this.el) return;
       const play = st === 'play' && u;
+      const kind = play ? (u.mode === 'boarding' ? 'boarding' : u.kind) : '';
       this.frameN = (this.frameN || 0) + 1;
+      this.kind = kind;
       // tickets + posts
       if (this.frameN % 6 === 0) {
         for (const [el, f] of [[$.tA, 'aegis'], [$.tV, 'verdant']]) {
-          const T = w.teams[f]; el.querySelector('.h-tk').textContent = T.tickets; el.querySelector('i').style.width = E.clamp01(T.tickets / T.startTickets) * 100 + '%';
-          el.classList.toggle('low', T.tickets <= 25); el.classList.toggle('mine', f === g.team);
+          const T = w.teams[f]; this.tx(el.querySelector('.h-tk'), T.tickets); this.wd(el.querySelector('i'), T.tickets / T.startTickets);
+          this.cl(el, 'low', T.tickets <= 25); this.cl(el, 'mine', f === g.team);
         }
-        w.cps.forEach((c, i) => { const e = $.cps[i]; e.dataset.o = c.owner || 'neutral'; e.classList.toggle('contested', c.contested); e.querySelector('i').style.cssText = `width:${Math.abs(c.cap) * 100}%;background:${COL[c.cap >= 0 ? 'aegis' : 'verdant']}`; });
+        w.cps.forEach((c, i) => { const e = $.cps[i]; e.dataset.o = c.owner || 'neutral'; this.cl(e, 'contested', c.contested); this.cl(e, 'ours', c.owner === g.team); e.querySelector('i').style.cssText = `width:${Math.abs(c.cap) * 100}%;background:${COL[c.cap >= 0 ? 'aegis' : 'verdant']}`; });
         this.drawMap(this.mctx, 220, 160, w, false);
+        this.objectives(w);
+        this.stageBanner(w, kind);
       }
-      // unit card
-      $.unit.style.display = play ? '' : 'none'; $.cross.style.display = play ? '' : 'none';
-      $.mapwrap.style.display = (st === 'deploy' || st === 'ended') ? 'none' : '';
+      this.show($.unit, play && kind !== 'capital'); this.show($.cross, play);
+      this.show($.mapwrap, !(st === 'deploy' || st === 'ended' || st === 'commander'));
+      this.show($.stage, w.space && (kind === 'capital' || kind === 'fighter' || st === 'commander'));
+      this.show($.veh, kind === 'vehicle'); this.show($.fl, kind === 'fighter'); this.show($.br, kind === 'capital'); this.show($.board, kind === 'boarding'); this.show($.cmd, st === 'commander');
+      this.el.dataset.kind = kind || st;
+      this.keyHints(u, st, kind);
       if (play) {
         const d = u.def, W = E.WEAPONS[d.weapon], A = d.alt ? E.WEAPONS[d.alt] : (u.kind === 'capital' ? E.WEAPONS.orbital : null);
-        if (this._uid !== u.id) { this._uid = u.id; $.uname.innerHTML = `<b>${esc(d.name).toUpperCase()}</b> <span>${TNAME[u.team]}</span>`; $.weap.querySelector('.wn').textContent = u.kind === 'capital' ? 'Main Batteries — hold fire to focus' : W.name; $.abil.style.display = A ? '' : 'none'; if (A) $.abil.querySelector('.an').textContent = A.name; $.sh.style.display = u.maxShield ? '' : 'none'; }
-        $.hp.querySelector('i').style.width = E.clamp01(u.hp / u.maxHp) * 100 + '%'; $.hp.querySelector('span').textContent = Math.ceil(u.hp);
-        $.hp.classList.toggle('crit', u.hp < u.maxHp * 0.3);
-        if (u.maxShield) $.sh.querySelector('i').style.width = E.clamp01(u.shield / u.maxShield) * 100 + '%';
-        const hi = $.heat.querySelector('i'); hi.style.width = E.clamp01(u.heat || 0) * 100 + '%'; $.heat.classList.toggle('hot', !!u.hot); $.heat.style.visibility = W && W.heat ? '' : 'hidden';
-        if (A) { const cd = u.kind === 'capital' ? E.clamp01(w.teams[u.team].strikeT / A.cd) : E.clamp01(u.altT / (A.cd || 1 / A.rate)); $.abil.querySelector('i').style.width = (1 - cd) * 100 + '%'; $.abil.classList.toggle('ready', cd <= 0); }
-        // crosshair bloom + hit marker
-        const spread = 6 + (u.heat || 0) * 14 + Math.min(10, Math.hypot(u.vel.x, u.vel.z) * 0.5) * (u.kind === 'infantry' ? 1 : 0) - g.renderer.camera.zoom * 4;
-        $.cross.style.setProperty('--g', spread.toFixed(1) + 'px');
-        $.cross.classList.toggle('enemy', !!(g.aimInfo && g.aimInfo.target));
+        if (this._uid !== u.id) { this._uid = u.id; $.uname.innerHTML = `<b>${esc(d.name).toUpperCase()}</b> <span>${TNAME[u.team]}</span>`; this.tx($.weap.querySelector('.wn'), u.kind === 'capital' ? 'Main Batteries' : W.name); this.tx($.abil.querySelector('.an'), A ? A.name : ''); this.show($.abil, !!A);
+          this.tx($.abil.querySelector('.key'), u.kind === 'infantry' || u.kind === 'vehicle' ? 'G' : 'G'); this.show($.sh, !!u.maxShield);
+          this.show($.abil2, u.type === 'engineer'); this.tx($.abil2.querySelector('.an'), 'Barricade'); this.show($.tools, u.type === 'engineer'); this.show($.st, u.kind === 'infantry');
+          this.show($.pips, u.kind === 'fighter'); $.pips.querySelector('.ord label').textContent = A ? A.name.toUpperCase() : 'ORDNANCE'; this.show($.pips.querySelector('.carry'), !!d.carry); this.show($.pips.querySelector('.cm'), !!d.cm); this.show($.weap, u.kind !== 'capital');
+          this.perkChips(u); }
+        this.wd($.hp.querySelector('i'), u.hp / u.maxHp); this.tx($.hp.querySelector('span'), Math.ceil(u.hp));
+        this.cl($.hp, 'crit', u.hp < u.maxHp * 0.3);
+        if (u.maxShield) this.wd($.sh.querySelector('i'), u.shield / u.maxShield);
+        if (u.kind === 'infantry') { this.wd($.st.querySelector('i'), u.stam == null ? 1 : u.stam); this.cl($.st, 'low', u.winded || (u.stam != null && u.stam < 0.2)); }
+        const hi = $.heat.querySelector('i'); this.wd(hi, u.heat || 0); this.cl($.heat, 'hot', !!u.hot); $.heat.style.visibility = W && W.heat ? '' : 'hidden';
+        if (A) { const cdT = u.kind === 'capital' ? w.teams[u.team].strikeT : u.altT, cd = E.clamp01(cdT / (A.cd || 1 / (A.rate || 1))); this.wd($.abil.querySelector('i'), 1 - cd); this.cl($.abil, 'ready', cd <= 0); }
+        if (u.type === 'engineer') {
+          this.tools(u);
+        }
+        // crosshair bloom (radians -> px) and hit marker
+        const H = this.cv.height || 720, bl = (u.bloom || 0) * (H / 2) / 0.65, spread = 5 + bl + (u.heat || 0) * 6 - g.renderer.camera.zoom * 3;
+        $.cross.style.setProperty('--g', Math.max(3, spread).toFixed(1) + 'px');
+        this.cl($.cross, 'enemy', !!(g.aimInfo && g.aimInfo.target)); this.cl($.cross, 'air', u.kind === 'fighter' || u.kind === 'capital');
         this.hitT -= dt; $.hitm.style.opacity = Math.max(0, this.hitT * 4);
-        const scope = u.type === 'sniper' && g.renderer.camera.zoom > 0.85; $.scope.style.display = scope ? '' : 'none'; $.cross.classList.toggle('scoped', scope);
+        const scope = u.type === 'sniper' && g.renderer.camera.zoom > 0.85; this.show($.scope, scope); this.cl($.cross, 'scoped', scope);
+        // work ring (repair, charge, build)
+        const wk = u.work || 0; this.cl($.work, 'on', wk > 0.01); if (wk > 0.01) { $.work.querySelector('.v').style.strokeDashoffset = String(106.8 * (1 - wk)); this.tx($.work.querySelector('span'), u.tool === 2 ? 'ARMING' : 'REPAIR'); }
+        // suppression vignette + stance
+        const sup = u.kind === 'infantry' ? (u.supp || 0) : 0; $.vig.style.setProperty('--supp', sup.toFixed(2));
         // capture bar
         let cp = null; for (const c of w.cps) if (E.distXZ2(u.pos, c.pos) < c.r * c.r && (u.kind === 'infantry' || u.kind === 'vehicle')) cp = c;
         if (cp && (cp.owner !== u.team || Math.abs(cp.cap) < 0.999)) {
-          $.cap.style.display = ''; const mine = u.team === 'aegis' ? cp.cap : -cp.cap;
-          $.cap.querySelector('span').textContent = cp.contested ? 'CONTESTED — ' + cp.name.toUpperCase() : (mine < 0 ? 'NEUTRALIZING ' : 'CAPTURING ') + cp.name.toUpperCase();
+          this.show($.cap, true); const mine = u.team === 'aegis' ? cp.cap : -cp.cap;
+          this.tx($.cap.querySelector('span'), cp.contested ? 'CONTESTED — ' + cp.name.toUpperCase() : (mine < 0 ? 'NEUTRALIZING ' : 'CAPTURING ') + cp.name.toUpperCase());
           const i = $.cap.querySelector('i'); i.style.width = Math.abs(cp.cap) * 100 + '%'; i.style.background = COL[cp.cap >= 0 ? 'aegis' : 'verdant'];
-        } else $.cap.style.display = 'none';
-        if (this.frameN % 20 === 0) $.hint.innerHTML = u.kind === 'fighter' ? '<b>Mouse</b> steer · <b>W/Shift</b> boost · <b>S</b> brake · <b>G</b> ' + (A ? A.name : '') + ' · <b>M</b> command · <b>F</b> switch unit'
-          : u.kind === 'capital' ? '<b>WASD</b> helm · <b>LMB</b> focus batteries · <b>G</b> orbital strike · <b>F</b> switch unit · <b>M</b> command'
-          : '<b>F</b> take control of a friendly · <b>Z/X/V</b> squad follow / move / dismiss · <b>M</b> command view';
-      } else { $.cap.style.display = 'none'; $.scope.style.display = 'none'; $.hint.innerHTML = st === 'commander' ? '<b>LMB</b> select · <b>drag</b> box · <b>RMB</b> move · <b>H</b> hold · <b>1/2/3</b> infantry / armor / air · <b>F</b> take control · <b>Enter</b> deploy' : ''; this._uid = 0; }
+        } else this.show($.cap, false);
+        this.prompts(u, w, g, kind);
+        if (kind === 'vehicle') this.vehUpdate(u, dt);
+        if (kind === 'fighter') this.airUpdate(u, w, dt);
+        if (kind === 'capital') this.bridgeUpdate(u, w, dt);
+        if (kind === 'boarding') this.boardUpdate(u, w, dt);
+        this.squadChip(w, g);
+      } else {
+        this.show($.cap, false); this.show($.scope, false); this.show($.prompt, false); this.show($.squad, false); this._uid = 0; $.vig.style.setProperty('--supp', '0');
+        if (st === 'commander') this.cmdUpdate(dt, w);
+      }
       $.dead.style.display = st === 'dead' ? '' : 'none';
-      // deploy countdown
       if (st === 'deploy' && this.layerKind === 'deploy' && this.frameN % 6 === 0) this.refreshDeploy(w, P);
       // announcements
       this.annT -= dt;
       if (this.annT <= 0) { if (this.ann.length) { const a = this.ann.shift(); $.ann.innerHTML = `<div class="${a.cls}">${a.text}</div>`; $.ann.classList.remove('show'); void $.ann.offsetWidth; $.ann.classList.add('show'); this.annT = 3.2; } else if (this.annT < -0.4) $.ann.classList.remove('show'); }
-      // feed + pops expiry
       const now = performance.now();
       if (this.feed.length && now - this.feed[0].t > 6500) { this.feed.shift().el.remove(); }
       if (this.pops.length && now - this.pops[0].t > 2200) { this.pops.shift().el.remove(); }
-      this.overlay(dt, w, u, play);
+      this.overlay(dt, w, u, play, kind);
     }
 
-    // world-anchored markers
-    overlay(dt, w, u, play) {
-      const ctx = this.ctx, g = this.game, cam = g.renderer.camera, W = this.cv.width, H = this.cv.height, o = { x: 0, y: 0, vis: false };
+    perkChips(u) {
+      const names = (u.perks || []).map(id => { const p = E.SIM.perkById && E.SIM.perkById(id); return p ? p.name : id; });
+      this.$.chips.innerHTML = names.map(n => `<span>${esc(n)}</span>`).join('');
+    }
+    tools(u) {
+      const spans = this.$.tools.querySelectorAll('span'); spans.forEach((s, i) => this.cl(s, 'on', i === (u.tool || 0)));
+      this.tx(this.$.tools.querySelector('.mines'), 'MINES ' + (u.mines != null ? u.mines : 0));
+      this.cl(this.$.abil2, 'ready', !(u.buildT > 0));
+      if (u.buildT > 0) this.wd(this.$.abil2.querySelector('i'), 1 - u.buildT / 4); else this.wd(this.$.abil2.querySelector('i'), 1);
+    }
+    // vault / mantle progress, work prompts, call-in hints
+    prompts(u, w, g, kind) {
+      let msg = '';
+      if (kind === 'infantry') {
+        if (u.vault > 0) msg = (u.vaultKind === 'mantle' ? 'MANTLING ' : 'VAULTING ') + Math.round(u.vault * 100) + '%';
+        else if (u.type === 'engineer' && u.tool === 1) msg = u.work > 0.01 ? 'REPAIRING' : 'TORCH: aim at a damaged friendly vehicle or barricade and hold fire';
+        else if (u.type === 'engineer' && u.tool === 2) msg = u.work > 0.01 ? 'PLANTING CHARGE' : 'CHARGE: aim at an enemy vehicle or structure and hold fire';
+        else if (u.stance === 2) msg = 'SLIDING';
+        else if (u.winded) msg = 'OUT OF BREATH';
+        if ((u.supp || 0) > 0.55) msg = 'SUPPRESSED — GET INTO COVER';
+      } else if (kind === 'vehicle') {
+        if (u.crip === 2) msg = 'ON FIRE — ABANDON OR REPAIR'; else if (u.crip === 1) msg = 'MOBILITY KILLED';
+      }
+      this.tx(this.$.prompt, msg); this.show(this.$.prompt, !!msg); this.cl(this.$.prompt, 'warn', (u.supp || 0) > 0.55 || u.crip > 0);
+    }
+    squadChip(w, g) {
+      const n = g.squad.filter(id => { const s = w.byId(id); return s && s.alive; }).length;
+      this.show(this.$.squad, n > 0); if (n) this.tx(this.$.squad, `SQUAD ${n} · ${g.squadMode || 'FOLLOWING'}`);
+    }
+    // the objective tracker: command-post lines plus every live map objective
+    objectives(w) {
+      const rows = [];
+      for (const o of w.objs || []) {
+        if (o.done) continue;
+        const label = o.label || (o.type === 'destroy' ? 'Destroy the target' : o.type === 'defend' ? 'Defend the target' : o.type === 'uplink' ? 'Hold the uplink' : o.type);
+        const mine = !o.team || o.team === this.game.team;
+        rows.push(`<div class="ob${o.contested ? ' contested' : ''}"><span>${esc(label)}${o.type === 'uplink' && o.contested ? ' — CONTESTED' : ''}</span><i><b style="width:${Math.round(E.clamp01(o.frac) * 100)}%"></b></i><em>${mine ? '' : 'ENEMY · '}${o.type === 'defend' ? 'HOLD' : o.type === 'destroy' ? 'DESTROY' : 'HOLD'}</em></div>`);
+      }
+      const html = rows.join(''); if (this.$.obj._v !== html) { this.$.obj._v = html; this.$.obj.innerHTML = html ? '<div class="ob-h">OBJECTIVES</div>' + html : ''; }
+    }
+    stageBanner(w, kind) {
+      const $ = this.$; if (!w.space || !E.SIM.spaceState) return;
+      const g = this.game, S = E.SIM.spaceState(w, g.team); if (!S) return;
+      this.tx($.stage.querySelector('.st-n'), 'ORBIT ' + S.stage + '/3'); this.tx($.stage.querySelector('.st-name'), S.stageName.toUpperCase());
+      this.wd($.stage.querySelector('.st-sup i'), 0.5 + 0.5 * (S.superiority || 0));
+      const f = (a, name) => `<span>${name} ${a.ships} <i style="--f:${Math.round(a.hull * 100)}%"></i> ${Math.round(a.hull * 100)}%</span>`;
+      const html = f(S.own, 'OURS') + f(S.enemy, 'THEIRS') + (S.escort && S.escort.length ? '<span class="warnt">ESCORT NEEDED</span>' : '') + (S.boarding ? '<span class="warnt">BOARDING</span>' : '');
+      if ($.stage.querySelector('.st-fl')._v !== html) { $.stage.querySelector('.st-fl')._v = html; $.stage.querySelector('.st-fl').innerHTML = html; }
+    }
+    keyHints(u, st, kind) {
+      const key = (st === 'commander' ? 'commander' : kind) + (u ? u.type : ''); if (key === this.keyKind) return; this.keyKind = key;
+      const C = E.CONTROLS.forUnit(u, st === 'commander' ? 'commander' : st);
+      this.$.keys.innerHTML = C ? C.hint.map(([k, l]) => `<span>${k ? `<kbd>${esc(k)}</kbd>` : ''}${esc(l)}</span>`).join('') : '';
+    }
+
+    // vehicle: hull diagram with turret angle, armor zone flash, speed, crippled state
+    vehUpdate(u, dt) {
+      const el = this.$.veh, tur = el.querySelector('.tur'), rel = E.SIM.angDiff(u.aimYaw !== undefined ? u.aimYaw : u.yaw, u.yaw);
+      tur.setAttribute('transform', `rotate(${(-rel * 180 / Math.PI).toFixed(1)})`);
+      this.cl(el, 'limited', !!u.aimLimited); this.cl(el, 'crip', u.crip === 1); this.cl(el, 'burn', u.crip === 2);
+      this.tx(el.querySelector('.veh-spd b'), Math.round(Math.abs(u.spd != null ? u.spd : Math.hypot(u.vel.x, u.vel.z)) * 3.6));
+      this.tx(el.querySelector('.veh-state'), u.aimLimited ? 'TURRET LIMIT' : u.crip === 2 ? 'BURNING' : u.crip === 1 ? 'CRIPPLED' : 'OPERATIONAL');
+      this.zoneT -= dt; const z = this.zoneT > 0 ? this.zone : '';
+      el.querySelectorAll('.z').forEach(p => this.cl(p, 'hit', z && p.classList.contains('z-' + z)));
+      this.tx(el.querySelector('.veh-zone'), this.zoneT > 0 ? this.zoneTxt : '');
+    }
+
+    // ── world-anchored markers ───────────────────────────────
+    overlay(dt, w, u, play, kind) {
+      const ctx = this.ctx, g = this.game, cam = g.renderer.camera, W = this.cv.width, H = this.cv.height, o = { x: 0, y: 0, vis: false }, R = this.rem || 16;
       ctx.clearRect(0, 0, W, H);
       if (g.state === 'deploy' || g.state === 'ended' || g.paused) return;
-      const cp3 = cam.cam.position;
+      const cp3 = cam.cam.position, team = g.team;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       for (const c of w.cps) {
         cam.project({ x: c.pos.x, y: c.pos.y + 16, z: c.pos.z }, o);
         const d = Math.hypot(c.pos.x - cp3.x, c.pos.z - cp3.z);
         let x = o.x, y = o.y; const off = !o.vis || x < 40 || x > W - 40 || y < 70 || y > H - 60;
         if (off) { if (!play) continue; const a = Math.atan2(c.pos.x - cp3.x, c.pos.z - cp3.z) - cam.yaw; x = W / 2 - Math.sin(a) * (W / 2 - 60); y = H / 2 - Math.cos(a) * (H / 2 - 90); x = E.clamp(x, 44, W - 44); y = E.clamp(y, 80, H - 70); }
-        const col = COL[c.owner || 'neutral'];
-        ctx.globalAlpha = off ? 0.6 : 0.95; ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4);
-        ctx.fillStyle = 'rgba(6,10,18,.72)'; ctx.fillRect(-11, -11, 22, 22); ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.strokeRect(-11, -11, 22, 22);
-        if (Math.abs(c.cap) < 0.999) { ctx.fillStyle = COL[c.cap >= 0 ? 'aegis' : 'verdant']; ctx.globalAlpha *= 0.55; const k = Math.abs(c.cap); ctx.fillRect(-11, 11 - 22 * k, 22, 22 * k); }
-        ctx.restore(); ctx.globalAlpha = off ? 0.6 : 1;
-        ctx.fillStyle = '#fff'; ctx.font = '700 13px system-ui'; ctx.fillText(c.name[0], x, y + 1);
-        ctx.font = '600 10px system-ui'; ctx.fillStyle = col; ctx.fillText(Math.round(d) + 'm', x, y + 25);
+        const col = COL[c.owner || 'neutral'], s = R * 0.72;
+        ctx.globalAlpha = off ? 0.65 : 0.95; ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4);
+        ctx.fillStyle = 'rgba(6,10,18,.78)'; ctx.fillRect(-s, -s, s * 2, s * 2); ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.setLineDash(c.owner && c.owner !== team ? [4, 3] : []); ctx.strokeRect(-s, -s, s * 2, s * 2); ctx.setLineDash([]);
+        if (Math.abs(c.cap) < 0.999) { ctx.fillStyle = COL[c.cap >= 0 ? 'aegis' : 'verdant']; ctx.globalAlpha *= 0.55; const k = Math.abs(c.cap); ctx.fillRect(-s, s - 2 * s * k, s * 2, 2 * s * k); }
+        ctx.restore(); ctx.globalAlpha = off ? 0.65 : 1;
+        ctx.fillStyle = '#fff'; ctx.font = `700 ${R * 0.85}px system-ui`; ctx.fillText(c.name[0], x, y + 1);
+        ctx.font = `600 ${R * 0.62}px system-ui`; ctx.fillStyle = '#e8eefc'; ctx.fillText(Math.round(d) + 'm', x, y + R * 1.5);
       }
       ctx.globalAlpha = 1;
-      // capital ship plates
+      // objective markers
+      for (const ob of w.objs || []) {
+        if (ob.done || !ob.pos) continue;
+        cam.project({ x: ob.pos.x, y: (w.terrain.height(ob.pos.x, ob.pos.z) || 0) + 12, z: ob.pos.z }, o); if (!o.vis) continue;
+        ctx.save(); ctx.translate(o.x, o.y); ctx.fillStyle = '#ffd04a'; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, R * 0.8); ctx.lineTo(R * 0.7, -R * 0.4); ctx.lineTo(-R * 0.7, -R * 0.4); ctx.closePath(); ctx.stroke(); ctx.fill(); ctx.restore();
+        ctx.font = `700 ${R * 0.62}px system-ui`; ctx.fillStyle = '#ffd04a'; ctx.fillText((ob.label || ob.type).toUpperCase(), o.x, o.y - R * 1.1);
+      }
+      // mines we can see
+      if (play) for (const m of w.mines || []) { if (!(m.team === team || m.seen)) continue; cam.project(m, o); if (!o.vis) continue; const d = Math.hypot(m.x - cp3.x, m.z - cp3.z); if (d > 70) continue; ctx.strokeStyle = m.team === team ? '#ffd04a' : '#ff3a2a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(o.x, o.y, R * 0.55, 0, E.TAU); ctx.stroke(); ctx.beginPath(); ctx.moveTo(o.x - R * 0.35, o.y); ctx.lineTo(o.x + R * 0.35, o.y); ctx.moveTo(o.x, o.y - R * 0.35); ctx.lineTo(o.x, o.y + R * 0.35); ctx.stroke(); if (m.team !== team) { ctx.fillStyle = '#ff3a2a'; ctx.font = `700 ${R * 0.55}px system-ui`; ctx.fillText('MINE', o.x, o.y - R * 0.95); } }
+      // capital ship plates (hollow frame = enemy)
       for (const s of w.units) {
         if (s.kind !== 'capital' || !s.alive) continue;
         cam.project({ x: s.pos.x, y: s.pos.y + s.h * 1.6, z: s.pos.z }, o); if (!o.vis || (u && u.id === s.id)) continue;
-        const col = COL[s.team], bw = 90;
-        ctx.fillStyle = 'rgba(6,10,18,.6)'; ctx.fillRect(o.x - bw / 2 - 2, o.y - 5, bw + 4, 10);
-        ctx.fillStyle = '#4aa8ff'; ctx.fillRect(o.x - bw / 2, o.y - 3, bw * E.clamp01(s.shield / (s.maxShield || 1)), 2);
-        ctx.fillStyle = col; ctx.fillRect(o.x - bw / 2, o.y, bw * E.clamp01(s.hp / s.maxHp), 3);
-        ctx.font = '700 10px system-ui'; ctx.fillStyle = col; ctx.fillText((s.team === g.team ? 'ALLIED ' : 'ENEMY ') + s.def.name.toUpperCase(), o.x, o.y - 13);
+        const fr = s.team === team, col = COL[s.team], bw = R * 6, tgt = u && u.tgtId === s.id;
+        ctx.fillStyle = 'rgba(6,10,18,.7)'; ctx.fillRect(o.x - bw / 2 - 2, o.y - 5, bw + 4, 11);
+        ctx.fillStyle = '#4aa8ff'; ctx.fillRect(o.x - bw / 2, o.y - 3, bw * E.clamp01(s.shield / (s.maxShield || 1)), 2.5);
+        ctx.fillStyle = col; ctx.fillRect(o.x - bw / 2, o.y, bw * E.clamp01(s.hp / s.maxHp), 3.5);
+        if (tgt) { ctx.strokeStyle = '#ffd04a'; ctx.lineWidth = 2; ctx.strokeRect(o.x - bw / 2 - 5, o.y - 22, bw + 10, 36); }
+        ctx.font = `700 ${R * 0.68}px system-ui`; ctx.fillStyle = fr ? '#fff' : col; ctx.fillText((fr ? '▪ ALLIED ' : '▫ ENEMY ') + s.def.name.toUpperCase() + (s.retreat ? ' · RETREATING' : '') + (s.captured ? ' · CAPTURED' : ''), o.x, o.y - R * 0.95);
       }
       if (play) {
-        // target info under the crosshair
         const t = g.aimInfo && g.aimInfo.target;
         if (t && t.alive && t.kind !== 'capital') {
           cam.project({ x: t.pos.x, y: t.pos.y + t.h + (t.kind === 'infantry' ? 0.5 : 1.5), z: t.pos.z }, o);
-          if (o.vis) { const bw = 46; ctx.fillStyle = 'rgba(6,10,18,.7)'; ctx.fillRect(o.x - bw / 2 - 1, o.y - 3, bw + 2, 6); ctx.fillStyle = COL[t.team]; ctx.fillRect(o.x - bw / 2, o.y - 2, bw * E.clamp01(t.hp / t.maxHp), 4); }
+          if (o.vis) { const bw = R * 3; ctx.fillStyle = 'rgba(6,10,18,.75)'; ctx.fillRect(o.x - bw / 2 - 1, o.y - 3, bw + 2, 7); ctx.fillStyle = COL[t.team]; ctx.fillRect(o.x - bw / 2, o.y - 2, bw * E.clamp01(t.hp / t.maxHp), 5); if (t.team !== team) { ctx.strokeStyle = COL[t.team]; ctx.lineWidth = 1; ctx.strokeRect(o.x - bw / 2 - 1, o.y - 3, bw + 2, 7); } }
         }
-        // friendly tags for nearby allies
-        ctx.font = '600 9px system-ui';
-        for (const a of w.units) {
-          if (!a.alive || a.team !== g.team || a === u || a.kind === 'capital' || a.kind === 'turret') continue;
+        ctx.font = `600 ${R * 0.6}px system-ui`;
+        if (kind === 'infantry' || kind === 'vehicle') for (const a of w.units) {
+          if (!a.alive || a.team !== team || a === u || a.kind === 'capital' || a.kind === 'turret') continue;
           const d2 = E.V3.distance2(a.pos, u.pos); if (d2 > (a.kind === 'infantry' ? 90 * 90 : 500 * 500)) continue;
           cam.project({ x: a.pos.x, y: a.pos.y + a.h + (a.kind === 'infantry' ? 0.45 : 2), z: a.pos.z }, o); if (!o.vis) continue;
-          ctx.fillStyle = a.pid ? '#fff' : (g.squad.includes(a.id) ? '#ffe680' : 'rgba(120,190,255,.8)');
+          ctx.fillStyle = a.pid ? '#fff' : (g.squad.includes(a.id) ? '#ffe680' : 'rgba(120,190,255,.85)');
           ctx.beginPath(); ctx.moveTo(o.x, o.y + 4); ctx.lineTo(o.x - 4, o.y - 3); ctx.lineTo(o.x + 4, o.y - 3); ctx.fill();
           if (a.pid && w.players[a.pid]) ctx.fillText(w.players[a.pid].name, o.x, o.y - 10);
         }
-        // missile lock diamond
-        const lk = (u.def.alt === 'missile' || u.def.alt === 'rocket') ? E.SIM.aimTarget(w, u, u.kind === 'fighter' ? u.pos : E.SIM.eyeOf(u), E.SIM.dirOf(u.kind === 'fighter' ? u.yaw : cam.yaw, u.kind === 'fighter' ? u.pitch : cam.pitch), u.kind === 'fighter' ? 0.3 : 0.12, u.kind === 'fighter' ? 900 : 500, (e) => e.kind !== 'infantry') : null;
-        if (lk) { cam.project(lk.pos, o); if (o.vis) { const s = 16 + Math.sin(performance.now() / 90) * 2; ctx.strokeStyle = u.altT <= 0 ? '#ff4030' : '#ffb040'; ctx.lineWidth = 2; ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(Math.PI / 4); ctx.strokeRect(-s / 2, -s / 2, s, s); ctx.restore(); ctx.font = '700 10px system-ui'; ctx.fillStyle = ctx.strokeStyle; ctx.fillText(u.altT <= 0 ? 'LOCK' : '', o.x, o.y + 22); } }
-        // fighter: where the nose is actually pointing
-        if (u.kind === 'fighter') { const d = E.SIM.dirOf(u.yaw, u.pitch); cam.project({ x: u.pos.x + d.x * 300, y: u.pos.y + d.y * 300, z: u.pos.z + d.z * 300 }, o); if (o.vis) { ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(o.x, o.y, 9, 0, E.TAU); ctx.stroke(); } }
-        // damage direction arcs
+        if (kind === 'fighter') this.airOverlay(ctx, u, w, cam, o, W, H, R);
+        else if (kind === 'capital') this.bridgeOverlay(ctx, u, w, cam, o, W, H, R);
+        else if (u.def.alt === 'missile' || u.def.alt === 'rocket' || u.def.alt === 'aamissile') {
+          const lk = E.SIM.aimTarget(w, u, E.SIM.eyeOf(u), E.SIM.dirOf(cam.yaw, cam.pitch), 0.12, 500, (e) => e.kind !== 'infantry');
+          if (lk) { cam.project(lk.pos, o); if (o.vis) { const s = R; ctx.strokeStyle = u.altT <= 0 ? '#ff4030' : '#ffb040'; ctx.lineWidth = 2; ctx.save(); ctx.translate(o.x, o.y); ctx.rotate(Math.PI / 4); ctx.strokeRect(-s / 2, -s / 2, s, s); ctx.restore(); ctx.font = `700 ${R * 0.62}px system-ui`; ctx.fillStyle = ctx.strokeStyle; ctx.fillText(u.altT <= 0 ? 'LOCK' : 'RELOADING', o.x, o.y + R * 1.4); } }
+        }
+        // damage direction arcs (and armor-zone coloured when in a vehicle)
         for (let i = this.dmgDirs.length - 1; i >= 0; i--) {
           const dd = this.dmgDirs[i]; dd.t -= dt; if (dd.t <= 0) { this.dmgDirs.splice(i, 1); continue; }
           const a = Math.atan2(dd.x - u.pos.x, dd.z - u.pos.z) - cam.yaw;
-          ctx.strokeStyle = `rgba(255,50,30,${Math.min(1, dd.t * 1.4)})`; ctx.lineWidth = 7; ctx.beginPath(); ctx.arc(W / 2, H / 2, 110, -Math.PI / 2 - a - 0.24, -Math.PI / 2 - a + 0.24); ctx.stroke();
+          ctx.strokeStyle = `rgba(255,60,40,${Math.min(1, dd.t * 1.4)})`; ctx.lineWidth = R * 0.5; ctx.beginPath(); ctx.arc(W / 2, H / 2, Math.min(W, H) * 0.2, -Math.PI / 2 - a - 0.26, -Math.PI / 2 - a + 0.26); ctx.stroke();
         }
       }
     }
 
-    // ── events ───────────────────────────────────────────────
+    // ── events: announcer, feed, score ──────────────────────
     events(events, w) {
-      const g = this.game, me = g.pid, mine = g.team;
+      const g = this.game, me = g.pid, mine = g.team, u = g.unit();
+      const ours = (t) => t === mine, nm = (id) => { const s = w.byId(id); return s ? E.unitName(s.kind, s.type) : 'ship'; };
       for (const e of events) {
-        if (e.type === 'death') {
+        const t = e.type;
+        if (t === 'death') {
           if (e.kind === 'turret' && !e.byPid) continue;
           if (e.kind === 'infantry' && !e.byPid && !e.pid && this.feed.length > 3) continue;
           const el = document.createElement('div'); el.className = 'h-kill' + (e.byPid === me ? ' me' : '') + (e.pid === me ? ' dead' : '');
@@ -10290,22 +11454,67 @@
           el.innerHTML = `<b class="${e.kteam || ''}">${esc(e.killer)}</b><span>${W ? esc(W.name) : (e.wk === 'crash' ? 'crash' : '')}</span><b class="${e.team}">${esc(e.victim)}</b>`;
           this.$.feed.appendChild(el); this.feed.push({ el, t: performance.now() }); if (this.feed.length > 5) this.feed.shift().el.remove();
           if (e.pid === me) this.$.dead.innerHTML = `<div class="k1">YOU WERE KILLED</div><div class="k2">${esc(e.killer)}${W ? ' · ' + esc(W.name) : ''}</div>`;
-        } else if (e.type === 'hit') {
+        } else if (t === 'hit') {
           if (e.by === me) { this.hitT = 0.3; this.$.hitm.className = 'hitm' + (e.kill ? ' kill' : e.head ? ' head' : e.sh ? ' sh' : ''); }
           if (e.to === me) { g.hurt = Math.min(1, (g.hurt || 0) + 0.25 + e.dmg / 120); g.renderer.camera.shake(Math.min(0.4, e.dmg / 150)); if (e.from) this.dmgDirs.push({ x: e.from.x, z: e.from.z, t: 1.2 }); }
-        } else if (e.type === 'score' && e.to === me) {
+        } else if (t === 'score' && e.to === me) {
           this.total += e.pts; const el = document.createElement('div'); el.className = 'h-pop'; el.innerHTML = `<b>+${e.pts}</b> ${esc(e.why)}`;
           this.$.pops.appendChild(el); this.pops.push({ el, t: performance.now() }); if (this.pops.length > 5) this.pops.shift().el.remove();
-        } else if (e.type === 'capture') { const c = w.cps[e.cp]; this.announce((e.team === mine ? 'WE CAPTURED ' : 'ENEMY CAPTURED ') + c.name.toUpperCase(), e.team); }
-        else if (e.type === 'neutral') { const c = w.cps[e.cp]; this.announce((e.prev === mine ? 'WE LOST ' : 'ENEMY LOST ') + c.name.toUpperCase(), e.prev === mine ? 'bad' : 'good'); }
-        else if (e.type === 'announce') {
-          const ours = e.team === mine;
-          if (e.key === 'capitalDown') this.announce(ours ? 'OUR FLAGSHIP IS LOST' : 'ENEMY CAPITAL SHIP DESTROYED', ours ? 'bad' : 'good');
-          else if (e.key === 'ticketsHalf') this.announce(ours ? 'OUR REINFORCEMENTS AT HALF' : 'ENEMY REINFORCEMENTS AT HALF', ours ? 'bad' : 'good');
-          else if (e.key === 'ticketsLow') this.announce(ours ? 'WE ARE RUNNING OUT OF TROOPS' : 'THE ENEMY IS BREAKING — FINISH THEM', ours ? 'bad' : 'good');
-        } else if (e.type === 'strikeWarn') { const u = g.unit(); if (e.team !== mine && u && E.distXZ2(u.pos, e.pos) < 60 * 60) this.announce('INCOMING ORBITAL STRIKE — MOVE!', 'bad'); else if (e.team === mine) this.toast('Orbital strike inbound'); }
-        else if (e.type === 'overheat' && e.to === me) this.toast('WEAPON OVERHEATED');
-        else if (e.type === 'gameOver') this.announce(e.winner === mine ? 'VICTORY' : 'DEFEAT', e.winner === mine ? 'good big' : 'bad big');
+        } else if (t === 'capture') { const c = w.cps[e.cp]; this.announce((e.team === mine ? 'WE CAPTURED ' : 'ENEMY CAPTURED ') + c.name.toUpperCase(), e.team === mine ? 'good' : 'bad'); }
+        else if (t === 'neutral') { const c = w.cps[e.cp]; this.announce((e.prev === mine ? 'WE LOST ' : 'ENEMY LOST ') + c.name.toUpperCase(), e.prev === mine ? 'bad' : 'good'); }
+        else if (t === 'announce') {
+          const k = e.key, o = ours(e.team);
+          if (k === 'capitalDown') this.announce(o ? 'OUR FLAGSHIP IS LOST' : 'ENEMY FLAGSHIP DESTROYED', o ? 'bad' : 'good');
+          else if (k === 'ticketsHalf') this.announce(o ? 'OUR REINFORCEMENTS AT HALF' : 'ENEMY REINFORCEMENTS AT HALF', o ? 'bad' : 'good');
+          else if (k === 'ticketsLow') this.announce(o ? 'WE ARE RUNNING OUT OF TROOPS' : 'THE ENEMY IS BREAKING — FINISH THEM', o ? 'bad' : 'good');
+          else if (k === 'boardingAlarm') this.announce(o ? 'BOARDERS ON THE DECKS — REPEL THEM' : 'BOARDING ACTION UNDERWAY', o ? 'bad' : 'good');
+          else if (k === 'bridgeLost') this.announce(o ? 'BRIDGE LOST — SHIP UNCONTROLLED' : 'ENEMY BRIDGE DESTROYED', o ? 'bad' : 'good');
+          else if (k === 'shipCaptured') this.announce(o ? 'A SHIP WAS CAPTURED BY THE ENEMY' : 'WE HAVE CAPTURED AN ENEMY SHIP', o ? 'bad' : 'good');
+          else if (k === 'shipRetreated') this.announce(o ? 'ONE OF OUR SHIPS HAS WITHDRAWN' : 'AN ENEMY SHIP HAS WITHDRAWN', o ? 'bad' : 'good');
+          else if (k === 'fleetVictory') this.announce(o ? 'ORBITAL SUPREMACY — THE FLEET HOLDS THE HIGH GROUND' : 'THE ENEMY FLEET HOLDS ORBIT', o ? 'good' : 'bad');
+        } else if (t === 'stageChange') this.announce(`${ours(e.team) ? 'OUR' : 'ENEMY'} FLEET: ${String(e.name || '').toUpperCase()}`, ours(e.team) ? 'good' : 'bad');
+        else if (t === 'shipDestroyed') this.announce((ours(e.team) ? 'WE LOST THE ' : 'ENEMY LOST THE ') + nm(e.uid).toUpperCase(), ours(e.team) ? 'bad' : 'good');
+        else if (t === 'shipRetreating' && ours(e.team)) this.toast(nm(e.uid).toUpperCase() + ' IS RETREATING');
+        else if (t === 'shipStranded' && ours(e.team)) this.toast('A SHIP IS STRANDED');
+        else if (t === 'shieldDown' && ours(e.team) && u && u.id === e.uid) this.toast(['FORE', 'AFT', 'PORT', 'STARBOARD'][e.arc] + ' SHIELD DOWN');
+        else if (t === 'shieldCollapse' && ours(e.team)) this.announce('SHIELDS COLLAPSED', 'bad');
+        else if (t === 'sysDestroyed') { if (ours(e.team)) this.announce(String(e.label || e.sys).toUpperCase() + ' DESTROYED', 'bad'); else if (u && u.tgtId === e.uid) this.toast('TARGET ' + String(e.label || e.sys).toUpperCase() + ' DESTROYED'); }
+        else if (t === 'hullBreach' && ours(e.team)) this.announce('HULL BREACH', 'bad');
+        else if (t === 'coreBreach' && ours(e.team)) this.announce('REACTOR CORE BREACH — ' + e.t + 's', 'bad');
+        else if (t === 'brace' && u && u.id === e.uid) this.toast('BRACING FOR IMPACT');
+        else if (t === 'boardingLaunched') this.announce(ours(e.team) ? 'BOARDING PODS AWAY — ETA ' + Math.round(e.eta || 0) + 's' : 'ENEMY BOARDING PODS INBOUND', ours(e.team) ? 'good' : 'bad');
+        else if (t === 'boardingResult') this.announce(({ shipLost: 'SHIP LOST WITH ALL HANDS', podsLost: 'BOARDING PODS DESTROYED', captured: 'SHIP CAPTURED', repelled: 'BOARDERS REPELLED', sabotaged: 'SABOTAGE COMPLETE' })[e.result] || ('BOARDING: ' + String(e.result).toUpperCase()), 'good');
+        else if (t === 'boardNode') this.toast(String(e.node).toUpperCase() + ' SABOTAGED');
+        else if (t === 'boardDenied') this.toast(e.reason === 'shieldsUp' ? 'BOARDING DENIED — TARGET SHIELDS ARE UP' : 'BOARDING DENIED — NO HANGAR');
+        else if (t === 'strikeWarn') { if (e.team !== mine && u && E.distXZ2(u.pos, e.pos) < 90 * 90) this.announce('INCOMING ORBITAL STRIKE — MOVE!', 'bad'); else if (e.team === mine) this.toast('ORBITAL STRIKE INBOUND'); }
+        else if (t === 'strikeBlocked' && e.team === mine) this.announce('STRIKE BLOCKED BY GROUND SHIELD', 'bad');
+        else if (t === 'strikeDenied' && e.team === mine) this.toast('STRIKE DENIED — NO BATTERY IN POSITION');
+        else if (t === 'ion') this.toast((e.team === mine ? 'OUR' : 'ENEMY') + ' ION CANNON FIRED — SHIELDS STRIPPED');
+        else if (t === 'ionFlip') this.announce(e.team === mine ? 'ION CANNON UNDER OUR CONTROL' : 'ION CANNON LOST TO THE ENEMY', e.team === mine ? 'good' : 'bad');
+        else if (t === 'structureDown') { const nmS = (E.TURRETS[e.utype] || {}).name || 'STRUCTURE'; if (e.utype === 'shieldgen') this.announce(ours(e.team) ? 'OUR SHIELD GENERATOR IS DOWN' : 'ENEMY SHIELD GENERATOR DESTROYED', ours(e.team) ? 'bad' : 'good'); else this.toast((ours(e.team) ? 'LOST: ' : 'DESTROYED: ') + nmS.toUpperCase()); }
+        else if (t === 'objAdd') this.announce('NEW OBJECTIVE', 'good');
+        else if (t === 'objDone') this.announce(e.success ? 'OBJECTIVE COMPLETE' : 'OBJECTIVE FAILED', e.success ? 'good' : 'bad');
+        else if (t === 'troopsLost') this.announce(ours(e.team) ? 'LANDER LOST — TROOPS LOST' : 'ENEMY LANDER DESTROYED', ours(e.team) ? 'bad' : 'good');
+        else if (t === 'airAccepted') { if (e.to === me || ours(e.team)) this.toast(`${String(e.role).toUpperCase()} ${e.task === 'drop' ? 'DROP' : 'STRIKE'} ACCEPTED — ETA ${e.eta || '?'}s`); }
+        else if (t === 'airInbound' && ours(e.team)) this.toast('AIR SUPPORT INBOUND');
+        else if (t === 'airWeaponsAway' && ours(e.team)) this.toast('WEAPONS AWAY');
+        else if (t === 'airUnavailable' && (e.to === me || ours(e.team))) this.toast(e.reason === 'cooldown' ? `AIR SUPPORT RELOADING — ${e.wait}s` : 'NO AIRCRAFT AVAILABLE');
+        else if (t === 'airDrop' && ours(e.team)) this.toast(`LANDER DEPLOYED ${e.n} TROOPS`);
+        else if (t === 'airLoad' && e.to === me) this.toast(`${e.n} TROOPS ABOARD — HOVER LOW AND PRESS X TO DROP`);
+        else if (t === 'order' && e.to === me) this.toast(`ORDER: ${String(e.order).toUpperCase()} · ${e.n} UNITS`);
+        else if (t === 'suppress' && e.to === me) this.suppT = 0.6;
+        else if (t === 'armor' && e.to === me) { this.zone = e.zone; this.zoneT = 1.6; this.zoneTxt = `${String(e.zone).toUpperCase()} HIT · ×${(e.mul || 1).toFixed(2)}`; }
+        else if (t === 'ram' && u && e.uid === u.id) this.toast('RAM · CLOSING ' + Math.round(e.closing || 0) + ' m/s');
+        else if (t === 'band' && e.to === me) this.toast('ENTERING ' + (BAND[e.band] || e.band).toUpperCase() + ' ALTITUDE');
+        else if (t === 'mineSpotted' && e.team !== mine) this.toast('ENEMY MINE SPOTTED');
+        else if (t === 'mineBlast') this.toast('MINE DETONATED');
+        else if (t === 'tool' && e.to === me) this.toast(['WEAPON', 'REPAIR TORCH', 'DEMOLITION CHARGE'][e.tool] + ' EQUIPPED');
+        else if (t === 'overheat' && e.to === me) this.toast('WEAPON OVERHEATED');
+        else if (t === 'powerShift' && e.to === me) this.toast('POWER: ' + String(e.mode).toUpperCase());
+        else if (t === 'noLock' && e.to === me) this.toast('NO LOCK');
+        else if (t === 'crash' && u && e.uid === u.id) this.announce('CRASHED', 'bad');
+        else if (t === 'launchOrder' && ours(e.team)) this.toast('FIGHTER WING LAUNCHED');
+        else if (t === 'gameOver') this.announce(e.winner === mine ? 'VICTORY' : 'DEFEAT', e.winner === mine ? 'good big' : 'bad big');
       }
     }
     announce(text, cls) { if (this.ann.length < 4) this.ann.push({ text: esc(text), cls: cls || '' }); }
@@ -10313,10 +11522,15 @@
     box(x0, y0, x1, y1) { const s = this.$.sel; if (x0 === undefined) { s.style.display = 'none'; return; } s.style.cssText = `display:block;left:${Math.min(x0, x1)}px;top:${Math.min(y0, y1)}px;width:${Math.abs(x1 - x0)}px;height:${Math.abs(y1 - y0)}px`; }
     setLayer(kind, html) { this.layerKind = kind; this.$.layer.innerHTML = html; this.$.layer.className = 'h-layer ' + (kind ? 'on ' + kind : ''); }
 
-    // ── deploy screen ────────────────────────────────────────
+    // ── deploy screen: class cards, perks per tier, spawn point ──
+    perkSel(cls) {
+      const s = this.game.settings; s.loadouts = s.loadouts || {};
+      let sel = s.loadouts[cls]; if (!sel) sel = s.loadouts[cls] = [E.PERKS[cls].t1[0].id, E.PERKS[cls].t2[0].id];
+      return sel;
+    }
     showDeploy() {
-      const g = this.game, w = g.world;
-      const cards = CLASSES.map((c, i) => { const d = E.INFANTRY[c], W = E.WEAPONS[d.weapon], A = E.WEAPONS[d.alt]; return `<button class="d-class${i === this.cls ? ' on' : ''}" data-i="${i}"><span class="k">${i + 1}</span><b>${d.name}</b><em>${W.name} · ${A.name}</em><p>${d.desc}</p></button>`; }).join('');
+      const g = this.game, w = g.world, cls = CLASSES[this.cls];
+      const cards = CLASSES.map((c, i) => { const d = E.INFANTRY[c], W = E.WEAPONS[d.weapon], A = E.WEAPONS[d.alt]; return `<button class="d-class${i === this.cls ? ' on' : ''}" data-i="${i}" aria-pressed="${i === this.cls}"><span class="k">${i + 1}</span><b>${d.name}</b><em>${W.name} · ${A.name}</em><p>${d.desc}</p><div class="d-st"><span>HP ${d.hp}</span><span>SPD ${d.speed}</span></div></button>`; }).join('');
       this.setLayer('deploy', `
         <div class="d-wrap">
           <div class="d-col">
@@ -10324,7 +11538,8 @@
           </div>
           <div class="d-mid">
             <div class="d-h">SELECT A COMMAND POST <span class="d-sub">${esc(w.planet.biomeDef.name)} · ${esc(w.planet.biomeDef.challenge.name)}</span></div>
-            <div class="d-map"><canvas width="660" height="480"></canvas>${w.cps.map(c => `<button class="d-cp" data-cp="${c.id}">${c.name[0]}</button>`).join('')}</div>
+            <div class="d-map"><canvas width="660" height="480"></canvas>${w.cps.map(c => `<button class="d-cp" data-cp="${c.id}" aria-label="${esc(c.name)}">${c.name[0]}</button>`).join('')}</div>
+            <div class="d-perks"></div>
             <div class="d-row"><button class="gc-btn primary d-go">DEPLOY <span class="k">ENTER</span></button><span class="d-wait"></span></div>
           </div>
           <div class="d-col">
@@ -10332,97 +11547,473 @@
             <button class="d-veh" data-k="fighter"><b>Starfighter</b><em></em></button>
             <button class="d-veh" data-k="vehicle"><b>Armor</b><em></em></button>
             <button class="d-veh" data-k="capital"><b>Flagship Bridge</b><em></em></button>
-            <button class="d-veh" data-k="cmd"><b>Command View</b><em>Direct the battle from above · C</em></button>
-            <div class="d-tip">Every death costs your side a reinforcement. Hold more posts than the enemy to bleed theirs.</div>
+            <button class="d-veh" data-k="cmd"><b>Command View</b><em>Direct the battle from above · M</em></button>
+            <button class="d-veh" data-k="help"><b>Controls</b><em>Every binding, per unit · F1</em></button>
+            <div class="d-tip">Every death costs your side a reinforcement. Hold more posts than the enemy to bleed theirs. Enemy fire near you suppresses your aim: use cover.</div>
           </div>
         </div>`);
       const L = this.$.layer;
       L.querySelectorAll('.d-class').forEach(b => b.addEventListener('click', () => this.pickClass(+b.dataset.i)));
-      L.querySelectorAll('.d-cp').forEach(b => b.addEventListener('click', () => { const c = w.cps[+b.dataset.cp]; if (c.owner === g.team) { g.deployCp = c.id; Object.assign(g.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 8, z: c.pos.z }); if (E.SFX) E.SFX.play('ui'); } }));
+      L.querySelectorAll('.d-cp').forEach(b => b.addEventListener('click', () => { const c = w.cps[+b.dataset.cp]; if (c.owner === g.team) { g.deployCp = c.id; Object.assign(g.renderer.camera.orbit, { x: c.pos.x, y: c.pos.y + 8, z: c.pos.z }); if (E.SFX) E.SFX.play('select'); } }));
       L.querySelector('.d-go').addEventListener('click', () => this.doDeploy());
-      L.querySelectorAll('.d-veh').forEach(b => b.addEventListener('click', () => { const k = b.dataset.k; if (k === 'cmd') g.toCommander(); else if (!g.quickControl(k)) this.toast('None available'); }));
+      L.querySelectorAll('.d-veh').forEach(b => b.addEventListener('click', () => { const k = b.dataset.k; if (k === 'cmd') g.toCommander(); else if (k === 'help') this.showControls(); else if (!g.quickControl(k)) { this.toast('None available'); if (E.SFX) E.SFX.play('deny'); } }));
+      this.perkPanel(cls);
       this.refreshDeploy(w, g.player());
+    }
+    perkPanel(cls) {
+      const L = this.$.layer, box = L.querySelector('.d-perks'); if (!box) return;
+      const sel = this.perkSel(cls), P = E.PERKS[cls];
+      const tier = (name, list, idx) => `<div class="pk-t"><div class="pk-h">${name}</div>${list.map(p => `<button class="pk${sel[idx] === p.id ? ' on' : ''}" data-t="${idx}" data-id="${p.id}" aria-pressed="${sel[idx] === p.id}"><b>${esc(p.name)}</b><span>${esc(p.desc)}</span></button>`).join('')}</div>`;
+      box.innerHTML = `<div class="d-h">${E.INFANTRY[cls].name.toUpperCase()} PERKS <span class="d-sub">one per tier</span></div><div class="pk-row">${tier('TIER 1', P.t1, 0)}${tier('TIER 2', P.t2, 1)}</div>`;
+      box.querySelectorAll('.pk').forEach(b => b.addEventListener('click', () => { sel[+b.dataset.t] = b.dataset.id; this.game.settings.loadouts[cls] = sel; E.bus.emit('settings:changed', this.game.settings); this.perkPanel(cls); if (E.SFX) E.SFX.play('select'); }));
     }
     refreshDeploy(w, P) {
       const g = this.game, L = this.$.layer, cvs = L.querySelector('.d-map canvas'); if (!cvs) return;
       this.drawMap(cvs.getContext('2d'), 660, 480, w, true);
       const owned = w.cps.filter(c => c.owner === g.team);
-      if (!owned.some(c => c.id === g.deployCp)) { // default: the owned post nearest the front
+      if (!owned.some(c => c.id === g.deployCp)) {
         let best = null, bd = 1e9; for (const c of owned) for (const o of w.cps) if (o.owner !== g.team) { const d = E.distXZ(c.pos, o.pos); if (d < bd) { bd = d; best = c; } }
         g.deployCp = best ? best.id : (owned[0] ? owned[0].id : -1);
       }
       const o = { x: 0, y: 0 };
       L.querySelectorAll('.d-cp').forEach(b => { const c = w.cps[+b.dataset.cp]; this.mapXY(c.pos, 100, 100, o); b.style.left = o.x + '%'; b.style.top = o.y + '%'; b.dataset.o = c.owner || 'neutral'; b.classList.toggle('mine', c.owner === g.team); b.classList.toggle('on', c.id === g.deployCp); });
       const wait = P ? Math.max(0, E.SIM.RESPAWN - (w.t - P.deadT)) : 0, T = w.teams[g.team];
-      L.querySelector('.d-wait').textContent = !owned.length ? 'No command posts — take control of a unit to fight on' : T.tickets <= 0 ? 'No reinforcements left' : wait > 0 ? 'Reinforcing in ' + wait.toFixed(1) + 's' : '';
+      this.tx(L.querySelector('.d-wait'), !owned.length ? 'No command posts — take control of a unit to fight on' : T.tickets <= 0 ? 'No reinforcements left' : wait > 0 ? 'Reinforcing in ' + wait.toFixed(1) + 's' : (w.cps[g.deployCp] ? 'Deploying at ' + w.cps[g.deployCp].name : ''));
       L.querySelector('.d-go').disabled = wait > 0 || !owned.length || T.tickets <= 0;
       const n = (k) => w.units.filter(u => u.alive && u.team === g.team && u.kind === k && !u.pid).length;
-      L.querySelectorAll('.d-veh').forEach(b => { const k = b.dataset.k; if (k === 'cmd') return; const c = n(k); b.disabled = !c; b.querySelector('em').textContent = c ? c + ' available' : 'none available'; });
+      L.querySelectorAll('.d-veh').forEach(b => { const k = b.dataset.k; if (k === 'cmd' || k === 'help') return; const c = n(k); b.disabled = !c; this.tx(b.querySelector('em'), c ? c + ' available' : 'none available'); });
     }
-    pickClass(i) { this.cls = i; if (this.layerKind === 'deploy') this.$.layer.querySelectorAll('.d-class').forEach((b, j) => b.classList.toggle('on', j === i)); if (E.SFX) E.SFX.play('ui'); }
-    doDeploy() { const g = this.game; if (g.deployCp >= 0) g.cmd('deploy', CLASSES[this.cls], g.deployCp); }
+    pickClass(i) { this.cls = i; if (this.layerKind === 'deploy') { this.$.layer.querySelectorAll('.d-class').forEach((b, j) => { b.classList.toggle('on', j === i); b.setAttribute('aria-pressed', j === i); }); this.perkPanel(CLASSES[i]); } if (E.SFX) E.SFX.play('select'); }
+    doDeploy() {
+      const g = this.game, cls = CLASSES[this.cls]; if (g.deployCp < 0) return;
+      g.cmd('verb', 'loadout', cls, this.perkSel(cls).slice());
+      g.cmd('deploy', cls, g.deployCp);
+    }
     hideDeploy() { if (this.layerKind === 'deploy') this.setLayer('', ''); }
-
-    // ── pause / settings ─────────────────────────────────────
-    showPause() {
-      const g = this.game, s = g.settings;
-      this.setLayer('pause', `
-        <div class="p-card">
-          <div class="p-title">PAUSED</div>
-          <button class="gc-btn primary p-resume">Resume</button>
-          <div class="p-set">
-            <label>Graphics<select class="p-q">${['auto', 'high', 'medium', 'low'].map(q => `<option value="${q}"${(s.quality || 'auto') === q ? ' selected' : ''}>${q[0].toUpperCase() + q.slice(1)}</option>`).join('')}</select></label>
-            <label>Mouse sensitivity<input type="range" class="p-sens" min="0.3" max="2.5" step="0.05" value="${s.sens || 1}"></label>
-            <label>Volume<input type="range" class="p-vol" min="0" max="1" step="0.05" value="${s.volume == null ? 0.8 : s.volume}"></label>
-            <label class="chk"><input type="checkbox" class="p-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
-          </div>
-          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>M</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
-          <button class="gc-btn p-quit">${g.role === 'sp' ? 'Abandon Battle' : 'Leave Match'}</button>
-        </div>`);
-      const L = this.$.layer, save = () => E.bus.emit('settings:changed', s);
-      L.querySelector('.p-resume').addEventListener('click', () => g.togglePause(false));
-      L.querySelector('.p-q').addEventListener('change', (e) => { s.quality = e.target.value; g.renderer.scene.setQuality(s.quality); save(); });
-      L.querySelector('.p-sens').addEventListener('input', (e) => { s.sens = +e.target.value; save(); });
-      L.querySelector('.p-vol').addEventListener('input', (e) => { s.volume = +e.target.value; if (E.Music) E.Music.setVolume(s.volume); save(); });
-      L.querySelector('.p-inv').addEventListener('change', (e) => { s.invertY = e.target.checked; save(); });
-      L.querySelector('.p-quit').addEventListener('click', () => { g.paused = false; if (g.onQuit) g.onQuit(); });
-    }
-    hidePause() { if (this.layerKind === 'pause') { this.setLayer('', ''); if (this.game.state === 'deploy') this.showDeploy(); } }
-
-    scoreboard(on) {
-      const g = this.game, w = g.world;
-      if (!on) { if (this.layerKind === 'score') this.setLayer('', ''); if (g.state === 'deploy' && !this.layerKind) this.showDeploy(); return; }
-      if (this.layerKind && this.layerKind !== 'deploy') return;
-      const row = (f) => { const T = w.teams[f]; const ps = Object.values(w.players).filter(p => p.team === f).sort((a, b) => b.score - a.score);
-        return `<div class="s-team ${f}"><div class="s-h"><b>${E.faction(f).name.toUpperCase()}</b><span>${T.tickets} reinforcements · ${T.cps} posts · ${T.kills} kills</span></div>
-          <table><tr><th>Player</th><th>Score</th><th>K</th><th>D</th><th>Caps</th></tr>${ps.map(p => `<tr class="${p.id === g.pid ? 'me' : ''}"><td>${esc(p.name)}</td><td>${p.score}</td><td>${p.kills}</td><td>${p.deaths}</td><td>${p.captures}</td></tr>`).join('') || '<tr><td colspan="5" class="dim">AI commander</td></tr>'}</table></div>`; };
-      this.setLayer('score', `<div class="s-card"><div class="p-title">${esc(w.planet.biomeDef.name).toUpperCase()} — ${E.fmtTime(w.t)}</div>${row('aegis')}${row('verdant')}</div>`);
-    }
-
-    // ── results ──────────────────────────────────────────────
-    showResults(r) {
-      const g = this.game, kd = r.deaths ? (r.kills / r.deaths).toFixed(1) : r.kills;
-      const awards = [];
-      if (r.kills >= 20) awards.push('WAR HERO'); if (r.best >= 8) awards.push('UNSTOPPABLE'); if (r.captures >= 3) awards.push('VANGUARD'); if (r.deaths === 0 && r.kills > 0) awards.push('UNTOUCHABLE'); if (r.won && r.tickets > r.enemyTickets + 100) awards.push('DECISIVE VICTORY');
-      this.setLayer('results', `
-        <div class="r-card ${r.won ? 'won' : 'lost'}">
-          <div class="r-title">${r.won ? 'VICTORY' : 'DEFEAT'}</div>
-          <div class="r-sub">${esc(g.world.planet.biomeDef.name)} · ${E.fmtTime(r.time)} · ${E.faction(r.winner).name} holds the field</div>
-          <div class="r-stats">
-            <div><b>${r.score.toLocaleString()}</b><span>Score</span></div><div><b>${r.kills}</b><span>Kills</span></div><div><b>${r.deaths}</b><span>Deaths</span></div>
-            <div><b>${kd}</b><span>K/D</span></div><div><b>${r.captures}</b><span>Posts taken</span></div><div><b>${r.best}</b><span>Best streak</span></div>
-          </div>
-          <div class="r-bars"><span class="${g.team}">${r.tickets}</span><i>reinforcements remaining</i><span class="${E.opponent(g.team)}">${r.enemyTickets}</span></div>
-          <div class="r-awards">${awards.map(a => `<span>${a}</span>`).join('')}</div>
-          <div class="r-extra"></div>
-          <button class="gc-btn primary r-go">Continue</button>
-        </div>`);
-      this.$.layer.querySelector('.r-go').addEventListener('click', () => { if (g.onContinue) g.onContinue(r); });
-    }
-    resultsExtra(html) { const e = this.$ && this.$.layer.querySelector('.r-extra'); if (e) e.innerHTML = html; }
   }
 
   E.HUD = HUD;
+  E.HUD_COL = COL; E.HUD_TNAME = TNAME;
+})(window.E = window.E || {});
+
+// ---- js/ui/hud_air.js ----
+// Flight HUD: speed and altitude tapes, throttle + afterburner, pitch ladder, g and
+// drift, stall / missile / lock warnings (with the direction of the threat), lock
+// box with progress, ordnance / countermeasure / troop pips, bomb pipper, band
+// banner. Drawn on the HUD canvas; the text warnings and pips are DOM.
+(function (E) {
+  'use strict';
+  const P = E.HUD.prototype;
+  const BAND = { low: ['LOW ALTITUDE', 'Full lift. Watch the ground and AA batteries'], cloud: ['CLOUD DECK', 'Reduced visibility. AA batteries lose you'], high: ['HIGH ALTITUDE', 'Thin air: less lift, slow handling'], space: ['ORBIT', 'Vacuum: no lift, no drag. Fly by thrust and inertia'] };
+  const pips = (el, n, max) => { const key = n + '/' + max; if (el._p === key) return; el._p = key; el.innerHTML = '<i class="on"></i>'.repeat(Math.max(0, Math.min(n, max))) + '<i></i>'.repeat(Math.max(0, max - Math.max(0, n))); };
+
+  P.airUpdate = function (u, w, dt) {
+    const $ = this.$, d = u.def, tmp = this._tmp || (this._tmp = {});
+    // ordnance, countermeasures, troops
+    pips($.pips.querySelector('.ord div'), u.ord | 0, d.ord || 0); pips($.pips.querySelector('.cm div'), u.cm | 0, d.cm || 0); if (d.carry) pips($.pips.querySelector('.carry div'), u.carry | 0, d.carry);
+    // band banner
+    const b = BAND[u.band] || BAND.low; const bn = $.fl.querySelector('.fl-band');
+    this.tx(bn, b[0] + ' — ' + b[1]); this.cl(bn, 'space', u.band === 'space');
+    // warnings
+    const W = [];
+    if (u.warn === 3) W.push(['MISSILE — ' + Math.round(u.mslD || 0) + ' m — FLARES (SPACE)', 'crit']); else if (u.warn === 2) W.push(['LOCKED ON — EVADE', 'crit']); else if (u.warn === 1) W.push(['TRACKED', 'warn']);
+    if (u.stallWarn || u.stall >= 0.5) W.push(['STALL — NOSE DOWN, THROTTLE UP', 'crit']);
+    if (u.oob > 0.02) W.push(['LEAVING THE BATTLE AREA — TURN BACK ' + Math.round(u.oob * 100) + '%', 'warn']);
+    if (u.agl < 70 && u.vel.y < -18 && u.band === 'low') W.push(['PULL UP', 'crit']);
+    if (d.carry && u.carry > 0) W.push([u.agl <= 45 && u.spd <= 22 ? 'TROOPS ABOARD — PRESS X TO DROP' : 'TROOPS ABOARD — HOVER LOW AND SLOW TO DROP', 'info']);
+    if (u.locked) W.push(['TARGET LOCKED — FIRE', 'good']);
+    const html = W.map(([t, c]) => `<div class="${c}">${t}</div>`).join('');
+    if ($.fl.querySelector('.fl-warn')._v !== html) { $.fl.querySelector('.fl-warn')._v = html; $.fl.querySelector('.fl-warn').innerHTML = html; }
+    void tmp;
+  };
+
+  P.airOverlay = function (ctx, u, w, cam, o, W, H, R) {
+    const d = u.def, cx = W / 2, cy = H / 2, hx = R * 17, th = R * 9, lw = Math.max(1.5, R * 0.12);
+    const green = '#9dffc8', amber = '#ffc24a', red = '#ff4a3a', dim = 'rgba(190,230,255,.55)';
+    ctx.lineWidth = lw; ctx.font = `600 ${R * 0.7}px system-ui`; ctx.textBaseline = 'middle'; ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 5;
+    const space = u.band === 'space', dens = u.dens == null ? 1 : u.dens;
+    const stallV = d.stall / Math.sqrt(Math.max(dens, 0.35));
+    // speed tape (left)
+    const tape = (x, val, step, per, side, marks) => {
+      ctx.save(); ctx.beginPath(); ctx.rect(x - R * 3.2, cy - th, R * 6.4, th * 2); ctx.clip();
+      ctx.strokeStyle = dim; ctx.fillStyle = dim; ctx.textAlign = side > 0 ? 'left' : 'right';
+      const lo = Math.floor((val - per) / step) * step;
+      for (let v = lo; v <= val + per; v += step) { const y = cy - (v - val) / per * th; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + side * R * 0.9, y); ctx.stroke(); if (v >= 0 && Math.round(v / step) % 2 === 0) ctx.fillText(String(Math.round(v)), x + side * R * 1.2, y); }
+      if (marks) for (const [v, c] of marks) { const y = cy - (v - val) / per * th; if (Math.abs(y - cy) < th) { ctx.strokeStyle = c; ctx.lineWidth = lw * 2; ctx.beginPath(); ctx.moveTo(x - side * R * 0.4, y); ctx.lineTo(x + side * R * 0.9, y); ctx.stroke(); ctx.lineWidth = lw; } }
+      ctx.restore();
+    };
+    const spd = u.spd || 0;
+    tape(cx - hx, spd, 10, 50, 1, [[stallV, red], [d.speed, 'rgba(120,255,180,.6)']]);
+    tape(cx + hx, Math.max(0, u.agl), 20, 140, -1, [[0, red]]);
+    // readout boxes
+    const box = (x, y, txt, col, side) => { ctx.fillStyle = 'rgba(4,10,16,.82)'; ctx.strokeStyle = col; const bw = R * 3.6, bh = R * 1.5; ctx.fillRect(x - (side > 0 ? 0 : bw), y - bh / 2, bw, bh); ctx.strokeRect(x - (side > 0 ? 0 : bw), y - bh / 2, bw, bh); ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.font = `700 ${R * 0.95}px system-ui`; ctx.fillText(txt, x + (side > 0 ? bw / 2 : -bw / 2), y + 1); ctx.font = `600 ${R * 0.7}px system-ui`; };
+    box(cx - hx - R * 3.9, cy, Math.round(spd), spd < stallV * 1.25 && dens > 0.3 ? red : green, 1);
+    box(cx + hx + R * 3.9, cy, space ? '—' : Math.round(Math.max(0, u.agl)), u.agl < 80 && u.band === 'low' ? amber : green, -1);
+    ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.font = `600 ${R * 0.6}px system-ui`;
+    ctx.fillText('SPEED m/s', cx - hx - R * 2.1, cy + th + R * 1.1); ctx.fillText(space ? 'ORBIT' : 'AGL m', cx + hx + R * 2.1, cy + th + R * 1.1);
+    ctx.fillText('Y ' + Math.round(u.pos.y) + ' m · ' + (BAND[u.band] || BAND.low)[0], cx + hx + R * 2.1, cy + th + R * 2);
+    // throttle + afterburner bars
+    const bx = cx - hx - R * 8.4, by = cy + th, bh = th * 2;
+    ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(bx, by - bh, R * 0.9, bh); ctx.strokeStyle = dim; ctx.strokeRect(bx, by - bh, R * 0.9, bh);
+    ctx.fillStyle = green; ctx.fillRect(bx, by - bh * (u.thr || 0), R * 0.9, bh * (u.thr || 0));
+    const ex = bx + R * 1.3; ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(ex, by - bh, R * 0.9, bh); ctx.strokeStyle = dim; ctx.strokeRect(ex, by - bh, R * 0.9, bh);
+    ctx.fillStyle = u.boostLock ? red : u.boosting ? '#fff' : amber; ctx.fillRect(ex, by - bh * (u.boostE == null ? 1 : u.boostE), R * 0.9, bh * (u.boostE == null ? 1 : u.boostE));
+    ctx.fillStyle = dim; ctx.textAlign = 'center'; ctx.fillText('THR', bx + R * 0.45, by + R * 0.9); ctx.fillStyle = u.boosting ? '#fff' : u.boostLock ? red : dim; ctx.fillText(u.boostLock ? 'AB LOCK' : 'AB', ex + R * 0.45, by + R * 0.9);
+    // g and drift (under the throttle)
+    ctx.textAlign = 'left'; ctx.fillStyle = (u.g || 1) > 7 ? red : dim; ctx.fillText('G ' + (u.g || 1).toFixed(1), bx, by - bh - R * 2.2);
+    if (d.cm !== undefined && !d.vtol) { ctx.fillStyle = u.drift ? amber : dim; ctx.fillText('DRIFT', bx, by - bh - R * 1.1); const de = u.driftE == null ? 1 : E.clamp01(u.driftE / (E.AIR.driftMax || 1)); ctx.fillStyle = 'rgba(4,10,16,.7)'; ctx.fillRect(bx + R * 3, by - bh - R * 1.4, R * 4, R * 0.7); ctx.fillStyle = u.drift ? amber : dim; ctx.fillRect(bx + R * 3, by - bh - R * 1.4, R * 4 * (de > 1 ? 1 : de), R * 0.7); }
+    // heading
+    const hdg = (((-u.yaw * 180 / Math.PI) % 360) + 360) % 360;
+    ctx.textAlign = 'center'; ctx.fillStyle = green; ctx.font = `700 ${R * 0.9}px system-ui`; ctx.fillText(String(Math.round(hdg)).padStart(3, '0') + '°', cx, R * 5.2); ctx.font = `600 ${R * 0.7}px system-ui`;
+    // pitch ladder
+    ctx.strokeStyle = 'rgba(157,255,200,.5)'; ctx.fillStyle = 'rgba(157,255,200,.7)';
+    for (const pd of [-30, -20, -10, 0, 10, 20, 30]) {
+      const p = pd * Math.PI / 180, dir = E.SIM.dirOf(u.yaw, p);
+      cam.project({ x: u.pos.x + dir.x * 1000, y: u.pos.y + dir.y * 1000, z: u.pos.z + dir.z * 1000 }, o); if (!o.vis) continue;
+      const half = pd === 0 ? R * 5 : R * 2.2; if (Math.abs(o.x - cx) > hx * 0.9 || Math.abs(o.y - cy) > th * 1.2) continue;
+      ctx.beginPath(); ctx.moveTo(o.x - half, o.y); ctx.lineTo(o.x - half * 0.35, o.y); ctx.moveTo(o.x + half * 0.35, o.y); ctx.lineTo(o.x + half, o.y); ctx.stroke();
+      if (pd !== 0) { ctx.textAlign = 'right'; ctx.fillText(String(pd), o.x - half - 4, o.y); }
+    }
+    // gun cross (where the nose points) is drawn by the base HUD; here the velocity vector
+    if (spd > 8) { const vx = u.vel.x, vy = u.vel.y, vz = u.vel.z; cam.project({ x: u.pos.x + vx * 20, y: u.pos.y + vy * 20, z: u.pos.z + vz * 20 }, o); if (o.vis) { ctx.strokeStyle = green; ctx.beginPath(); ctx.arc(o.x, o.y, R * 0.45, 0, E.TAU); ctx.moveTo(o.x - R * 0.9, o.y); ctx.lineTo(o.x - R * 0.45, o.y); ctx.moveTo(o.x + R * 0.9, o.y); ctx.lineTo(o.x + R * 0.45, o.y); ctx.moveTo(o.x, o.y - R * 0.9); ctx.lineTo(o.x, o.y - R * 0.45); ctx.stroke(); } }
+    // nose marker
+    { const dir = E.SIM.dirOf(u.yaw, u.pitch); cam.project({ x: u.pos.x + dir.x * 400, y: u.pos.y + dir.y * 400, z: u.pos.z + dir.z * 400 }, o); if (o.vis) { ctx.strokeStyle = '#fff'; ctx.lineWidth = lw * 1.4; ctx.beginPath(); ctx.arc(o.x, o.y, R * 0.7, 0, E.TAU); ctx.stroke(); ctx.lineWidth = lw; } }
+    // lock box
+    const tg = u.lockId ? w.byId(u.lockId) : null;
+    if (tg && tg.alive) {
+      cam.project(tg.pos, o);
+      const dist = Math.hypot(tg.pos.x - u.pos.x, tg.pos.y - u.pos.y, tg.pos.z - u.pos.z);
+      if (o.vis) {
+        const s = R * 1.5, col = u.locked ? red : amber; ctx.strokeStyle = col; ctx.lineWidth = lw * 1.5;
+        ctx.beginPath(); for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { ctx.moveTo(o.x + sx * s, o.y + sy * s * 0.4); ctx.lineTo(o.x + sx * s, o.y + sy * s); ctx.lineTo(o.x + sx * s * 0.4, o.y + sy * s); } ctx.stroke();
+        ctx.beginPath(); ctx.arc(o.x, o.y, s * 1.35, -Math.PI / 2, -Math.PI / 2 + E.TAU * E.clamp01(u.lockT)); ctx.stroke();
+        ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.fillText((u.locked ? 'LOCK · ' : 'LOCKING ' + Math.round(u.lockT * 100) + '% · ') + E.unitName(tg.kind, tg.type).toUpperCase() + ' · ' + Math.round(dist) + ' m', o.x, o.y + s * 2 + R * 0.5);
+        ctx.lineWidth = lw;
+      }
+    }
+    // bomb pipper
+    if (d.alt === 'bomb') {
+      const bi = E.SIM.bombImpact(w, u, this._bi || (this._bi = {}));
+      if (bi) { cam.project(bi, o); if (o.vis) { ctx.strokeStyle = u.ord > 0 ? amber : dim; ctx.lineWidth = lw * 1.5; ctx.beginPath(); ctx.arc(o.x, o.y, R * 1.1, 0, E.TAU); ctx.moveTo(o.x - R * 1.7, o.y); ctx.lineTo(o.x + R * 1.7, o.y); ctx.moveTo(o.x, o.y - R * 1.7); ctx.lineTo(o.x, o.y + R * 1.7); ctx.stroke(); ctx.fillStyle = u.ord > 0 ? amber : dim; ctx.textAlign = 'center'; ctx.fillText(u.ord > 0 ? 'IMPACT' : 'NO BOMBS', o.x, o.y + R * 2.4); ctx.lineWidth = lw; } }
+    }
+    // threat bearing
+    if (u.warn >= 2) {
+      const th2 = w.byId(u.mslBy || u.warnBy);
+      if (th2) { const a = Math.atan2(th2.pos.x - u.pos.x, th2.pos.z - u.pos.z) - cam.yaw, rr = Math.min(W, H) * 0.3; ctx.save(); ctx.translate(cx - Math.sin(a) * rr, cy - Math.cos(a) * rr); ctx.rotate(-a + Math.PI); ctx.fillStyle = u.warn === 3 ? red : amber; ctx.beginPath(); ctx.moveTo(0, -R * 1.2); ctx.lineTo(R * 0.9, R * 0.8); ctx.lineTo(-R * 0.9, R * 0.8); ctx.closePath(); ctx.fill(); ctx.restore(); }
+    }
+    ctx.textBaseline = 'middle'; ctx.shadowBlur = 0;
+  };
+})(window.E = window.E || {});
+
+// ---- js/ui/hud_cmd.js ----
+// Commander view: what is selected and what you can tell it, the call-ins
+// (bomber / gunship / any strike, orbital strike, fleet verbs) and a three-domain
+// overview: ground posts and troops, aircraft, fleets and the orbital stage.
+// A call-in that needs a position "arms" and the next map click fires it (game.js).
+(function (E) {
+  'use strict';
+  const P = E.HUD.prototype;
+  const KN = { infantry: 'Infantry', vehicle: 'Armor', fighter: 'Aircraft' };
+
+  P.cmdBegin = function () {
+    const calls = this.$.cmd.querySelector('.cm-calls');
+    calls.innerHTML = `
+      <div class="cm-h">CALL-INS <span class="cm-arm"></span></div>
+      <div class="cm-grp"><label>AIR SUPPORT</label>
+        <button class="cbtn" data-c="cas:bomber"><b>Bomber run</b><em></em></button>
+        <button class="cbtn" data-c="cas:gunship"><b>Gunship strike</b><em></em></button>
+        <button class="cbtn" data-c="cas:any"><b>Any aircraft</b><em></em></button></div>
+      <div class="cm-grp"><label>FLEET</label>
+        <button class="cbtn" data-c="strike"><b>Orbital strike</b><em></em></button>
+        <button class="cbtn" data-c="wing"><b>Launch wing</b><em></em></button>
+        <button class="cbtn" data-c="brace"><b>Brace</b><em></em></button>
+        <button class="cbtn" data-c="board"><b>Board target</b><em></em></button>
+        <button class="cbtn" data-c="retreat"><b>Retreat</b><em></em></button>
+        <div class="cb-pw"><span>POWER</span>${['balanced', 'shields', 'weapons', 'engines'].map((n, i) => `<button class="pwb" data-p="${i}">${n}</button>`).join('')}</div></div>`;
+    calls.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button'); if (!b) return; const g = this.game;
+      if (b.dataset.p !== undefined) { g.cmd('verb', 'power', +b.dataset.p); if (E.SFX) E.SFX.play('select'); return; }
+      const c = b.dataset.c; if (!c) return;
+      if (c.startsWith('cas:') || c === 'strike') { this.armed = this.armed && this.armed.id === c ? null : { id: c, kind: c === 'strike' ? 'strike' : 'cas', role: c.split(':')[1] }; this.toast(this.armed ? 'CLICK THE MAP TO MARK THE TARGET' : 'CANCELLED'); if (E.SFX) E.SFX.play('select'); return; }
+      this.armed = null;
+      if (c === 'wing') g.cmd('verb', 'launch'); else if (c === 'brace') g.cmd('verb', 'brace'); else if (c === 'retreat') g.cmd('verb', 'retreat'); else if (c === 'board') { const S = E.SIM.spaceState(g.world, g.team); g.cmd('verb', 'board', S && S.targetId); }
+      if (E.SFX) E.SFX.play('confirm');
+    });
+    this.$.cmd.querySelector('.cm-sel').addEventListener('click', (ev) => {
+      const b = ev.target.closest('button'); if (!b) return; const g = this.game; if (!g.selected.length && b.dataset.o !== 'take') { this.toast('SELECT UNITS FIRST'); return; }
+      if (b.dataset.o === 'hold') { g.cmd('order', g.selected, 'hold'); this.toast('ORDER: HOLD POSITION'); } else if (b.dataset.o === 'free') { g.cmd('order', g.selected, 'free'); this.toast('ORDER: FREE FIRE'); } else if (b.dataset.o === 'take') g.takeControl();
+      if (E.SFX) E.SFX.play('confirm');
+    });
+  };
+
+  P.cmdUpdate = function (dt, w) {
+    if (this.frameN % 5) return;
+    const g = this.game, el = this.$.cmd, team = g.team, en = E.opponent(team);
+    // selection
+    const sel = g.selected.map(id => w.byId(id)).filter(u => u && u.alive), by = {}; let hp = 0, mx = 0;
+    for (const u of sel) { by[u.kind] = (by[u.kind] || 0) + 1; hp += u.hp; mx += u.maxHp; }
+    const body = sel.length ? `<div class="cm-n">${sel.length}</div><div class="cm-k">${Object.keys(by).map(k => `${by[k]} ${KN[k] || k}`).join(' · ')}</div><div class="cm-hp"><i style="width:${Math.round(hp / Math.max(1, mx) * 100)}%"></i></div>` : '<div class="cm-none">Nothing selected.<br>Click a unit, drag a box, or press 1 / 2 / 3.</div>';
+    const sb = el.querySelector('.cm-body'); if (sb._v !== body) { sb._v = body; sb.innerHTML = body; }
+    const ord = `<button data-o="hold">Hold <kbd>H</kbd></button><button data-o="free">Free fire <kbd>V</kbd></button><button data-o="take">Take control <kbd>F</kbd></button><div class="cm-hint"><kbd>RMB</kbd> move order</div>`;
+    const so = el.querySelector('.cm-orders'); if (!so._v) { so._v = 1; so.innerHTML = ord; }
+    // overview
+    const cnt = (t, k) => w.units.filter(u => u.alive && u.team === t && u.kind === k).length;
+    const posts = (t) => w.cps.filter(c => c.owner === t).length;
+    const T = w.teams[team], O = w.teams[en];
+    const dom = (name, rows) => `<div class="dh">${name}</div>` + rows.map(([l, a, b]) => `<div class="dr"><span>${l}</span><b>${a}</b><i>vs</i><b class="e">${b}</b></div>`).join('');
+    const S = w.space && E.SIM.spaceState ? E.SIM.spaceState(w, team) : null;
+    const casN = (t) => w.units.filter(u => u.alive && u.team === t && u.kind === 'fighter' && u.air && u.air.cas).length;
+    const set = (cls, html) => { const d = el.querySelector('.cm-dom.' + cls); if (d._v !== html) { d._v = html; d.innerHTML = html; } };
+    set('ground', dom('GROUND', [['Posts', posts(team), posts(en)], ['Infantry', cnt(team, 'infantry'), cnt(en, 'infantry')], ['Armor', cnt(team, 'vehicle'), cnt(en, 'vehicle')], ['Tickets', T.tickets, O.tickets]]));
+    set('air', dom('AIR', [['Aircraft', cnt(team, 'fighter'), cnt(en, 'fighter')], ['On strike', casN(team), casN(en)]]));
+    set('space', S ? dom('SPACE · ' + S.stageName.toUpperCase(), [['Ships', S.own.ships, S.enemy.ships], ['Hull', Math.round(S.own.hull * 100) + '%', Math.round(S.enemy.hull * 100) + '%'], ['Shields', Math.round(S.own.shield * 100) + '%', Math.round(S.enemy.shield * 100) + '%']]) + `<div class="dsup"><i style="width:${Math.round((0.5 + 0.5 * (S.superiority || 0)) * 100)}%"></i></div>` + (S.boarding ? '<div class="dnote">Boarding action underway</div>' : '') : dom('SPACE', []));
+    // call-in readiness
+    const callT = w.air && w.air.callT && w.air.callT[team], wait = callT === undefined ? 0 : Math.max(0, Math.ceil(callT + E.AIR.callCooldown - w.t));
+    const bt = (c) => el.querySelector(`.cbtn[data-c="${c}"]`);
+    const cas = ['cas:bomber', 'cas:gunship', 'cas:any'];
+    for (const c of cas) { const b = bt(c), role = c.split(':')[1], avail = w.units.some(u => u.alive && u.team === team && u.kind === 'fighter' && !u.pid && u.air && !u.air.cas && u.ord > 0 && (role === 'any' ? ['bomber', 'gunship', 'strike'].includes(u.def.role) : u.def.role === role)); b.disabled = wait > 0 || !avail; this.tx(b.querySelector('em'), wait > 0 ? 'Ready in ' + wait + 's' : avail ? 'Ready' : 'None available'); this.cl(b, 'armed', !!(this.armed && this.armed.id === c)); }
+    const flag = S && w.units.find(u => u.alive && u.kind === 'capital' && u.team === team && u.flag) || w.units.find(u => u.alive && u.kind === 'capital' && u.team === team);
+    const sb2 = bt('strike'); sb2.disabled = !(S && S.strikeReady); this.tx(sb2.querySelector('em'), S && S.strikeReady ? 'Ready — click the map' : T.strikeT > 0 ? Math.ceil(T.strikeT) + 's' : 'No battery'); this.cl(sb2, 'armed', !!(this.armed && this.armed.id === 'strike'));
+    const fb = (c, ok, note) => { const b = bt(c); b.disabled = !ok; this.tx(b.querySelector('em'), note); };
+    fb('wing', flag && flag.def.wing && flag.sys.hangar.alive && flag.launchCd <= 0, !flag ? 'No flagship' : flag.launchCd > 0 ? Math.ceil(flag.launchCd) + 's' : 'Ready');
+    fb('brace', flag && flag.braceCd <= 0 && flag.braceT <= 0, !flag ? 'No flagship' : flag.braceCd > 0 ? Math.ceil(flag.braceCd) + 's' : 'Ready');
+    fb('board', flag && S && S.targetId && E.SIM.boardingReady(w, flag, w.byId(S.targetId)), S && S.targetId ? (flag && E.SIM.boardingReady(w, flag, w.byId(S.targetId)) ? 'Ready' : 'Shields up / busy') : 'No fleet target');
+    fb('retreat', !!flag, flag && flag.retreat ? 'Cancel retreat' : 'Order withdrawal');
+    this.tx(el.querySelector('.cm-arm'), this.armed ? '· ARMED: click the map (Esc cancels)' : '');
+    el.querySelectorAll('.pwb').forEach(b => this.cl(b, 'on', !!flag && flag.powerMode === +b.dataset.p));
+  };
+})(window.E = window.E || {});
+
+// ---- js/ui/hud_screens.js ----
+// Full-screen layers of the battle HUD plus the pieces the menus share:
+// settings panel (graphics tier, audio mix, sensitivity, accessibility), the
+// controls reference, pause, scoreboard and the three-domain results report.
+(function (E) {
+  'use strict';
+  const P = E.HUD.prototype;
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const QUALITY = ['auto', 'low', 'medium', 'high', 'ultra'];
+  const MIX = [['master', 'Master'], ['music', 'Music'], ['sfx', 'Weapons and impacts'], ['ambience', 'Engines and ambience'], ['voice', 'Alerts and voice'], ['ui', 'Interface']];
+
+  // ── shared: settings panel ──
+  const SettingsUI = {
+    defaults: { quality: 'auto', sens: 1, invertY: false, reduceMotion: false, uiScale: 1, mix: { master: 0.8, music: 0.8, sfx: 0.9, ambience: 0.8, voice: 1, ui: 0.8 } },
+    ensure(s) { s.mix = Object.assign({}, SettingsUI.defaults.mix, s.mix || {}, s.volume != null && !(s.mix && s.mix.master != null) ? { master: s.volume } : {}); if (s.uiScale == null) s.uiScale = 1; return s; },
+    html(s) {
+      SettingsUI.ensure(s);
+      return `<div class="st-grid">
+        <label>Graphics tier<select class="s-q">${QUALITY.map(q => `<option value="${q}"${(s.quality || 'auto') === q ? ' selected' : ''}>${q[0].toUpperCase() + q.slice(1)}${q === 'ultra' ? ' (heavy)' : ''}</option>`).join('')}</select></label>
+        <label>Mouse sensitivity<input type="range" class="s-sens" min="0.3" max="2.5" step="0.05" value="${s.sens || 1}"><output>${(s.sens || 1).toFixed(2)}</output></label>
+        <label>Interface size<input type="range" class="s-ui" min="0.8" max="1.5" step="0.05" value="${s.uiScale}"><output>${Math.round(s.uiScale * 100)}%</output></label>
+        <label class="chk"><input type="checkbox" class="s-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
+        <label class="chk"><input type="checkbox" class="s-rm"${s.reduceMotion ? ' checked' : ''}> Reduce motion (no pulsing, flashing or sliding)</label>
+      </div>
+      <div class="st-sub">AUDIO MIX</div>
+      <div class="st-grid">${MIX.map(([k, n]) => `<label>${n}<input type="range" data-mix="${k}" min="0" max="1" step="0.05" value="${s.mix[k]}"><output>${Math.round(s.mix[k] * 100)}</output></label>`).join('')}</div>`;
+    },
+    apply(s) {
+      SettingsUI.ensure(s);
+      document.documentElement.classList.toggle('rm', !!s.reduceMotion);
+      document.documentElement.style.setProperty('--ui-scale', String(s.uiScale));
+      if (E.Mixer) E.Mixer.setMix(s.mix);
+    },
+    bind(root, s, game) {
+      const save = () => { SettingsUI.apply(s); E.bus.emit('settings:changed', s); };
+      const q = (c) => root.querySelector(c);
+      q('.s-q').addEventListener('change', (e) => { s.quality = e.target.value; const g = game || (window.GC && window.GC.game); if (g) g.renderer.scene.setQuality(s.quality); save(); });
+      const rng = (sel, key, fmt) => q(sel).addEventListener('input', (e) => { s[key] = +e.target.value; e.target.nextElementSibling.textContent = fmt(s[key]); save(); });
+      rng('.s-sens', 'sens', v => v.toFixed(2)); rng('.s-ui', 'uiScale', v => Math.round(v * 100) + '%');
+      q('.s-inv').addEventListener('change', (e) => { s.invertY = e.target.checked; save(); });
+      q('.s-rm').addEventListener('change', (e) => { s.reduceMotion = e.target.checked; save(); });
+      root.querySelectorAll('[data-mix]').forEach(r => r.addEventListener('input', (e) => { s.mix[r.dataset.mix] = +e.target.value; if (r.dataset.mix === 'master') s.volume = s.mix.master; e.target.nextElementSibling.textContent = Math.round(+e.target.value * 100); save(); if (E.SFX && r.dataset.mix !== 'music') E.SFX.play(r.dataset.mix === 'voice' ? 'beep' : r.dataset.mix === 'ui' ? 'select' : 'rifle', null, 0.6); }));
+    },
+  };
+  E.SettingsUI = SettingsUI;
+
+  // ── shared: controls reference ──
+  const ControlsUI = {
+    html(active) {
+      const C = E.CONTROLS; active = active || 'infantry';
+      return `<div class="ct-tabs" role="tablist">${C.order.map(k => `<button role="tab" class="ct-tab${k === active ? ' on' : ''}" data-k="${k}" aria-selected="${k === active}">${C[k].name}</button>`).join('')}</div><div class="ct-body">${ControlsUI.body(active)}</div>`;
+    },
+    body(k) {
+      const C = E.CONTROLS, c = C[k], rows = c.rows.length ? c.rows : C.infantry.rows;
+      return `<p class="ct-desc">${esc(c.desc)}</p><table class="ct-tbl">${rows.map(([keys, what]) => `<tr><td>${String(keys).split(' ').map(x => `<kbd>${esc(x)}</kbd>`).join('')}</td><td>${esc(what)}</td></tr>`).join('')}</table>`;
+    },
+    bind(root) { root.querySelectorAll('.ct-tab').forEach(b => b.addEventListener('click', () => { root.querySelectorAll('.ct-tab').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-selected', x === b); }); root.querySelector('.ct-body').innerHTML = ControlsUI.body(b.dataset.k); if (E.SFX) E.SFX.play('hover'); })); },
+  };
+  E.ControlsUI = ControlsUI;
+
+  // ── pause ──
+  P.showPause = function () {
+    const g = this.game, s = g.settings;
+    this.setLayer('pause', `
+      <div class="p-card">
+        <div class="p-title">PAUSED</div>
+        <div class="p-btns"><button class="gc-btn primary p-resume">Resume</button><button class="gc-btn p-ctl">Controls <span class="k">F1</span></button></div>
+        <div class="p-set"></div>
+        <button class="gc-btn p-quit">${g.role === 'sp' ? 'Abandon Battle' : 'Leave Match'}</button>
+      </div>`);
+    const L = this.$.layer; L.querySelector('.p-set').innerHTML = SettingsUI.html(s); SettingsUI.bind(L, s, g);
+    L.querySelector('.p-resume').addEventListener('click', () => g.togglePause(false));
+    L.querySelector('.p-ctl').addEventListener('click', () => this.showControls());
+    L.querySelector('.p-quit').addEventListener('click', () => { g.paused = false; if (g.onQuit) g.onQuit(); });
+    const r = L.querySelector('.p-resume'); if (r) r.focus();
+  };
+  P.hidePause = function () { if (this.layerKind === 'pause' || this.layerKind === 'controls') { this.setLayer('', ''); if (this.game.state === 'deploy') this.showDeploy(); } };
+
+  P.showControls = function () {
+    const g = this.game, u = g.unit(), back = this.layerKind, k0 = u ? (u.mode === 'boarding' ? 'boarding' : u.kind === 'infantry' && u.type === 'engineer' ? 'engineer' : u.kind) : (g.state === 'commander' ? 'commander' : 'infantry');
+    this._ctlBack = back; this._ctlPaused = g.paused;
+    this.setLayer('controls', `<div class="p-card ct-card"><div class="p-title">CONTROLS</div>${ControlsUI.html(E.CONTROLS[k0] ? k0 : 'infantry')}<div class="p-btns"><button class="gc-btn primary ct-close">Close <span class="k">ESC</span></button></div></div>`);
+    const L = this.$.layer; ControlsUI.bind(L); L.querySelector('.ct-close').addEventListener('click', () => this.closeControls());
+    if (g.state === 'play' && !g.paused) { g.paused = true; g.unlock(); this._ctlAuto = true; } else this._ctlAuto = false;
+  };
+  P.closeControls = function () {
+    const g = this.game; if (this.layerKind !== 'controls') return;
+    this.setLayer('', '');
+    if (this._ctlBack === 'pause') this.showPause(); else if (g.state === 'deploy') this.showDeploy();
+    if (this._ctlAuto) { g.paused = false; if (g.state === 'play') g.lock(); this._ctlAuto = false; }
+  };
+
+  P.scoreboard = function (on) {
+    const g = this.game, w = g.world;
+    if (!on) { if (this.layerKind === 'score') this.setLayer('', ''); if (g.state === 'deploy' && !this.layerKind) this.showDeploy(); return; }
+    if (this.layerKind && this.layerKind !== 'deploy') return;
+    const row = (f) => { const T = w.teams[f]; const ps = Object.values(w.players).filter(p => p.team === f).sort((a, b) => b.score - a.score);
+      return `<div class="s-team ${f}"><div class="s-h"><b>${E.faction(f).name.toUpperCase()}</b><span>${T.tickets} reinforcements · ${T.cps} posts · ${T.kills} kills</span></div>
+        <table><tr><th>Player</th><th>Score</th><th>K</th><th>D</th><th>Caps</th></tr>${ps.map(p => `<tr class="${p.id === g.pid ? 'me' : ''}"><td>${esc(p.name)}</td><td>${p.score}</td><td>${p.kills}</td><td>${p.deaths}</td><td>${p.captures}</td></tr>`).join('') || '<tr><td colspan="5" class="dim">AI commander</td></tr>'}</table></div>`; };
+    this.setLayer('score', `<div class="s-card"><div class="p-title">${esc(w.planet.biomeDef.name).toUpperCase()} — ${E.fmtTime(w.t)}</div>${row('aegis')}${row('verdant')}</div>`);
+  };
+
+  // ── results: the battle across land, air and space ──
+  P.showResults = function (r) {
+    const g = this.game, w = g.world, team = g.team, en = E.opponent(team), kd = r.deaths ? (r.kills / r.deaths).toFixed(1) : r.kills, L = w.landStats || {};
+    const awards = [];
+    if (r.kills >= 20) awards.push('WAR HERO'); if (r.best >= 8) awards.push('UNSTOPPABLE'); if (r.captures >= 3) awards.push('VANGUARD'); if (r.deaths === 0 && r.kills > 0) awards.push('UNTOUCHABLE'); if (r.won && r.tickets > r.enemyTickets + 100) awards.push('DECISIVE VICTORY');
+    const stat = (v, l) => `<div><b>${v}</b><span>${l}</span></div>`;
+    const fl = (t) => w.units.filter(u => u.alive && u.team === t && u.kind === 'fighter').length;
+    const rep = (w.fleetReport && w.fleetReport[team]) || [], erep = (w.fleetReport && w.fleetReport[en]) || [];
+    const STAT = { active: 'ON STATION', retreated: 'WITHDREW', retreating: 'WITHDRAWING', destroyed: 'LOST', captured: 'CAPTURED' };
+    const ship = (s) => `<div class="rs ${s.status}"><span>${esc(s.name)}${s.flag ? ' ★' : ''}</span><i><b style="width:${Math.round(s.hullFrac * 100)}%"></b></i><em>${Math.round(s.hullFrac * 100)}% · ${STAT[s.status] || s.status}</em></div>`;
+    this.setLayer('results', `
+      <div class="r-card ${r.won ? 'won' : 'lost'}">
+        <div class="r-title">${r.won ? 'VICTORY' : 'DEFEAT'}</div>
+        <div class="r-sub">${esc(w.planet.biomeDef.name)} · ${E.fmtTime(r.time)} · ${E.faction(r.winner).name} holds the field</div>
+        <div class="r-doms">
+          <section class="r-dom"><h4>GROUND</h4><div class="r-stats">${stat(r.score.toLocaleString(), 'Score')}${stat(r.kills, 'Kills')}${stat(r.deaths, 'Deaths')}${stat(kd, 'K/D')}${stat(r.captures, 'Posts taken')}${stat(r.best, 'Best streak')}</div>
+            <div class="r-mini">${[['Cover destroyed', L.coverBroken], ['Suppressions', L.suppressions], ['Vaults', L.vaults], ['Rams', L.rams], ['Mine hits', L.mineHits], ['Repairs', L.repairs]].filter(x => x[1]).map(([l, v]) => `<span>${l} <b>${v}</b></span>`).join('') || '<span class="dim">No ground statistics</span>'}</div></section>
+          <section class="r-dom"><h4>AIR</h4><div class="r-stats two">${stat(fl(team), 'Our aircraft left')}${stat(fl(en), 'Enemy aircraft left')}</div><div class="r-mini"><span class="dim">Aircraft still flying at the end of the battle</span></div></section>
+          <section class="r-dom"><h4>SPACE</h4><div class="r-ships">${rep.map(ship).join('') || '<span class="dim">No capital ships took part</span>'}</div>${erep.length ? `<div class="r-sub2">ENEMY FLEET</div><div class="r-ships">${erep.map(ship).join('')}</div>` : ''}</section>
+        </div>
+        <div class="r-bars"><span class="${team}">${r.tickets}</span><i>reinforcements remaining</i><span class="${en}">${r.enemyTickets}</span></div>
+        <div class="r-awards">${awards.map(a => `<span>${a}</span>`).join('')}</div>
+        <div class="r-extra"></div>
+        <button class="gc-btn primary r-go">Continue</button>
+      </div>`);
+    const go = this.$.layer.querySelector('.r-go'); go.addEventListener('click', () => { if (g.onContinue) g.onContinue(r); }); go.focus();
+  };
+  P.resultsExtra = function (html) { const e = this.$ && this.$.layer.querySelector('.r-extra'); if (e) e.innerHTML = html; };
+})(window.E = window.E || {});
+
+// ---- js/ui/hud_space.js ----
+// Bridge HUD (capital ships) and boarding HUD (marines inside an enemy ship).
+//   Own ship: four shield arcs drawn around a hull silhouette, six subsystems with bars.
+//   Target:   hull / shields, six subsystems with the selected one highlighted, boarding readiness.
+//   Control:  power distribution (shield / weapons / engines) and preset, throttle, and
+//             brace / wing / strike / board / retreat chips with readiness and cooldowns.
+//   Core breach: a full-width countdown. Stage banner is in hud.js (stageBanner).
+(function (E) {
+  'use strict';
+  const P = E.HUD.prototype, SP = E.SPACE, ORDER = SP.order;
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const ARC_NAMES = ['FORE', 'AFT', 'PORT', 'STBD'];
+  const arcColor = (f) => f > 0.6 ? '#5ac8ff' : f > 0.25 ? '#ffc24a' : f > 0.02 ? '#ff7a3a' : '#5b6575';
+
+  P.spaceBegin = function () {
+    const br = this.$.br;
+    // own shield arcs: a hull glyph with four arcs around it
+    br.querySelector('.br-arcs').innerHTML = `<svg viewBox="-50 -50 100 100"><path class="hull" d="M0 -26 L9 -8 L11 22 L4 28 L-4 28 L-11 22 L-9 -8 Z"/>` +
+      ['M-22 -32 A38 38 0 0 1 22 -32', 'M-22 32 A38 38 0 0 0 22 32', 'M-36 -22 A38 38 0 0 0 -36 22', 'M36 -22 A38 38 0 0 1 36 22'].map((d, i) => `<path class="arc a${i}" d="${d}"/>`).join('') +
+      ARC_NAMES.map((n, i) => `<text class="al" x="${[0, 0, -44, 44][i]}" y="${[-41, 45, 2, 2][i]}" text-anchor="middle">${n}</text>`).join('') + '</svg><div class="arc-note"></div>';
+    const mkSys = (ul, own) => { ul.innerHTML = ORDER.map(n => `<li data-s="${n}"><span>${esc(SP.sys[n].label)}</span><div class="sbar"><i></i></div><b></b></li>`).join(''); };
+    mkSys(br.querySelector('.br-own .br-sys'), true); mkSys(br.querySelector('.br-tgt .br-sys'), false);
+    br.querySelector('.br-pow').innerHTML = `<div class="pw-h"><span>POWER</span><b class="pw-mode"></b></div><div class="pw-bars">${['SHIELDS', 'WEAPONS', 'ENGINES'].map(n => `<div class="pw"><label>${n}</label><div class="pbar"><i></i></div><b></b></div>`).join('')}</div><div class="pw-thr"><label>THROTTLE</label><div class="pbar"><i></i></div><b></b></div>`;
+    br.querySelector('.br-btns').innerHTML = [['brace', 'C', 'BRACE'], ['wing', 'SPACE', 'LAUNCH WING'], ['strike', 'G', 'ORBITAL'], ['board', 'B', 'BOARD'], ['retreat', 'N N', 'RETREAT']].map(([id, k, n]) => `<div class="bt" data-b="${id}"><kbd>${k}</kbd><span>${n}</span><i></i><em></em></div>`).join('');
+    // boarding
+    this.$.board.querySelector('.bd-nodes').innerHTML = [['shield', 'SHIELD GENERATOR'], ['reactor', 'REACTOR'], ['bridge', 'BRIDGE']].map(([id, n]) => `<div class="nd" data-n="${id}"><span>${n}</span><div class="sbar"><i></i></div><b></b></div>`).join('');
+  };
+
+  const sysRows = (ul, ship, sel, hi) => {
+    ul.querySelectorAll('li').forEach(li => {
+      const n = li.dataset.s, s = ship && ship.sys && ship.sys[n]; if (!s) return;
+      const f = s.maxHp ? s.hp / s.maxHp : 0, bar = li.querySelector('i');
+      const w = (Math.round(f * 100)) + '%'; if (li._w !== w) { li._w = w; bar.style.width = w; li.querySelector('b').textContent = s.alive ? w : 'DOWN'; }
+      const cls = (s.alive ? '' : 'dead ') + (f < 0.35 && s.alive ? 'low ' : '') + (sel === n ? 'sel' : ''); if (li._k !== cls) { li._k = cls; li.className = cls; }
+    });
+  };
+
+  P.bridgeUpdate = function (u, w, dt) {
+    const br = this.$.br, g = this.game;
+    if (!u.sys) return;
+    // own ship
+    this.tx(br.querySelector('.br-own .br-h b'), E.unitName('capital', u.type).toUpperCase()); this.tx(br.querySelector('.br-own .br-h span'), `HULL ${Math.round(u.hp / u.maxHp * 100)}%`);
+    u.arcs.forEach((a, i) => { const p = br.querySelector('.arc.a' + i), f = a.max ? a.v / a.max : 0; p.style.stroke = arcColor(f); p.style.opacity = String(0.35 + 0.65 * f); this.cl(p, 'hit', a.hitT < 0.6); });
+    this.tx(br.querySelector('.arc-note'), u.arcs.map((a, i) => ARC_NAMES[i][0] + Math.round(a.v / (a.max || 1) * 100)).join('  '));
+    sysRows(br.querySelector('.br-own .br-sys'), u, '');
+    // target
+    const tg = u.tgtId ? w.byId(u.tgtId) : null, T = br.querySelector('.br-tgt');
+    this.show(T, true); this.cl(T, 'none', !(tg && tg.alive));
+    if (tg && tg.alive && tg.sys) {
+      this.tx(T.querySelector('.br-h b'), (tg.team === g.team ? 'ALLIED ' : 'ENEMY ') + E.unitName('capital', tg.type).toUpperCase());
+      this.tx(T.querySelector('.br-h span'), `${Math.round(Math.hypot(tg.pos.x - u.pos.x, tg.pos.z - u.pos.z))} m${tg.retreat ? ' · RETREATING' : ''}${tg.captured ? ' · CAPTURED' : ''}`);
+      this.wd(T.querySelector('.sh'), tg.maxShield ? tg.shield / tg.maxShield : 0); this.wd(T.querySelector('.hl'), tg.hp / tg.maxHp);
+      sysRows(T.querySelector('.br-sys'), tg, u.tgtSys);
+      const ready = E.SIM.boardingReady && E.SIM.boardingReady(w, u, tg), shUp = tg.arcs && tg.arcs.every(a => a.v > a.max * 0.05);
+      this.tx(T.querySelector('.br-note'), u.tgtSys ? 'AIMING AT ' + SP.sys[u.tgtSys].label.toUpperCase() : 'AIMING AT THE HULL — T TO PICK A SUBSYSTEM');
+      this.cl(T, 'boardable', !!ready); void shUp;
+    } else { this.tx(T.querySelector('.br-h b'), 'NO TARGET'); this.tx(T.querySelector('.br-h span'), 'PRESS T'); this.wd(T.querySelector('.sh'), 0); this.wd(T.querySelector('.hl'), 0); this.tx(T.querySelector('.br-note'), 'T cycles enemy ships, then their subsystems'); T.querySelectorAll('li').forEach(li => { li.className = ''; li._k = ''; li.querySelector('b').textContent = ''; li.querySelector('i').style.width = '0'; li._w = ''; }); }
+    // power
+    const names = ['SHIELDS', 'WEAPONS', 'ENGINES'], pw = br.querySelectorAll('.pw');
+    u.power.forEach((v, i) => { this.wd(pw[i].querySelector('i'), v / 0.6); this.tx(pw[i].querySelector('b'), Math.round(v * 100) + '%'); });
+    this.tx(br.querySelector('.pw-mode'), (SP.powerNames[u.powerMode] || 'balanced').toUpperCase() + (u.retreat ? ' · RETREAT' : '')); void names;
+    this.wd(br.querySelector('.pw-thr i'), Math.abs(u.throttle || 0)); this.tx(br.querySelector('.pw-thr b'), Math.round((u.throttle || 0) * 100) + '%');
+    // verbs
+    const S = E.SIM.spaceState(w, g.team), T2 = w.teams[u.team], btn = (id) => br.querySelector(`.bt[data-b="${id}"]`);
+    const set = (id, state, note, frac) => { const b = btn(id); this.cl(b, 'ready', state === 'ready'); this.cl(b, 'busy', state === 'busy'); this.cl(b, 'off', state === 'off'); this.tx(b.querySelector('em'), note); b.querySelector('i').style.width = ((frac == null ? 1 : frac) * 100) + '%'; };
+    set('brace', u.braceT > 0 ? 'busy' : u.braceCd > 0 ? 'off' : 'ready', u.braceT > 0 ? 'BRACED ' + u.braceT.toFixed(1) + 's' : u.braceCd > 0 ? Math.ceil(u.braceCd) + 's' : 'READY', u.braceT > 0 ? u.braceT / SP.braceTime : u.braceCd > 0 ? 1 - u.braceCd / SP.braceCd : 1);
+    set('wing', !u.def.wing ? 'off' : !u.sys.hangar.alive ? 'off' : u.launchCd > 0 ? 'off' : 'ready', !u.def.wing ? 'NO HANGAR' : !u.sys.hangar.alive ? 'HANGAR DOWN' : u.launchCd > 0 ? Math.ceil(u.launchCd) + 's' : 'READY', u.launchCd > 0 ? 0.3 : 1);
+    set('strike', S.strikeReady ? 'ready' : 'off', S.strikeReady ? 'READY' : T2.strikeT > 0 ? Math.ceil(T2.strikeT) + 's' : 'NO BATTERY', T2.strikeT > 0 ? 1 - T2.strikeT / E.WEAPONS.orbital.cd : 1);
+    const br2 = S.boarding; const tgt = tg && tg.alive ? tg : null; const rd = tgt && E.SIM.boardingReady && E.SIM.boardingReady(w, u, tgt);
+    set('board', br2 ? 'busy' : rd ? 'ready' : 'off', br2 ? (br2.status === 'pods' ? 'PODS ' + Math.round(br2.eta) + 's' : 'ACTIVE') : rd ? 'READY' : tgt ? (u.sys.hangar.alive ? 'SHIELDS UP' : 'HANGAR DOWN') : 'NO TARGET');
+    set('retreat', u.retreat ? 'busy' : 'ready', u.retreat ? 'WITHDRAWING' : 'N N');
+    // core breach
+    const core = br.querySelector('.br-core'); this.show(core, u.coreT > 0); if (u.coreT > 0) { core.innerHTML = `<b>REACTOR CORE BREACH</b><span>${u.coreT.toFixed(0)}s</span><i style="width:${E.clamp01(u.coreT / SP.coreTime) * 100}%"></i>`; }
+    this.cl(this.$.vig, 'core', u.coreT > 0);
+  };
+
+  P.bridgeOverlay = function (ctx, u, w, cam, o, W, H, R) {
+    const tg = u.tgtId ? w.byId(u.tgtId) : null; if (!tg || !tg.alive || !tg.sys) return;
+    const gold = '#ffd04a';
+    cam.project(tg.pos, o);
+    if (o.vis) { const s = R * 3; ctx.strokeStyle = gold; ctx.lineWidth = 2; ctx.beginPath(); for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { ctx.moveTo(o.x + sx * s, o.y + sy * s * 0.5); ctx.lineTo(o.x + sx * s, o.y + sy * s); ctx.lineTo(o.x + sx * s * 0.5, o.y + sy * s); } ctx.stroke(); }
+    // subsystem markers on the target (selected one bright)
+    for (const n of ORDER) {
+      const s = tg.sys[n]; E.SIM.sysPos(tg, n, this._sp || (this._sp = {})); cam.project(this._sp, o); if (!o.vis) continue;
+      const sel = u.tgtSys === n; const r = sel ? R * 0.9 : R * 0.4;
+      ctx.strokeStyle = !s.alive ? 'rgba(130,140,155,.7)' : sel ? gold : 'rgba(255,255,255,.45)'; ctx.lineWidth = sel ? 2.5 : 1.2; ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, E.TAU); ctx.stroke();
+      if (sel) { ctx.fillStyle = gold; ctx.font = `700 ${R * 0.68}px system-ui`; ctx.textAlign = 'center'; ctx.fillText(SP.sys[n].label.toUpperCase() + ' ' + (s.alive ? Math.round(s.hp / s.maxHp * 100) + '%' : 'DOWN'), o.x, o.y - r - R * 0.7); ctx.beginPath(); ctx.moveTo(o.x - r - 6, o.y); ctx.lineTo(o.x - r - 14, o.y); ctx.moveTo(o.x + r + 6, o.y); ctx.lineTo(o.x + r + 14, o.y); ctx.stroke(); }
+    }
+  };
+
+  P.boardUpdate = function (u, w, dt) {
+    const bd = this.$.board, g = this.game, S = E.SIM.boardingState(w, g.team) || E.SIM.boardingState(w, E.opponent(g.team));
+    if (!S) { this.tx(bd.querySelector('.bd-h'), 'BOARDING ACTION'); return; }
+    const ship = w.byId(S.shipId), att = S.attackers === g.team;
+    this.tx(bd.querySelector('.bd-h'), `${att ? 'BOARDING' : 'REPELLING BOARDERS ON'} · ${ship ? E.unitName('capital', ship.type).toUpperCase() : 'SHIP'} · ${Math.ceil(S.tLeft)}s`);
+    bd.querySelectorAll('.nd').forEach(nd => { const p = S.nodes[nd.dataset.n]; this.wd(nd.querySelector('i'), p); this.tx(nd.querySelector('b'), Math.round(p * 100) + '%'); this.cl(nd, 'done', p >= 0.999); });
+    this.tx(bd.querySelector('.bd-f'), `MARINES ${S.marines}  ·  DEFENDERS ${S.defenders}  ·  ${att ? 'Hold a glowing node to sabotage it; hold the bridge to capture the ship' : 'Kill the marines before they hold the nodes'}`);
+  };
 })(window.E = window.E || {});
 
 // ---- js/ui/lobby.js ----
@@ -10750,18 +12341,25 @@
     loading(`${(opts.system || b.name).toUpperCase()}<span>${b.theme} · ${b.challenge.name}</span>`, () => {
       game.stop();
       game.start(Object.assign({ role: 'sp' }, opts));
+      if (E.Music && E.Music.on) E.Music.setMode('battle');
       window.__GC_BATTLE__ = true;
       game.onEnd = (r) => {
         const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills; menu.saveProfile();
         let extra = `<div class="r-xp">+${(r.score + (r.won ? 500 : 100)).toLocaleString()} XP · ${E.Campaign.rank(P.xp).name}</div>`;
         if (ctx && ctx.campaign) {
-          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, E.Campaign.battleReport(game.world));
+          const rep = E.Campaign.battleReport(game.world), pf = ctx.campaign.playerFaction;
+          const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, rep);
           ctx.res = res; menu.saveCampaign();
-          extra += `<div class="r-camp">${res.defending ? (res.won ? `${res.planet} holds.` : `${res.planet} has fallen.`) : (res.won ? `${res.planet} is yours.` : `The assault on ${res.planet} failed.`)} +${res.reward} credits</div>`;
+          const head = res.defending ? (res.won ? `${res.planet} holds.` : `${res.planet} has fallen.`) : (res.won ? `${res.planet} is yours.` : `The assault on ${res.planet} failed.`);
+          // what the battle cost the campaign fleet: each ship before -> after
+          const before = (ctx.before && ctx.before.ships) || [], mine = rep[pf] || [];
+          const rows = before.map((s, i) => { const m = mine[i], name = (E.Campaign.SHIPS[s.type] || { name: s.type }).name; const after = !m ? s.hp : m.lost ? 0 : m.hp; return `<div class="rc-s ${after <= 0 ? 'lost' : after < s.hp - 0.05 ? 'dmg' : ''}"><span>${name}</span><i><u style="width:${Math.round(s.hp * 100)}%"></u><b style="width:${Math.round(after * 100)}%"></b></i><em>${Math.round(s.hp * 100)}% &rsaquo; ${after <= 0 ? 'LOST' : Math.round(after * 100) + '%'}</em></div>`; }).join('');
+          extra += `<div class="r-camp"><div class="rc-h">${head} <b>+${res.reward} credits</b></div>${rows ? `<div class="rc-fleet"><div class="rc-t">${ctx.before && ctx.before.name ? ctx.before.name.toUpperCase() : 'FLEET'}: COST OF THE BATTLE</div>${rows}</div>` : ''}</div>`;
+          ctx.summary = `${head} +${res.reward} credits`;
         }
         game.hud.resultsExtra(extra);
       };
-      game.onContinue = () => { const res = ctx && ctx.res; back(() => { if (ctx && ctx.campaign) menu.afterBattle(res || { defending: ctx.defending }); else menu.show(); }); };
+      game.onContinue = () => { const res = ctx && ctx.res; back(() => { if (ctx && ctx.campaign) menu.afterBattle(res || { defending: ctx.defending }, ctx.summary); else menu.show(); }); };
       game.onQuit = () => {
         if (ctx && ctx.campaign && ctx.defending) { E.Campaign.applyBattle(ctx.campaign, ctx.planet, false, 0, true, E.Campaign.battleReport(game.world)); menu.saveCampaign(); }
         back(() => { if (ctx && ctx.campaign) menu.showCampaign(); else menu.show(); });
@@ -10804,7 +12402,7 @@
 // a #menu layer inside #ui; battles are launched through this.onStart.
 (function (E) {
   'use strict';
-  const LS_KEY = 'gc.campaign.v2', LS_SET = 'gc.settings.v2', LS_PRO = 'gc.profile.v1';
+  const LS_KEY = 'gc.campaign.v2', LS_SET = 'gc.settings.v2', LS_PRO = 'gc.profile.v1', LS_HIST = 'gc.camp.hist.v1';
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const css = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
   const store = { get(k, d) { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : d; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
@@ -10813,7 +12411,8 @@
   class Menu {
     constructor(root) {
       this.root = root;
-      this.settings = Object.assign({ faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander' }, store.get(LS_SET, {}));
+      this.settings = E.SettingsUI.ensure(Object.assign({ faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 }, store.get(LS_SET, {})));
+      E.SettingsUI.apply(this.settings);
       this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, store.get(LS_PRO, {}));
       const c = store.get(LS_KEY, null); this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.onStart = null; this.el = null; this.sel = -1;
@@ -10827,7 +12426,14 @@
       this.hide();
       const el = document.createElement('div'); el.className = 'menu ' + (cls || ''); el.innerHTML = html;
       this.root.appendChild(el); this.el = el;
-      el.querySelectorAll('button').forEach(b => b.addEventListener('mouseenter', () => { if (E.SFX && E.Music.on) E.SFX.play('ui', null, 0.15); }));
+      el.querySelectorAll('button').forEach(b => b.addEventListener('mouseenter', () => { if (E.SFX && E.Music.on) E.SFX.play('hover'); }));
+      el.addEventListener('keydown', (e) => {
+        if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+        const nav = e.target.closest && e.target.closest('.m-nav, .m-facs, .m-biomes, .seg');
+        if (nav && /^Arrow/.test(e.key)) { const bs = [...nav.querySelectorAll('button')], i = bs.indexOf(document.activeElement), d = (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1 : (e.key === 'ArrowUp' || e.key === 'ArrowLeft') ? -1 : 0; if (d && bs.length) { e.preventDefault(); bs[(i + d + bs.length) % bs.length].focus(); if (E.SFX && E.Music.on) E.SFX.play('hover'); } }
+        else if (e.key === 'Escape') { const b = el.querySelector('.m-back'); if (b) { e.preventDefault(); b.click(); } }
+      });
+      if (!cls || cls.indexOf('g-root') < 0) { const f = el.querySelector('.m-item, .m-fac.on, .gc-btn.primary, button'); if (f) setTimeout(() => f.focus({ preventScroll: true }), 30); }
       return el;
     }
     q(s) { return this.el.querySelector(s); }
@@ -10835,30 +12441,32 @@
 
     // ── main ───────────────────────────────────────────────────
     show() {
+      if (E.Music && E.Music.on) E.Music.setMode('battle');
       const c = this.campaign, rk = E.Campaign.rank(this.profile.xp);
       this.layer(`
         <div class="m-main">
           <div class="m-logo"><span>GALACTIC</span><b>CONQUEST</b><i>land · air · space</i></div>
           <nav class="m-nav">
-            <button class="m-item" data-a="campaign"><b>${c && !c.victory ? 'Continue Campaign' : 'Galactic Campaign'}</b><span>${c && !c.victory ? `Turn ${c.turn} · ${E.Campaign.owned(c, c.playerFaction)} of 10 worlds` : 'Conquer ten worlds, one battle at a time'}</span></button>
+            <button class="m-item" data-a="campaign"><b>${c && !c.victory ? 'Continue Campaign' : 'Galactic Campaign'}</b><span>${c && !c.victory ? `Turn ${c.turn} · ${E.Campaign.owned(c, c.playerFaction)} of 10 worlds · ${c.fleets.filter(f => f.owner === c.playerFaction).length} fleets` : 'Fleets, supply lines and ten worlds to take'}</span></button>
             <button class="m-item" data-a="instant"><b>Instant Action</b><span>Any world, any side, right now</span></button>
             <button class="m-item" data-a="mp"><b>Multiplayer</b><span>Host or join over LAN / online</span></button>
             <button class="m-item" data-a="codex"><b>Codex</b><span>Factions, units and how to fight</span></button>
-            <button class="m-item" data-a="settings"><b>Settings</b><span>Graphics, controls, audio</span></button>
+            <button class="m-item" data-a="controls"><b>Controls</b><span>Every binding, for every unit</span></button>
+            <button class="m-item" data-a="settings"><b>Settings</b><span>Graphics, audio mix, accessibility</span></button>
           </nav>
           <div class="m-career"><div><b>${esc(this.settings.name)}</b> · ${rk.name}</div><div class="bar"><i style="width:${(rk.prog * 100).toFixed(0)}%"></i></div><span>${this.profile.xp.toLocaleString()} XP · ${this.profile.wins}/${this.profile.battles} victories · ${this.profile.kills} kills</span></div>
         </div>
         <div class="m-foot">Everything you see and hear is generated from code.</div>`, 'm-root');
-      this.el.querySelectorAll('.m-item').forEach(b => b.addEventListener('click', () => { const a = b.dataset.a; if (a === 'campaign') this.showCampaign(); else if (a === 'instant') this.showInstant(); else if (a === 'mp') this.showMultiplayer(); else if (a === 'codex') this.showCodex(); else this.showSettings(); }));
+      this.el.querySelectorAll('.m-item').forEach(b => b.addEventListener('click', () => { const a = b.dataset.a; if (a === 'campaign') this.showCampaign(); else if (a === 'instant') this.showInstant(); else if (a === 'mp') this.showMultiplayer(); else if (a === 'codex') this.showCodex(); else if (a === 'controls') this.showControls(); else this.showSettings(); }));
     }
 
     factionCards(sel) {
-      return E.FACTION_LIST.map(f => `<button class="m-fac ${f.id}${f.id === sel ? ' on' : ''}" data-fac="${f.id}"><b>${f.name}</b><em>${f.tagline}</em><p>${f.doctrine.summary}</p></button>`).join('');
+      return E.FACTION_LIST.map(f => `<button class="m-fac ${f.id}${f.id === sel ? ' on' : ''}" data-fac="${f.id}" aria-pressed="${f.id === sel}"><b><i class="fg">${f.id === 'aegis' ? '■' : '●'}</i> ${f.name}</b><em>${f.tagline}</em><p>${f.doctrine.summary}</p></button>`).join('');
     }
     diffSeg(sel) { return `<div class="seg m-diff">${['easy', 'normal', 'hard'].map(d => `<button data-d="${d}" class="${d === sel ? 'on' : ''}">${d === 'easy' ? 'Recruit' : d === 'normal' ? 'Veteran' : 'Warlord'}</button>`).join('')}</div>`; }
     bindCommon() {
       const s = this.settings;
-      this.el.querySelectorAll('.m-fac').forEach(b => b.addEventListener('click', () => { s.faction = b.dataset.fac; this.saveSettings(); this.el.querySelectorAll('.m-fac').forEach(x => x.classList.toggle('on', x === b)); }));
+      this.el.querySelectorAll('.m-fac').forEach(b => b.addEventListener('click', () => { s.faction = b.dataset.fac; this.saveSettings(); this.el.querySelectorAll('.m-fac').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); }); if (E.SFX) E.SFX.play('select'); }));
       this.el.querySelectorAll('.m-diff button').forEach(b => b.addEventListener('click', () => { s.difficulty = b.dataset.d; this.saveSettings(); this.el.querySelectorAll('.m-diff button').forEach(x => x.classList.toggle('on', x === b)); }));
       this.on('.m-back', () => this.show());
     }
@@ -10885,64 +12493,29 @@
     // ── campaign ───────────────────────────────────────────────
     showCampaign() {
       if (!this.campaign || this.campaign.victory) return this.showNewCampaign();
-      const c = this.campaign, C = E.Campaign, pf = c.playerFaction, ef = c.enemyFaction;
-      const targets = C.attackable(c, pf);
-      if (!targets.includes(this.sel)) this.sel = targets[0] !== undefined ? targets[0] : 0;
-      const links = c.links.map(([a, b]) => { const A = c.planets[a], B = c.planets[b]; const hot = (A.owner === pf) !== (B.owner === pf); return `<line x1="${A.x * 100}" y1="${A.y * 100}" x2="${B.x * 100}" y2="${B.y * 100}" class="${hot ? 'hot' : ''}"/>`; }).join('');
-      const nodes = c.planets.map(p => `<button class="g-planet ${p.owner || 'free'}${targets.includes(p.id) ? ' target' : ''}${p.id === this.sel ? ' on' : ''}${c.pending && c.pending.planet === p.id ? ' siege' : ''}" data-p="${p.id}" style="left:${p.x * 100}%;top:${p.y * 100}%">
-          <i style="${planetStyle(p.biome)}width:${p.home ? 54 : 38}px;height:${p.home ? 54 : 38}px"></i><b>${esc(p.name)}</b><em>${p.home ? 'Home system' : E.biome(p.biome).theme}</em></button>`).join('');
-      const up = Object.entries(C.UPGRADES).map(([k, U]) => { const lv = c.upgrades[pf][k], max = lv >= U.levels.length - 1; return `<button class="g-up" data-u="${k}" ${max || c.credits[pf] < U.cost[lv + 1] ? 'disabled' : ''}><b>${U.name}: ${U.levels[lv]}</b><em>${max ? 'Maximum' : `→ ${U.levels[lv + 1]} · ${U.cost[lv + 1]} cr`}</em></button>`; }).join('');
-      const pk = Object.keys(C.perks(c, pf)).map(k => `<span title="${C.PERKS[k].desc}">${C.PERKS[k].name}</span>`).join('') || '<span class="dim">No planetary perks yet</span>';
-      this.layer(`
-        <div class="g-wrap">
-          <div class="g-map"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${links}</svg>${nodes}</div>
-          <aside class="g-side">
-            <div class="m-h"><button class="m-back">‹ Menu</button><h1>Galactic Campaign</h1></div>
-            <div class="g-stat"><div><b>${c.turn}</b><span>Turn</span></div><div><b>${c.credits[pf]}</b><span>Credits (+${C.income(c, pf)})</span></div><div><b class="${pf}">${C.owned(c, pf)}</b><span>Yours</span></div><div><b class="${ef}">${C.owned(c, ef)}</b><span>Theirs</span></div></div>
-            <div class="g-info"></div>
-            <div class="m-sec">Fleet</div><div class="g-ups">${up}</div>
-            <div class="m-sec">Planetary perks</div><div class="g-perks">${pk}</div>
-            <div class="m-sec">War log</div><div class="g-log">${c.log.slice(0, 5).map(l => `<div class="${l.good ? 'good' : 'bad'}">T${l.turn} · ${esc(l.text)}</div>`).join('') || '<div class="dim">The war begins.</div>'}</div>
-            <button class="gc-btn g-new">Abandon campaign</button>
-          </aside>
-          ${c.pending ? `<div class="g-modal"><div class="p-card"><div class="p-title bad">UNDER ATTACK</div><p>${E.faction(ef).name} is assaulting <b>${esc(c.planets[c.pending.planet].name)}</b>. Take command of the defence, or leave it to the garrison.</p>
-            <button class="gc-btn primary g-defend">Defend in person</button><button class="gc-btn g-auto">Auto-resolve</button></div></div>` : ''}
-        </div>`, 'g-root');
-      this.bindCommon();
-      const info = () => {
-        const p = c.planets[this.sel], b = E.biome(p.biome), can = targets.includes(p.id);
-        this.q('.g-info').innerHTML = `<div class="g-pname ${p.owner || 'free'}">${esc(p.name)}<span>${p.owner ? E.faction(p.owner).short : 'Unclaimed'}</span></div>
-          <div class="g-pdesc">${b.desc}</div>
-          <div class="g-kv"><span>Hazard</span><b>${b.challenge.name}</b></div><div class="g-kv"><span>Income</span><b>${p.value + (p.perk === 'trade' ? 60 : 0)} cr / turn</b></div>
-          ${p.perk ? `<div class="g-kv"><span>Perk</span><b>${C.PERKS[p.perk].name}</b></div><div class="g-pdesc dim">${C.PERKS[p.perk].desc}</div>` : '<div class="g-kv"><span>Capital</span><b>Take it to win the war</b></div>'}
-          <button class="gc-btn primary g-attack" ${can && !c.pending ? '' : 'disabled'}>${can ? 'Assault ' + esc(p.name) : p.owner === pf ? 'Held by you' : 'Out of reach'}</button>`;
-        this.on('.g-attack', () => this.onStart(C.matchOptions(c, p.id, false), { campaign: c, planet: p.id, defending: false }));
-      };
-      this.el.querySelectorAll('.g-planet').forEach(b => b.addEventListener('click', () => { this.sel = +b.dataset.p; this.el.querySelectorAll('.g-planet').forEach(x => x.classList.toggle('on', x === b)); info(); }));
-      this.el.querySelectorAll('.g-up').forEach(b => b.addEventListener('click', () => { if (C.buy(c, b.dataset.u)) { this.saveCampaign(); this.showCampaign(); } }));
-      this.on('.g-new', () => { if (confirm('Abandon this campaign?')) { this.campaign = null; this.saveCampaign(); this.showNewCampaign(); } });
-      this.on('.g-defend', () => this.onStart(C.matchOptions(c, c.pending.planet, true), { campaign: c, planet: c.pending.planet, defending: true }));
-      this.on('.g-auto', () => { const r = C.autoResolve(c, c.pending.planet); this.saveCampaign(); this.afterBattle(r); });
-      info();
+      if (E.Music && E.Music.on) E.Music.setMode('map');
+      this.galaxy = new E.Galaxy(this); this.galaxy.show();
     }
+    warHistory(c) { const all = store.get(LS_HIST, {}); return all[c.seed] || []; }
+    saveHistory(c, h) { const all = store.get(LS_HIST, {}); all[c.seed] = h.slice(-60); store.set(LS_HIST, all); }
     showNewCampaign() {
       const s = this.settings, old = this.campaign && this.campaign.victory ? this.campaign : null;
       this.layer(`
         <div class="m-panel">
           <div class="m-h"><button class="m-back">‹ Back</button><h1>New Campaign</h1></div>
           ${old ? `<div class="g-end ${old.victory === old.playerFaction ? 'good' : 'bad'}">${old.victory === old.playerFaction ? 'THE GALAXY IS YOURS' : 'YOUR HOME SYSTEM HAS FALLEN'}<span>${old.wins} victories in ${old.battles} battles over ${old.turn} turns</span></div>` : ''}
-          <p class="m-lead">Ten worlds lie between two capitals. Take the enemy home system to end the war. Each world you hold pays credits and lends a perk to every battle.</p>
+          <p class="m-lead">Ten worlds lie between two capitals. Command fleets on the holotable: each carries capital ships, a fighter wing and an army, and that is exactly what you take into battle. Supplied worlds pay credits and fuel and lend their perks. Take the enemy home system to end the war.</p>
           <div class="m-sec">Your faction</div><div class="m-facs">${this.factionCards(s.faction)}</div>
           <div class="m-row"><div><div class="m-sec">Difficulty</div>${this.diffSeg(s.difficulty)}</div><button class="gc-btn primary m-go">Begin the War</button></div>
         </div>`);
       this.bindCommon();
-      this.on('.m-go', () => { this.campaign = E.Campaign.newCampaign({ seed: (Math.random() * 1e9) | 0, playerFaction: s.faction, difficulty: s.difficulty }); this.sel = -1; this.saveCampaign(); this.showCampaign(); });
+      this.on('.m-go', () => { this.campaign = E.Campaign.newCampaign({ seed: (Math.random() * 1e9) | 0, playerFaction: s.faction, difficulty: s.difficulty }); this.sel = -1; this.saveCampaign(); if (E.SFX) E.SFX.play('confirm'); this.showCampaign(); });
     }
-    // called after a campaign battle (played or auto-resolved): run the enemy's turn
-    afterBattle(res) {
+    // called after a campaign battle (played or auto-resolved): back to the map; the turn is the player's to end
+    afterBattle(res, summary) {
       const c = this.campaign; if (!c) return this.show();
-      if (!c.victory && !res.defending) E.Campaign.enemyTurn(c);
       this.saveCampaign();
+      if (summary) this.lastReport = summary;
       this.showCampaign();
     }
 
@@ -10976,24 +12549,20 @@
       this.layer(`
         <div class="m-panel">
           <div class="m-h"><button class="m-back">‹ Back</button><h1>Settings</h1></div>
-          <div class="p-set">
-            <label>Callsign<input type="text" class="s-name" maxlength="16" value="${esc(s.name)}"></label>
-            <label>Graphics<select class="s-q">${['auto', 'high', 'medium', 'low'].map(q => `<option value="${q}"${s.quality === q ? ' selected' : ''}>${q[0].toUpperCase() + q.slice(1)}</option>`).join('')}</select></label>
-            <label>Mouse sensitivity<input type="range" class="s-sens" min="0.3" max="2.5" step="0.05" value="${s.sens}"></label>
-            <label>Volume<input type="range" class="s-vol" min="0" max="1" step="0.05" value="${s.volume}"></label>
-            <label class="chk"><input type="checkbox" class="s-inv"${s.invertY ? ' checked' : ''}> Invert Y</label>
-          </div>
-          <div class="p-keys"><b>WASD</b> move · <b>Mouse</b> aim · <b>LMB</b> fire · <b>RMB</b> zoom · <b>G</b> ability · <b>Shift</b> sprint / boost · <b>Space</b> jump<br><b>F</b> take control of the friendly you aim at · <b>Z / X / V</b> squad follow / move / dismiss<br><b>M</b> command view · <b>Tab</b> scoreboard · <b>Esc</b> pause</div>
-          <button class="gc-btn s-reset">Reset career &amp; campaign</button>
+          <div class="st-grid"><label>Callsign<input type="text" class="s-name" maxlength="16" value="${esc(s.name)}"></label></div>
+          <div class="st-set"></div>
+          <div class="m-row"><button class="gc-btn s-ctl">View all controls</button><button class="gc-btn s-reset">Reset career &amp; campaign</button></div>
         </div>`);
       this.bindCommon();
-      const g = window.GC && window.GC.game;
+      this.q('.st-set').innerHTML = E.SettingsUI.html(s); E.SettingsUI.bind(this.q('.st-set'), s, window.GC && window.GC.game);
       this.q('.s-name').addEventListener('input', (e) => { s.name = e.target.value.trim() || 'Commander'; this.saveSettings(); });
-      this.q('.s-q').addEventListener('change', (e) => { s.quality = e.target.value; this.saveSettings(); if (g) g.renderer.scene.setQuality(s.quality); });
-      this.q('.s-sens').addEventListener('input', (e) => { s.sens = +e.target.value; this.saveSettings(); });
-      this.q('.s-vol').addEventListener('input', (e) => { s.volume = +e.target.value; this.saveSettings(); if (E.Music) E.Music.setVolume(s.volume); });
-      this.q('.s-inv').addEventListener('change', (e) => { s.invertY = e.target.checked; this.saveSettings(); });
+      this.on('.s-ctl', () => this.showControls('settings'));
       this.on('.s-reset', () => { if (confirm('Erase your career and campaign?')) { this.profile = { xp: 0, battles: 0, wins: 0, kills: 0 }; this.campaign = null; this.saveProfile(); this.saveCampaign(); this.show(); } });
+    }
+    showControls(from) {
+      this.layer(`<div class="m-panel wide scroll"><div class="m-h"><button class="m-back">‹ Back</button><h1>Controls</h1></div><p class="m-lead">The same table drives the hint bar in battle. Bindings are fixed; they change with what you are controlling. Press <b>F1</b> in a battle for this screen.</p>${E.ControlsUI.html('infantry')}</div>`);
+      this.bindCommon(); E.ControlsUI.bind(this.el);
+      if (from === 'settings') { const b = this.q('.m-back'), n = b.cloneNode(true); b.replaceWith(n); n.addEventListener('click', () => this.showSettings()); }
     }
   }
 

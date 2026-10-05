@@ -12,7 +12,7 @@
   const C = E.Campaign;
   const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const css = (c) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
-  const VW = 1600, VH = 900, MX = 130, MY = 100;
+  const VW = 1300, VH = 780, MX = 150, MY = 90;
   const OWN = { aegis: '#ff6a3a', verdant: '#3df0b0', free: '#9aa8c0' };
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const TRAIT = { shipyard: 'M-7 5 L-9 -1 L-3 -1 L-3 -6 L3 -6 L3 -1 L9 -1 L7 5 Z', refinery: 'M0 -8 C5 -1 7 2 7 4 A7 7 0 0 1 -7 4 C-7 2 -5 -1 0 -8 Z', fortress: 'M-8 7 L-8 -3 L-5 -3 L-5 -6 L-2 -6 L-2 -3 L2 -3 L2 -6 L5 -6 L5 -3 L8 -3 L8 7 Z' };
@@ -38,8 +38,7 @@
       m.layer(`<div class="g-wrap" tabindex="-1">
         <header class="g-bar"></header>
         <div class="g-stage"><svg class="g-svg" viewBox="0 0 ${VW} ${VH}" preserveAspectRatio="xMidYMid meet" role="application" aria-label="Galaxy map"></svg><div class="g-hint"></div></div>
-        <aside class="g-side"></aside>
-        <div class="g-fc"></div>
+        <aside class="g-side"><div class="g-fc"></div><div class="sd"></div></aside>
         <div class="g-toast" role="status" aria-live="polite"></div>
         <div class="g-pb"></div>
         <div class="g-modal"></div>
@@ -144,7 +143,7 @@
       for (const f of c.fleets) {
         const own = f.owner === pf; if (!own && !vis.has(f.at)) continue;
         const p = c.planets[f.at], k = f.at + (own ? 'a' : 'b'), n = stack[k] = (stack[k] || 0) + 1, [x, y] = this.xy(p), r = p.home ? 34 : 25;
-        const ox = own ? -r - 44 : r + 44, oy = (own ? 1 : -1) * (r * 0.6) + (n - 1) * 34 * (own ? 1 : -1) - (own ? 0 : 10);
+        const ox = own ? -r - 62 : r + 62, oy = (own ? 1 : -1) * (r * 0.9) + (n - 1) * 40 * (own ? 1 : -1);
         const avg = f.ships.reduce((s, x) => s + x.hp, 0) / Math.max(1, f.ships.length), sel = this.gs.fleet === f.id;
         fleets += `<g class="fl ${own ? 'mine' : 'theirs'}${sel ? ' sel' : ''}${f.moved ? ' done' : ''}" data-f="${f.id}" style="transform:translate(${x + ox}px,${y + oy}px)" tabindex="0" role="button" aria-label="${esc(f.name)}, ${f.ships.length} ships">
           <rect class="tok" x="-40" y="-14" width="80" height="28" rx="5"/><path class="chev" d="M-31 4 L-23 -8 L-15 4 L-23 0 Z"/>
@@ -161,7 +160,7 @@
 
     // ── side panel ──
     renderSide() {
-      const gs = this.gs, c = this.c, p = gs.planet >= 0 ? c.planets[gs.planet] : null, side = this.$('.g-side');
+      const gs = this.gs, c = this.c, p = gs.planet >= 0 ? c.planets[gs.planet] : null, side = this.$('.sd');
       const tabs = TABS.map(([k, n], i) => `<button class="tb${gs.tab === k ? ' on' : ''}" data-tab="${k}" role="tab" aria-selected="${gs.tab === k}">${n}<kbd>${i + 1}</kbd></button>`).join('');
       let body = '';
       if (gs.tab === 'world') body = this.tabWorld(p); else if (gs.tab === 'build') body = this.tabBuild(p); else if (gs.tab === 'ops') body = this.tabOps(p); else if (gs.tab === 'up') body = this.tabUp(); else body = this.tabLog();
