@@ -18,6 +18,13 @@
     return b.build();
   }
 
+  // a flash never swallows the camera: its size is capped by the distance to the viewer
+  const baseFlash = P.flash;
+  P.flash = function (p, size, col, life) {
+    const c = this.scene.camera.position, d = Math.hypot(p.x - c.x, p.y - c.y, p.z - c.z);
+    return baseFlash.call(this, p, Math.min(size, d * 0.35 + 0.5), col, life);
+  };
+
   P.initArt = function () {
     const T = E.THREE;
     if (this._art) return; this._art = true;
@@ -140,6 +147,8 @@
   // ── per-frame art updates called by the renderer ──
   P.updateArt = function (dt, t, world) {
     this.lightBudget = 0;
+    // emitters may follow a unit (crippled vehicles): keep them in step and end them with the unit
+    for (const e of this.emitters) if (e.follow) { if (!e.follow.alive) e.t = e.life; else { e.pos.x = e.follow.pos.x; e.pos.y = e.follow.pos.y + 1.5; e.pos.z = e.follow.pos.z; } }
     this.updateDebris(dt); this.updateScorch();
     for (let i = this.flareList.length - 1; i >= 0; i--) {
       const f = this.flareList[i]; f.t += dt; f.vy -= 14 * dt; f.vx *= 1 - dt * 0.6; f.vz *= 1 - dt * 0.6; f.x += f.vx * dt; f.y += f.vy * dt; f.z += f.vz * dt;

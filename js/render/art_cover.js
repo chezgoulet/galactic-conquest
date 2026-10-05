@@ -47,7 +47,7 @@
         const off = (r % 2) * 0.5 / n, x = (i + 0.5) / n - 0.5 + off - (r % 2 ? 0.5 / n * 0 : 0);
         if (x > 0.5 || x < -0.5) continue;
         const k = rng.f(0.92, 1.08), tip = d && r === rows - 1 ? rng.f(-0.4, 0.4) : rng.f(-0.06, 0.06);
-        b.sphere(0.5, x, 0.17 + r * 0.29 + (d === 2 ? -0.03 : 0), rng.f(-0.03, 0.03), burn(sh(P.bag, rng.f(0.9, 1.1)), d, 0.15), { sx: 1 / n * 0.98 * k, sy: 0.3 * (d === 2 ? 0.8 : 1), sz: 0.82, seg: 8, seg2: 5, ry: rng.f(-0.12, 0.12), rz: tip, mode: 0, sc: 1 });
+        b.box(1 / n * 1.1 * k, 0.3 * (d === 2 ? 0.8 : 1), 0.78, x, 0.16 + r * 0.28 + (d === 2 ? -0.03 : 0), rng.f(-0.03, 0.03), burn(sh(P.bag, rng.f(0.9, 1.1)), d, 0.15), { taper: [0.82, 0.84], ry: rng.f(-0.1, 0.1), rz: tip, mode: 0, sc: 1 });
         b.box(1 / n * 0.5, 0.025, 0.1, x, 0.17 + r * 0.29 + 0.14, 0.2, sh(P.bag, 0.75), { mode: 0, sc: 1 });    // tied seam
       }
       if (d) rubbleBits(b, rng, 5 + d * 3, P.bag, 1.0, 1.2);

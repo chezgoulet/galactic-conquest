@@ -15,7 +15,8 @@
       this.scene = scene; this.cam = scene.camera;
       this.yaw = 0; this.pitch = 0; this.zoom = 0;        // zoom 0..1 (ADS)
       this.mode = 'orbit';
-      this.cmd = { x: 0, z: 0, yaw: 0.35, dist: 420, pitch: 0.95 };
+      this.cmd = { x: 0, z: 0, yaw: 0.35, dist: 380, pitch: 0.9 };
+      this.fpv = !!window.GC_FPV;
       this.orbit = { x: 0, y: 30, z: 0, r: 520, h: 150, a: 0, speed: 0.03 };
       this.trauma = 0; this.fov = 60; this._p = new E.THREE.Vector3(0, 80, 200); this._l = new E.THREE.Vector3(); this._snap = true;
       this.aimPoint = { x: 0, y: 0, z: 0 }; this.aimTarget = null; this.terrain = null;
@@ -28,15 +29,26 @@
     snap() { this._snap = true; }
 
     // view: { mode, pos {x,y,z} (smoothed unit position), unit, zoomFov }
+    // centre of the fighting: mean position of living ground units (falls back to the middle post)
+    setFront(world) {
+      let x = 0, z = 0, n = 0;
+      for (const u of world.units) if (u.alive && (u.kind === 'infantry' || u.kind === 'vehicle')) { x += u.pos.x; z += u.pos.z; n++; }
+      if (n < 4) { const c = world.cps[Math.floor(world.cps.length / 2)]; x = c.pos.x; z = c.pos.z; n = 1; }
+      this.front = { x: x / n, z: z / n };
+    }
     update(dt, t, view) {
       const cam = this.cam, T = E.THREE;
+      const prevMode = this._lastMode; this._lastMode = prevMode;
       let px, py, pz, lx, ly, lz, fov = 62, stiff = 14;
       const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw), cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
       const dx = sy * cp, dy = sp, dz = cy * cp;       // look direction
       this.mode = view.mode;
       if (view.mode === 'unit' && view.unit) {
         const u = view.unit, p = view.pos, z = this.zoom;
-        if (u.kind === 'infantry') {
+        if (u.kind === 'infantry' && (this.fpv || (z > 0.6 && u.type === 'sniper'))) {
+          // first person: eye at the head, no body in view
+          const hy = p.y + u.h * 0.94; px = p.x + dx * 0.25; py = hy; pz = p.z + dz * 0.25; fov = E.lerp(74, view.zoomFov || 40, z); stiff = 60;
+        } else if (u.kind === 'infantry') {
           const D = E.lerp(3.5, 1.5, z), side = E.lerp(0.72, 0.5, z), hy = p.y + u.h * 0.9 + 0.2;
           px = p.x - cy * side - dx * D; py = hy - dy * D + 0.1; pz = p.z + sy * side - dz * D;
           fov = E.lerp(66, view.zoomFov || 44, z); stiff = 40;
@@ -44,13 +56,17 @@
           const D = u.r * 2.4 + 5.5; px = p.x - dx * D; py = p.y + u.h + 2.2 - dy * D; pz = p.z - dz * D; fov = E.lerp(64, 40, z); stiff = 12;
         } else if (u.kind === 'fighter') {
           const D = u.r * 3.2 + 3; px = p.x - dx * D; py = p.y - dy * D + 2.6; pz = p.z - dz * D;
-          fov = E.lerp(70 + Math.min(14, (u.spd || 0) * 0.07), 42, z); stiff = 9;
+          // speed sensation: FOV opens with sens, afterburner and g; the camera sits further back at speed
+          fov = E.lerp(68 + (u.sens || 0) * 12 + (u.boosting ? 7 : 0) + Math.min(5, (u.g || 0) * 0.4), 42, z); stiff = 9 + (u.sens || 0) * 4;
+          if (this.cam.position) { const D2 = u.r * 3.2 + 3 + (u.sens || 0) * 4; px = p.x - dx * D2; py = p.y - dy * D2 + 2.6; pz = p.z - dz * D2; }
         } else {
-          const D = u.def.len * 1.15; px = p.x - dx * D; py = p.y + u.h * 1.3 - dy * D; pz = p.z - dz * D; fov = E.lerp(58, 26, z); stiff = 5;
+          const D = u.def.len * 1.3 + u.h * 2; px = p.x - dx * D; py = p.y + u.h * 1.6 + u.def.len * 0.12 - dy * D; pz = p.z - dz * D; fov = E.lerp(58, 26, z); stiff = 5;
         }
         lx = px + dx * 200; ly = py + dy * 200; lz = pz + dz * 200;
       } else if (view.mode === 'commander') {
-        const c = this.cmd, cpz = Math.cos(c.pitch), gy = this.terrain ? this.terrain.height(c.x, c.z) : 0;
+        const c = this.cmd;
+        if (this._lastMode !== 'commander' && this.front) { c.x = this.front.x; c.z = this.front.z; c.dist = Math.min(c.dist, 340); c.pitch = 0.86; this._snap = true; }
+        const cpz = Math.cos(c.pitch), gy = this.terrain ? this.terrain.height(c.x, c.z) : 0;
         px = c.x - Math.sin(c.yaw) * cpz * c.dist; py = gy + Math.sin(c.pitch) * c.dist; pz = c.z - Math.cos(c.yaw) * cpz * c.dist;
         lx = c.x; ly = gy; lz = c.z; fov = 50; stiff = 9;
       } else {
@@ -77,6 +93,7 @@
       this.fov += (fov - this.fov) * Math.min(1, dt * 10);
       if (Math.abs(cam.fov - this.fov) > 0.01) { cam.fov = this.fov; cam.updateProjectionMatrix(); }
       cam.updateMatrixWorld();
+      this._lastMode = view.mode;
     }
 
     // Resolve the screen-centre ray into a world aim point + the yaw/pitch the

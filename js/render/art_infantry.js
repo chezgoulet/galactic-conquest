@@ -44,7 +44,7 @@
       const sx = s * 0.25 * bulk;
       const pr = (type === 'heavy' ? 0.15 : type === 'sniper' ? 0.095 : 0.115);
       if (org) torso.sphere(pr, sx, 0.56, 0, s > 0 ? acc : armor, { sy: 0.8, seg: 8, seg2: 6, mode: 1 });
-      else torso.box(pr * 2, pr * 1.1, pr * 2.1, sx + s * 0.02, 0.57, 0, s > 0 ? acc : armor, { taper: [0.82, 0.9], mode: 1 });
+      else torso.box(pr * 1.5, pr * 1.1, pr * 1.9, sx, 0.57, 0, s > 0 ? acc : armor, { taper: [0.8, 0.9], rz: -s * 0.35, mode: 1 });
       // arms: upper arm + forearm toward the weapon grips (right hand on the grip at -x, left on the fore-grip)
       const elbow = s < 0 ? [-0.2, 0.36, 0.1] : [0.22 * bulk, 0.36, 0.18], hand = s < 0 ? [-0.1, 0.37, 0.22] : [0.05, 0.4, type === 'sniper' ? 0.6 : type === 'heavy' ? 0.5 : 0.5];
       limb(torso, [sx, 0.55, 0], elbow, 0.05 * bulk, 0.045, cloth);
