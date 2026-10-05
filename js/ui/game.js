@@ -19,6 +19,7 @@
       this.keys = new Set(); this.mouse = { l: false, r: false, x: 0, y: 0 };
       this.running = false; this.acc = new E.Accumulator(30);
       this.renderer = new E.Renderer(canvas, { quality: this.settings.quality || 'auto' });
+      this.pad = E.Pad ? new E.Pad.Pad() : null;
       this.hud = new E.HUD(document.getElementById('ui'), this);
       if (E.SettingsUI) E.SettingsUI.apply(this.settings);
       this.bind();
@@ -143,23 +144,46 @@
     // ── input ────────────────────────────────────────────────
     input(dt) {
       const k = this.keys, cam = this.renderer.camera, w = this.world, u = this.unit();
+      // poll the gamepad first so Start can unpause while paused
+      const pad = this.pad ? this.pad.state() : null;
+      if (pad && pad.pressed.start && this.state !== 'attract') { this.togglePause(); return; }
       if (this.paused || this.state === 'attract') return;
       if (this.state === 'play' && u) {
         const zoomable = true;
         cam.zoom += ((this.mouse.r && zoomable ? 1 : 0) - cam.zoom) * Math.min(1, dt * 12);
+        if (pad) { if (pad.lookX) cam.yaw += pad.lookX * dt * 2.4; if (pad.lookY) cam.pitch = E.clamp(cam.pitch - pad.lookY * dt * 1.9, -1.35, 1.35); }
         let yaw = cam.yaw, pitch = cam.pitch;
         const a = cam.aim(w, u, u.kind === 'capital' ? 3000 : 700); this.aimInfo = a;
         if (u.kind === 'infantry' || u.kind === 'vehicle' || u.kind === 'turret') { yaw = a.yaw; pitch = a.pitch; }
-        const inp = { mx: (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0), mz: (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0), moveYaw: cam.yaw, yaw, pitch,
-          fire: this.mouse.l && (this.locked() || this.freeFire), abil: k.has('g') || this.mouse.m, sprint: k.has('shift'), jump: k.has(' '),
-          roll: (k.has('e') ? 1 : 0) - (k.has('q') ? 1 : 0), crouch: k.has('c'), abil2: k.has('r'), cycle: k.has('t') };
+        const inp = { mx: ((k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0)) + (pad ? pad.moveX : 0),
+          mz: ((k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0)) + (pad ? pad.moveY : 0), moveYaw: cam.yaw, yaw, pitch,
+          fire: (this.mouse.l && (this.locked() || this.freeFire)) || !!(pad && pad.fire),
+          abil: k.has('g') || this.mouse.m || !!(pad && pad.abil), sprint: k.has('shift') || !!(pad && pad.sprint),
+          jump: k.has(' ') || !!(pad && pad.jump), roll: (k.has('e') ? 1 : 0) - (k.has('q') ? 1 : 0),
+          crouch: k.has('c') || !!(pad && pad.crouch), abil2: k.has('r') || !!(pad && pad.abil2), cycle: k.has('t') };
         this.cmd('input', inp);
+        if (pad) this.padActions(pad);
       } else if (this.state === 'commander') {
         const c = cam.cmd, sp = c.dist * 1.1 * dt, fx = Math.sin(c.yaw), fz = Math.cos(c.yaw);
-        const mz = (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0), mx = (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0);
+        const mz = ((k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0)) + (pad ? pad.moveY : 0);
+        const mx = ((k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0)) + (pad ? pad.moveX : 0);
         c.x = E.clamp(c.x + (fx * mz - fz * mx) * sp, -1400, 1400); c.z = E.clamp(c.z + (fz * mz + fx * mx) * sp, -1100, 1100);
         if (k.has('q')) c.yaw += dt * 1.4; if (k.has('e')) c.yaw -= dt * 1.4;
+        if (pad) { if (pad.lookX) c.yaw += pad.lookX * dt * 1.8; if (pad.pressed.y) this.takeControl(); else if (pad.pressed.b) this.toDeploy(); }
+      } else if (this.state === 'deploy' && pad) {
+        if (pad.pressed.a) this.hud.doDeploy();
+        else if (pad.pressed.dleft) this.hud.pickClass(0);
+        else if (pad.pressed.dright) this.hud.pickClass(1);
       }
+    }
+    // one-shot gamepad actions while playing (edges, so they fire once)
+    padActions(pad) {
+      if (pad.pressed.y) this.takeControl();
+      else if (pad.pressed.lb) this.toCommander();
+      else if (pad.pressed.dup) this.callAir('any');
+      else if (pad.pressed.ddown) this.callAir('gunship');
+      else if (pad.pressed.dleft) this.squadOrder('follow');
+      else if (pad.pressed.dright) this.squadOrder('attack');
     }
     locked() { return document.pointerLockElement === this.canvas; }
     lock() { if (!this.locked() && this.canvas.requestPointerLock) { try { const p = this.canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) {} } }

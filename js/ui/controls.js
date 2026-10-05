@@ -34,8 +34,11 @@
       rows: [['W A S D', 'Pan'], ['Q E', 'Rotate'], ['Wheel', 'Zoom'], ['LMB / drag', 'Select units / box select'], ['RMB', 'Order selected units to move'], ['H', 'Hold position'], ['V', 'Free fire'], ['1 2 3', 'Select all infantry / armor / air'], ['F', 'Take control of the selected unit'],
         ['Call-in buttons', 'Then click the map: bomber, gunship, orbital strike'], ['C or Enter', 'Return to deployment']],
       hint: [['LMB', 'Select'], ['RMB', 'Move order'], ['H', 'Hold'], ['V', 'Free fire'], ['1 2 3', 'Groups'], ['F', 'Take control'], ['Enter', 'Deploy']] },
+    gamepad: { name: 'Gamepad', desc: 'Any standard controller, used alongside the keyboard and mouse.',
+      rows: [['Left stick', 'Move / pan the command map'], ['Right stick', 'Look and aim'], ['RT', 'Fire'], ['LT', 'Ability / secondary weapon'], ['A', 'Jump; deploy on the deploy screen'], ['B', 'Crouch; board; return to deployment in command view'], ['X', 'Secondary ability'], ['Y', 'Take control of the friendly you aim at'], ['RB', 'Sprint / afterburner'], ['LB', 'Command view'], ['D-pad', 'Squad: follow / attack (left / right); air support: call / gunship (up / down)'], ['Start', 'Pause and settings']],
+      hint: [] },
   };
-  C.order = ['infantry', 'engineer', 'vehicle', 'fighter', 'capital', 'boarding', 'commander'];
+  C.order = ['infantry', 'engineer', 'vehicle', 'fighter', 'capital', 'boarding', 'commander', 'gamepad'];
   // the hint list for what the player is controlling right now
   C.forUnit = function (u, state) {
     if (state === 'commander') return C.commander;

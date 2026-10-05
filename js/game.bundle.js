@@ -544,6 +544,57 @@
   E.hash2 = hash2;
 })(window.E = window.E || {});
 
+// ---- js/core/pad.js ----
+// Gamepad input. `mapPad` is pure (axes/buttons -> a normalised state plus
+// one-shot button edges) so it can be unit-tested; the `Pad` wrapper just finds
+// the first connected controller via navigator.getGamepads and remembers the
+// previous frame's buttons for edge detection. The game merges this with the
+// keyboard and mouse, so a controller works alongside them, and the simulation
+// never sees the difference (it still receives the same command shape).
+(function (E) {
+  'use strict';
+  const DEAD = 0.18;                       // stick dead zone
+  const BTN = { a: 0, b: 1, x: 2, y: 3, lb: 4, rb: 5, lt: 6, rt: 7, start: 9, dup: 12, ddown: 13, dleft: 14, dright: 15 };
+
+  function dz(v) { v = v || 0; const a = Math.abs(v); if (a < DEAD) return 0; return (a - DEAD) / (1 - DEAD) * Math.sign(v); }
+  function dv(b) { if (!b) return 0; if (typeof b.value === 'number') return b.value; return b.pressed ? 1 : 0; }
+
+  // prevButtons: array of booleans from the previous frame (or omitted).
+  function mapPad(axes, buttons, prevButtons) {
+    axes = axes || []; buttons = buttons || [];
+    const prev = (i) => !!(prevButtons && prevButtons[i]);
+    const down = (i) => dv(buttons[i]) > 0.5;
+    const pressed = {};
+    for (const k in BTN) pressed[k] = down(BTN[k]) && !prev(BTN[k]);
+    return {
+      moveX: dz(axes[0]) || 0, moveY: -dz(axes[1]) || 0,
+      lookX: dz(axes[2]) || 0, lookY: dz(axes[3]) || 0,
+      fire: dv(buttons[BTN.rt]) > 0.4, abil: dv(buttons[BTN.lt]) > 0.4,
+      abil2: down(BTN.x), jump: down(BTN.a), crouch: down(BTN.b), sprint: down(BTN.rb),
+      pressed,
+    };
+  }
+
+  class Pad {
+    constructor() { this.prev = []; this.connected = false; this.index = -1; }
+    state() {
+      if (typeof navigator === 'undefined' || !navigator.getGamepads) { this.connected = false; return null; }
+      let gp = null;
+      const pads = navigator.getGamepads();
+      for (let i = 0; i < pads.length; i++) if (pads[i] && pads[i].connected) { gp = pads[i]; this.index = i; break; }
+      if (!gp) { this.connected = false; this.prev = []; return null; }
+      this.connected = true;
+      const s = mapPad(gp.axes || [], gp.buttons || [], this.prev);
+      const now = [];
+      for (let i = 0; i < (gp.buttons ? gp.buttons.length : 0); i++) now[i] = dv(gp.buttons[i]) > 0.5;
+      this.prev = now;
+      return s;
+    }
+  }
+
+  E.Pad = { mapPad, Pad, BTN, DEAD };
+})(window.E = window.E || {});
+
 // ---- js/core/palette.js ----
 // Team colours, in one place so a colour-blind palette can swap them at runtime.
 // `E.Palette.col` is a stable object the HUD, campaign map and CSS variables read
@@ -12229,8 +12280,11 @@
       rows: [['W A S D', 'Pan'], ['Q E', 'Rotate'], ['Wheel', 'Zoom'], ['LMB / drag', 'Select units / box select'], ['RMB', 'Order selected units to move'], ['H', 'Hold position'], ['V', 'Free fire'], ['1 2 3', 'Select all infantry / armor / air'], ['F', 'Take control of the selected unit'],
         ['Call-in buttons', 'Then click the map: bomber, gunship, orbital strike'], ['C or Enter', 'Return to deployment']],
       hint: [['LMB', 'Select'], ['RMB', 'Move order'], ['H', 'Hold'], ['V', 'Free fire'], ['1 2 3', 'Groups'], ['F', 'Take control'], ['Enter', 'Deploy']] },
+    gamepad: { name: 'Gamepad', desc: 'Any standard controller, used alongside the keyboard and mouse.',
+      rows: [['Left stick', 'Move / pan the command map'], ['Right stick', 'Look and aim'], ['RT', 'Fire'], ['LT', 'Ability / secondary weapon'], ['A', 'Jump; deploy on the deploy screen'], ['B', 'Crouch; board; return to deployment in command view'], ['X', 'Secondary ability'], ['Y', 'Take control of the friendly you aim at'], ['RB', 'Sprint / afterburner'], ['LB', 'Command view'], ['D-pad', 'Squad: follow / attack (left / right); air support: call / gunship (up / down)'], ['Start', 'Pause and settings']],
+      hint: [] },
   };
-  C.order = ['infantry', 'engineer', 'vehicle', 'fighter', 'capital', 'boarding', 'commander'];
+  C.order = ['infantry', 'engineer', 'vehicle', 'fighter', 'capital', 'boarding', 'commander', 'gamepad'];
   // the hint list for what the player is controlling right now
   C.forUnit = function (u, state) {
     if (state === 'commander') return C.commander;
@@ -12673,6 +12727,7 @@
       this.keys = new Set(); this.mouse = { l: false, r: false, x: 0, y: 0 };
       this.running = false; this.acc = new E.Accumulator(30);
       this.renderer = new E.Renderer(canvas, { quality: this.settings.quality || 'auto' });
+      this.pad = E.Pad ? new E.Pad.Pad() : null;
       this.hud = new E.HUD(document.getElementById('ui'), this);
       if (E.SettingsUI) E.SettingsUI.apply(this.settings);
       this.bind();
@@ -12797,23 +12852,46 @@
     // ── input ────────────────────────────────────────────────
     input(dt) {
       const k = this.keys, cam = this.renderer.camera, w = this.world, u = this.unit();
+      // poll the gamepad first so Start can unpause while paused
+      const pad = this.pad ? this.pad.state() : null;
+      if (pad && pad.pressed.start && this.state !== 'attract') { this.togglePause(); return; }
       if (this.paused || this.state === 'attract') return;
       if (this.state === 'play' && u) {
         const zoomable = true;
         cam.zoom += ((this.mouse.r && zoomable ? 1 : 0) - cam.zoom) * Math.min(1, dt * 12);
+        if (pad) { if (pad.lookX) cam.yaw += pad.lookX * dt * 2.4; if (pad.lookY) cam.pitch = E.clamp(cam.pitch - pad.lookY * dt * 1.9, -1.35, 1.35); }
         let yaw = cam.yaw, pitch = cam.pitch;
         const a = cam.aim(w, u, u.kind === 'capital' ? 3000 : 700); this.aimInfo = a;
         if (u.kind === 'infantry' || u.kind === 'vehicle' || u.kind === 'turret') { yaw = a.yaw; pitch = a.pitch; }
-        const inp = { mx: (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0), mz: (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0), moveYaw: cam.yaw, yaw, pitch,
-          fire: this.mouse.l && (this.locked() || this.freeFire), abil: k.has('g') || this.mouse.m, sprint: k.has('shift'), jump: k.has(' '),
-          roll: (k.has('e') ? 1 : 0) - (k.has('q') ? 1 : 0), crouch: k.has('c'), abil2: k.has('r'), cycle: k.has('t') };
+        const inp = { mx: ((k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0)) + (pad ? pad.moveX : 0),
+          mz: ((k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0)) + (pad ? pad.moveY : 0), moveYaw: cam.yaw, yaw, pitch,
+          fire: (this.mouse.l && (this.locked() || this.freeFire)) || !!(pad && pad.fire),
+          abil: k.has('g') || this.mouse.m || !!(pad && pad.abil), sprint: k.has('shift') || !!(pad && pad.sprint),
+          jump: k.has(' ') || !!(pad && pad.jump), roll: (k.has('e') ? 1 : 0) - (k.has('q') ? 1 : 0),
+          crouch: k.has('c') || !!(pad && pad.crouch), abil2: k.has('r') || !!(pad && pad.abil2), cycle: k.has('t') };
         this.cmd('input', inp);
+        if (pad) this.padActions(pad);
       } else if (this.state === 'commander') {
         const c = cam.cmd, sp = c.dist * 1.1 * dt, fx = Math.sin(c.yaw), fz = Math.cos(c.yaw);
-        const mz = (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0), mx = (k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0);
+        const mz = ((k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0)) + (pad ? pad.moveY : 0);
+        const mx = ((k.has('d') ? 1 : 0) - (k.has('a') ? 1 : 0)) + (pad ? pad.moveX : 0);
         c.x = E.clamp(c.x + (fx * mz - fz * mx) * sp, -1400, 1400); c.z = E.clamp(c.z + (fz * mz + fx * mx) * sp, -1100, 1100);
         if (k.has('q')) c.yaw += dt * 1.4; if (k.has('e')) c.yaw -= dt * 1.4;
+        if (pad) { if (pad.lookX) c.yaw += pad.lookX * dt * 1.8; if (pad.pressed.y) this.takeControl(); else if (pad.pressed.b) this.toDeploy(); }
+      } else if (this.state === 'deploy' && pad) {
+        if (pad.pressed.a) this.hud.doDeploy();
+        else if (pad.pressed.dleft) this.hud.pickClass(0);
+        else if (pad.pressed.dright) this.hud.pickClass(1);
       }
+    }
+    // one-shot gamepad actions while playing (edges, so they fire once)
+    padActions(pad) {
+      if (pad.pressed.y) this.takeControl();
+      else if (pad.pressed.lb) this.toCommander();
+      else if (pad.pressed.dup) this.callAir('any');
+      else if (pad.pressed.ddown) this.callAir('gunship');
+      else if (pad.pressed.dleft) this.squadOrder('follow');
+      else if (pad.pressed.dright) this.squadOrder('attack');
     }
     locked() { return document.pointerLockElement === this.canvas; }
     lock() { if (!this.locked() && this.canvas.requestPointerLock) { try { const p = this.canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) {} } }
