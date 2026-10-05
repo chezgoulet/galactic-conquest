@@ -14,7 +14,7 @@
       this.root = root;
       this.settings = E.SettingsUI.ensure(Object.assign({ faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 }, store.get(LS_SET, {})));
       E.SettingsUI.apply(this.settings);
-      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, store.get(LS_PRO, {}));
+      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0, medals: {} }, store.get(LS_PRO, {}));
       const c = store.get(LS_KEY, null); this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.onStart = null; this.el = null; this.sel = -1;
       E.bus.on('settings:changed', () => this.saveSettings());
@@ -25,7 +25,7 @@
       const base = { faction: 'aegis', quality: 'auto', sens: 1, volume: 0.8, invertY: false, difficulty: 'normal', name: 'Commander', reduceMotion: false, uiScale: 1 };
       this.settings = E.SettingsUI.ensure(Object.assign(base, d.settings || {}));
       E.SettingsUI.apply(this.settings);
-      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0 }, d.profile || {});
+      this.profile = Object.assign({ xp: 0, battles: 0, wins: 0, kills: 0, medals: {} }, d.profile || {});
       const c = d.campaign; this.campaign = c && c.v === E.Campaign.VERSION ? c : null;
       this.saveSettings(); this.saveProfile(); this.saveCampaign();
     }
@@ -53,7 +53,7 @@
     // ── main ───────────────────────────────────────────────────
     show() {
       if (E.Music && E.Music.on) E.Music.setMode('battle');
-      const c = this.campaign, rk = E.Campaign.rank(this.profile.xp);
+      const c = this.campaign, rk = E.Campaign.rank(this.profile.xp), medals = E.Commendations ? E.Commendations.count(this.profile) : 0;
       this.layer(`
         <div class="m-main">
           <div class="m-logo"><span>GALACTIC</span><b>CONQUEST</b><i>land · air · space</i></div>
@@ -65,7 +65,7 @@
             <button class="m-item" data-a="controls"><b>Controls</b><span>Every binding, for every unit</span></button>
             <button class="m-item" data-a="settings"><b>Settings</b><span>Graphics, audio mix, accessibility</span></button>
           </nav>
-          <div class="m-career"><div><b>${esc(this.settings.name)}</b> · ${rk.name}</div><div class="bar"><i style="width:${(rk.prog * 100).toFixed(0)}%"></i></div><span>${this.profile.xp.toLocaleString()} XP · ${this.profile.wins}/${this.profile.battles} victories · ${this.profile.kills} kills</span></div>
+          <div class="m-career"><div><b>${esc(this.settings.name)}</b> · ${rk.name}</div><div class="bar"><i style="width:${(rk.prog * 100).toFixed(0)}%"></i></div><span>${this.profile.xp.toLocaleString()} XP · ${this.profile.wins}/${this.profile.battles} victories · ${this.profile.kills} kills${medals ? ' · ★ ' + medals + ' commendations' : ''}</span></div>
         </div>
         <div class="m-foot">Everything you see and hear is generated from code.</div>`, 'm-root');
       this.el.querySelectorAll('.m-item').forEach(b => b.addEventListener('click', () => { const a = b.dataset.a; if (a === 'campaign') this.showCampaign(); else if (a === 'instant') this.showInstant(); else if (a === 'mp') this.showMultiplayer(); else if (a === 'codex') this.showCodex(); else if (a === 'controls') this.showControls(); else this.showSettings(); }));

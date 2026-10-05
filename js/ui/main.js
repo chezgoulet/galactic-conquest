@@ -33,8 +33,13 @@
       if (E.Music && E.Music.on) E.Music.setMode('battle');
       window.__GC_BATTLE__ = true;
       game.onEnd = (r) => {
-        const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills; menu.saveProfile();
+        const P = menu.profile; P.xp += r.score + (r.won ? 500 : 100); P.battles++; if (r.won) P.wins++; P.kills += r.kills;
+        if (!P.medals) P.medals = {};
+        const earned = E.Commendations ? E.Commendations.evaluate(r) : [];
+        for (const m of earned) P.medals[m.id] = (P.medals[m.id] || 0) + 1;
+        menu.saveProfile();
         let extra = `<div class="r-xp">+${(r.score + (r.won ? 500 : 100)).toLocaleString()} XP · ${E.Campaign.rank(P.xp).name}</div>`;
+        if (earned.length) extra += `<div class="r-medals">${earned.map((m) => `<span class="r-medal" title="${m.desc}">★ ${m.name}</span>`).join('')}</div>`;
         if (ctx && ctx.campaign) {
           const rep = E.Campaign.battleReport(game.world), pf = ctx.campaign.playerFaction;
           const res = E.Campaign.applyBattle(ctx.campaign, ctx.planet, r.won, r.score, ctx.defending, rep);

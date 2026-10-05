@@ -87,6 +87,7 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     await page.waitForTimeout(300); await shot('20-results.png');
     ok(await page.evaluate('!!document.querySelector(".r-doms .r-dom h4")') && (await page.$$('.r-doms .r-dom')).length === 3, 'results report ground, air and space');
     ok((await page.$$('.rc-s')).length >= 1, 'results show what the battle cost the campaign fleet');
+    ok((await page.$$('.r-medal')).length >= 1, 'commendations are awarded on the results screen');
     await page.click('.r-go');
     await page.waitForSelector('.g-svg g.pl', { timeout: 240000 });
     // ── map afterwards ──
