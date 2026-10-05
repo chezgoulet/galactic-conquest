@@ -42,6 +42,10 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     await page.click('.ob-controls'); await page.waitForSelector('.ob-ctl .ct-tbl');
     ok(true, 'onboarding expands the controls reference');
     await page.click('.ob-go'); await page.waitForSelector('.ob-root', { state: 'detached' });
+    // ── instant action offers battle modes ──
+    await page.click('.m-item[data-a="instant"]'); await page.waitForSelector('.m-mode');
+    ok((await page.$$('.m-mode button')).length >= 2, 'instant action offers battle modes');
+    await page.click('.m-back'); await page.waitForSelector('.m-item[data-a="settings"]');
     // ── accessibility: colour-blind palette ──
     await page.click('.m-item[data-a="settings"]'); await page.waitForSelector('.s-pal');
     await page.selectOption('.s-pal', 'colorblind');

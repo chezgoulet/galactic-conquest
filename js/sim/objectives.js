@@ -161,9 +161,9 @@
     const A = w.teams.aegis, Vd = w.teams.verdant;
     for (const [T, O] of [[A, Vd], [Vd, A]]) {
       const diff = O.cps - T.cps;
-      if (diff > 0 && O.cps >= 3) {
+      if (w.cfg.bleed !== false && diff > 0 && O.cps >= 3) {
         T.bleedT += dt;
-        const iv = diff >= 4 ? 1.2 : diff === 3 ? 2.2 : diff === 2 ? 4 : 7;
+        const iv = (diff >= 4 ? 1.2 : diff === 3 ? 2.2 : diff === 2 ? 4 : 7) / (w.cfg.bleedMul || 1);
         if (T.bleedT >= iv) { T.bleedT = 0; T.tickets = Math.max(0, T.tickets - 1); }
       } else T.bleedT = 0;
     }
