@@ -87,6 +87,7 @@
     let best = null, bs = 0; S.eyeOf(u, tmpA);
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       let s = 0, d = V.distance(u.pos, e.pos);
       if (D.aa) {
         if (e.kind !== 'fighter') continue;

@@ -59,7 +59,7 @@
     // go after enemy structures when the line is ours, and objective sites
     if (w.cps.filter(c => c.owner === sq.team).length >= 3 && R.next() < 0.22) {
       let tgt = null, bd = 1e9;
-      for (const e of w.units) if (e.alive && e.team === en && e.kind === 'turret' && (e.type === 'shieldgen' || e.type === 'ioncannon' || e.type === 'aabattery')) { const d = Math.hypot(e.pos.x - sq.cx, e.pos.z - sq.cz); if (d < bd) { bd = d; tgt = e; } }
+      for (const e of w.units) if (e.alive && e.team === en && e.kind === 'turret' && (e.type === 'shieldgen' || e.type === 'ioncannon' || e.type === 'aabattery')) { if (w.cfg.fog && !S.visible(w, sq.team, e)) continue; const d = Math.hypot(e.pos.x - sq.cx, e.pos.z - sq.cz); if (d < bd) { bd = d; tgt = e; } }
       if (tgt) { best = { x: tgt.pos.x, z: tgt.pos.z, r: 22, cp: -1, uid: tgt.id }; bs = 1; }
     }
     for (const o of w.objs) {
@@ -125,6 +125,7 @@
     const focus = sq ? sq.focus : 0, T = w.terrain;
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const pf = pr[keyOf(e)]; if (!pf) continue;
       let d = V.distance(u.pos, e.pos);
       if (e.kind === 'infantry' && e.m && e.m.stealth && e.stance === 1 && Math.hypot(e.vel.x, e.vel.z) < 1.5) d *= 1 + 2 * e.m.stealth;
@@ -272,18 +273,18 @@
         if (!e.alive || e.team === u.team) continue;
         const d2 = V.distance2(e.pos, u.pos);
         if (e.kind === 'infantry' && d2 < 40 * 40) { infNear = true; break; }
-        if (e.kind === 'turret' && d2 < sd && !S.chargeOn(w, e.id) && (e.type === 'shieldgen' || e.type === 'aabattery' || e.type === 'ioncannon' || e.type === 'nest' || e.type === 'battery')) { sd = d2; st = e; }
+        if (e.kind === 'turret' && d2 < sd && !S.chargeOn(w, e.id) && (e.type === 'shieldgen' || e.type === 'aabattery' || e.type === 'ioncannon' || e.type === 'nest' || e.type === 'battery') && (!w.cfg.fog || S.visible(w, u.team, e))) { sd = d2; st = e; }
       }
       if (st && !infNear) { ai.mode = 'sabotage'; ai.job = st.id; ai.dx = st.pos.x; ai.dz = st.pos.z; ai.dr = st.r + 2.5; return true; }
     }
     // lay mines on the approach to a post we hold
-    if (w.t > (ai.mineT || 0) && u.altT <= 0 && w.units.some(e => e.alive && e.team !== u.team && e.kind === 'vehicle')) {
+    if (w.t > (ai.mineT || 0) && u.altT <= 0 && w.units.some(e => e.alive && e.team !== u.team && e.kind === 'vehicle' && (!w.cfg.fog || S.visible(w, u.team, e)))) {
       const mine = w.cps.filter(c => c.owner === u.team), en = w.cps.filter(c => c.owner !== u.team);
       if (mine.length && en.length) {
         let bc = null, bd = 1e9;
         for (const c of mine) { const d = Math.hypot(c.pos.x - u.pos.x, c.pos.z - u.pos.z); if (d < bd) { bd = d; bc = c; } }
         let ec = null, ed = 1e9; for (const c of en) { const d = Math.hypot(c.pos.x - bc.pos.x, c.pos.z - bc.pos.z); if (d < ed) { ed = d; ec = c; } }
-        for (const e of w.units) if (e.alive && e.team !== u.team && e.kind === 'vehicle') { const d = Math.hypot(e.pos.x - bc.pos.x, e.pos.z - bc.pos.z); if (d < ed && d < 500) { ed = d; ec = { pos: e.pos }; } }
+        for (const e of w.units) if (e.alive && e.team !== u.team && e.kind === 'vehicle' && (!w.cfg.fog || S.visible(w, u.team, e))) { const d = Math.hypot(e.pos.x - bc.pos.x, e.pos.z - bc.pos.z); if (d < ed && d < 500) { ed = d; ec = { pos: e.pos }; } }
         const dx = ec.pos.x - bc.pos.x, dz = ec.pos.z - bc.pos.z, dl = Math.hypot(dx, dz) || 1, off = bc.r + 10 + R.next() * 24, lat = (R.next() - 0.5) * 30;
         ai.mode = 'mine'; ai.dx = bc.pos.x + dx / dl * off - dz / dl * lat; ai.dz = bc.pos.z + dz / dl * off + dx / dl * lat; ai.dr = 2.5; ai.job = -1;
         if (bd < 160) return true;
@@ -425,6 +426,7 @@
     const aa = u.type === 'aa';
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const pf = pr[keyOf(e)]; if (!pf) continue;
       const d = V.distance(u.pos, e.pos);
       let range = W.range;

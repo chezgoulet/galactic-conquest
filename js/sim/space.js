@@ -218,7 +218,9 @@
   const flank = (u, p) => ((p.x - u.pos.x) * -Math.cos(u.yaw) + (p.z - u.pos.z) * Math.sin(u.yaw)) >= 0 ? 1 : -1;
   // focus = enemy ship to hit with the main battery and torpedoes; fsys = subsystem to aim at
   function capitalGuns(w, u, dt, focus, fsys, boost) {
-    const L = lists(w), en = u.team === 'aegis' ? 'verdant' : 'aegis', caps = L.caps[en], fi = L.fighters[en];
+    const L = lists(w), en = u.team === 'aegis' ? 'verdant' : 'aegis';
+    let caps = L.caps[en], fi = L.fighters[en];
+    if (w.cfg.fog) { const v = S.vision(w, u.team); caps = caps.filter((e) => v.has(e.id)); fi = fi.filter((e) => v.has(e.id)); }
     const dm = E.DOCTRINE[u.team].capDmg, wm = weaponMul(u) * (u.captured ? 0.7 : 1);
     const bridge = u.sys.bridge.alive, braced = u.braceT > 0;
     if (focus && (!focus.alive || focus.team === u.team)) focus = null;
@@ -321,7 +323,7 @@
   function needsEscort(w, team) { return capsOf(w, team).filter(u => u.needsEscort); }
   function bombTargets(w, team) { // enemy ships' live subsystems whose shield arc is open or generator dead
     const out = [];
-    for (const c of capsOf(w, team === 'aegis' ? 'verdant' : 'aegis')) for (const n of ORDER) if (c.sys[n].alive) out.push({ ship: c, sys: n, pos: sysPos(c, n, {}), exposed: !c.sys.shield.alive || shieldFrac(c) < 0.3 });
+    for (const c of capsOf(w, team === 'aegis' ? 'verdant' : 'aegis')) { if (w.cfg.fog && !S.visible(w, team, c)) continue; for (const n of ORDER) if (c.sys[n].alive) out.push({ ship: c, sys: n, pos: sysPos(c, n, {}), exposed: !c.sys.shield.alive || shieldFrac(c) < 0.3 }); }
     return out;
   }
 

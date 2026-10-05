@@ -36,7 +36,7 @@
         g.querySelector('.mp-code').textContent = m.room;
         g.querySelector('.mp-url').textContent = pageUrl();
         this.menu.hide();
-        game.start(Object.assign({ role: 'host', relay }, opts));
+        game.start(Object.assign({ role: 'host', relay, pvp: true, fog: true }, opts));
         this.session = new E.Net.NetSession();
         this.session.host(game);
         E.bus.emit('lan:hosted', { code: m.room });
@@ -162,7 +162,7 @@
       const p = oc._pending || { biome: 'desert', seed: (Math.random() * 1e9) | 0 };
       const game = this._game();
       this.menu.hide();
-      game.start({ role: 'host', relay: oc.relay, biome: p.biome, seed: p.seed, human: 'aegis' });
+      game.start({ role: 'host', relay: oc.relay, biome: p.biome, seed: p.seed, human: 'aegis', pvp: true, fog: true });
       this.session = new E.Net.NetSession();
       this.session.host(game);
       // reconcile the result for Elo when the match ends

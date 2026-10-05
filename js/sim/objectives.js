@@ -93,7 +93,7 @@
         // never waste the salvo on ground under an enemy shield dome
         const open = (pos) => !(S.shielded && S.shielded(w, en, pos));
         for (const c of w.cps) if (c.n[en] > bn && c.n[f] === 0 && open(c.pos)) { bn = c.n[en]; best = c; }
-        if (!best) { const tk = w.units.find(u => u.alive && u.team === en && (u.type === 'tank' || u.kind === 'turret') && open(u.pos)); if (tk && w.rng.next() < 0.6) best = tk; }
+        if (!best) { const tk = w.units.find(u => u.alive && u.team === en && (u.type === 'tank' || u.kind === 'turret') && open(u.pos) && (!w.cfg.fog || S.visible(w, f, u))); if (tk && w.rng.next() < 0.6) best = tk; }
         if (best) S.strike(w, f, best.pos, null);
       }
     }

@@ -24,6 +24,7 @@
     let best = null, bs = 0; S.eyeOf(u, tmpA);
     for (const e of w.units) {
       if (!e.alive || e.team === u.team) continue;
+      if (w.cfg && w.cfg.fog && !S.visible(w, u.team, e)) continue;
       const pf = pref[e.kind]; if (!pf) continue;
       const d = V.distance(u.pos, e.pos);
       if (d > sense && e.kind !== 'capital') continue;

@@ -170,7 +170,7 @@
   function firstAlive(tg, list) { for (const n of list) if (tg.sys[n].alive) return n; return ''; }
   function think(w, u) {
     const ai = u.ai, team = u.team, st = w.space ? w.space[team] : null, stage = st ? st.stage : 1;
-    const en = S.capsOf(w, enemyTeam(team)), bridge = u.sys.bridge.alive;
+    const en = S.capsOf(w, enemyTeam(team)).filter((e) => !w.cfg.fog || S.visible(w, team, e)), bridge = u.sys.bridge.alive;
     if (!u.retreat && !u.stranded && en.length && crippled(u)) {
       if (u.sys.engines.alive) beginRetreat(w, u, 'crippled'); else { u.stranded = true; w.events.push({ type: 'shipStranded', uid: u.id, team, pos: V.clone(u.pos) }); }
     }
