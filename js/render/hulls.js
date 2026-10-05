@@ -257,10 +257,11 @@
 
   function makeUnit(u) {
     const F = E.faction(u.team);
-    if (u.kind === 'infantry') return makeInfantry(F, u.type);
+    if (u.kind === 'infantry') { const rig = E.ArtInfantry.make(F, E.INFANTRY[u.type] ? u.type : 'trooper'); rig.rig = rig; return rig; }
     if (u.kind === 'vehicle') return makeVehicle(F, u.type);
     if (u.kind === 'fighter') return makeFighter(F, u.type);
     if (u.kind === 'capital') return makeCapital(F, u.type);
+    if (E.ArtStruct && E.TURRETS[u.type]) { const m = E.ArtStruct.makeStructure(F, u.type); return m; }
     return makeTurret(F);
   }
 

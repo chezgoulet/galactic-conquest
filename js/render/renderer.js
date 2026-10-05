@@ -32,11 +32,21 @@
       this.camera.terrain = world.terrain;
       this.fx.setBiome(biome, world.terrain);
       for (const cp of world.cps) { const p = E.Props.makePost(cp, world.terrain); S.world.add(p.g); this.posts.push(p); }
+      // art layers: cover pieces, domes / beams / mines / objectives, ground clutter, debris + scorch
+      this.fx.initArt();
+      this.cover = new E.ArtCover.CoverView(S, world.planet.biome, E.LOOK[world.planet.biome] || E.LOOK.desert, world);
+      this.overlay = new E.ArtStruct.Overlay(this);
+      this.clutter = new E.ArtStruct.Clutter(this, world.planet.biome, world.terrain);
+      this.fx.cover = this.cover; this.fx.overlay = this.overlay;
+      this.localTeam = null;
       this.camera.snap();
     }
     clear() {
       const S = this.scene;
       const kill = (g) => g.traverse(o => { if (o.isInstancedMesh || (o.geometry && o.geometry.userData.own)) o.geometry.dispose(); });
+      if (this.cover) { this.cover.dispose(); this.cover = null; }
+      if (this.overlay) { this.overlay.dispose(); this.overlay = null; }
+      if (this.clutter) { S.world.remove(this.clutter.group); this.clutter = null; }
       if (this.planetGroup) { S.world.remove(this.planetGroup); this.planetGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); }); this.planetGroup = null; }
       if (this.sky) { S.scene.remove(this.sky.group); this.sky = null; }
       for (const p of this.posts) S.world.remove(p.g); this.posts.length = 0;
@@ -83,16 +93,8 @@
         const d2 = (r.x - cam.x) * (r.x - cam.x) + (r.z - cam.z) * (r.z - cam.z);
         if (u.kind === 'infantry') {
           g.rotation.y = E.lerpAngle(g.rotation.y, u.yaw, Math.min(1, dt * 14));
-          g.visible = d2 < 1500 * 1500;
-          if (d2 < 420 * 420) {
-            const sp = Math.hypot(u.vel.x, u.vel.z), amp = Math.min(1, sp / 4) * (u.onGround ? 1 : 0.3);
-            r.phase += sp * dt * 2.3;
-            const sw = Math.sin(r.phase) * 0.8 * amp;
-            m.legL.rotation.x = sw + (u.onGround ? 0 : -0.5); m.legR.rotation.x = -sw + (u.onGround ? 0 : 0.4);
-            m.up.rotation.x = -E.clamp(u.aimPitch, -0.7, 0.7) * 0.8 + amp * 0.12;
-            m.up.position.y = 1.0 + Math.abs(Math.cos(r.phase)) * 0.045 * amp;
-            const rec = Math.max(0, 1 - (world.t - u.lastFire) * 9); m.up.position.z = -rec * 0.05;
-          }
+          E.ArtInfantry.animate(m.rig, u, dt, t, world, d2, d2 < 1500 * 1500);
+          if (m.rig.lod === 0 || m.rig.lod === 1) m.rig.phase += 0;
         } else if (u.kind === 'vehicle') {
           T.normal(r.x, r.z, this._n);
           this._q.setFromUnitVectors(this._up, this._n); this._q2.setFromAxisAngle(this._up, u.yaw); this._q.multiply(this._q2);
@@ -103,6 +105,9 @@
           if (d2 < 500 * 500 && Math.abs(u.spd) > 4 && this.fx.rng.next() < dt * 14) this.fx.puff({ x: r.x - Math.sin(u.yaw) * u.r * 0.7, y: r.y - u.def.hover + 0.2, z: r.z - Math.cos(u.yaw) * u.r * 0.7 }, 1, this.fx.dustCol, 1.5, 1.4, 0.8, 2.5);
         } else if (u.kind === 'turret') {
           m.turret.rotation.y = u.aimYaw; m.gun.rotation.x = -u.aimPitch;
+          if (m.spin) m.spin.rotation.y = t * 0.9;
+          if (m.glow) m.glow.material.opacity = 0.7 + 0.3 * Math.sin(t * 3 + u.id);
+          if (m.core) { const k = u.charging ? 0.5 + 0.5 * Math.abs(Math.sin(t * 9)) : (u.active ? 0.12 : 0.01); m.core.scale.setScalar(0.01 + k * 2.4); if (u.charging && this.fx.rng.next() < dt * 25) this.fx.add.emit(r.x, r.y + 12, r.z, this.fx.rng.f(-3, 3), this.fx.rng.f(2, 8), this.fx.rng.f(-3, 3), 0.5, 1.2, 0.2, 1.5, 3, 5, 1, 1, 0); }
         } else if (u.kind === 'fighter') {
           this._e.set(-u.pitch, u.yaw, -u.roll); this._q.setFromEuler(this._e);
           g.quaternion.slerp(this._q, Math.min(1, dt * 16));
@@ -133,11 +138,12 @@
     // deaths: infantry fall, capitals break up and fall out of the sky
     applyEvents(events, world) {
       this.fx.applyEvents(events, world);
+      this.fx.events2(events, world);
       for (const e of events) {
         if (e.type !== 'death') continue;
         const r = this.models.get(e.uid); if (!r) continue;
         this.models.delete(e.uid);
-        if (e.kind === 'infantry') { this.corpses.push({ root: r.m.root, body: r.m.body, t: 0, dir: this.fx.rng.sign() }); if (this.corpses.length > 40) this.scene.units.remove(this.corpses.shift().root); }
+        if (e.kind === 'infantry') { this.corpses.push({ root: r.m.root, body: r.m.body, rig: r.m.rig, kind: (e.uid | 0), t: 0, dir: this.fx.rng.sign() }); if (this.corpses.length > 40) this.scene.units.remove(this.corpses.shift().root); }
         else if (e.kind === 'capital') { this.wrecks.push({ rec: r, t: 0, vy: 0, len: r.u.def.len, h: r.u.h, yaw: e.yaw, boomT: 0 }); this.fx.explosion(e.pos, 60); this.camera.shake(0.8); }
         else this.scene.units.remove(r.m.root);
       }
@@ -145,7 +151,8 @@
     updateDead(dt) {
       for (let i = this.corpses.length - 1; i >= 0; i--) {
         const c = this.corpses[i]; c.t += dt;
-        c.body.rotation.x = -Math.min(1, c.t * 3.2) * (Math.PI / 2 - 0.08) * c.dir; c.body.position.y = Math.min(1, c.t * 3.2) * 0.25;
+        if (c.rig) E.ArtInfantry.deathPose(c.rig, c.t, c.dir, c.kind || 0);
+        else { c.body.rotation.x = -Math.min(1, c.t * 3.2) * (Math.PI / 2 - 0.08) * c.dir; c.body.position.y = Math.min(1, c.t * 3.2) * 0.25; }
         if (c.t > 9) c.root.position.y -= dt * 0.5;
         if (c.t > 12) { this.scene.units.remove(c.root); this.corpses.splice(i, 1); }
       }
@@ -192,6 +199,11 @@
       this.camera.update(dt, t, view);
       const cam = S.camera;
       this.fx.update(dt, t, cam);
+      this.fx.updateArt(dt, t, world);
+      this.localTeam = view.unit ? view.unit.team : null;
+      if (this.cover) this.cover.sync(world);
+      if (this.overlay) this.overlay.update(dt, t, world, cam.position);
+      if (this.clutter) this.clutter.update(cam.position);
       this.sky.update(t, cam.position);
       // shadows hug the action; widen for the map view
       const f = view.mode === 'unit' && view.unit ? view.pos : (view.mode === 'commander' ? { x: this.camera.cmd.x, y: 0, z: this.camera.cmd.z } : this.camera.orbit);
@@ -205,10 +217,9 @@
     postFor(view, dt) {
       const S = this.scene, cam = S.camera, c = this.camera;
       const mode = view.mode === 'commander' ? 'commander' : (view.mode === 'unit' && view.unit ? 'unit' : 'orbit');
-      const cinematic = mode !== 'unit';
+      const cinematic = mode === 'orbit';
       let focus = 80, range = 90, bokeh = 2.5;
-      if (mode === 'commander') { focus = c.cmd.dist; range = Math.max(200, c.cmd.dist * 1.1); bokeh = 1.2; }
-      else if (mode === 'orbit') { const o = c.orbit; focus = Math.hypot(cam.position.x - o.x, cam.position.y - o.y, cam.position.z - o.z); range = Math.max(60, focus * 0.4); bokeh = 2.8; }
+      if (mode === 'orbit') { const o = c.orbit; focus = Math.hypot(cam.position.x - o.x, cam.position.y - o.y, cam.position.z - o.z); range = Math.max(60, focus * 0.4); bokeh = 2.8; }
       S.post.set({ dof: { on: cinematic, focus, range, bokeh } });
       const p = cam.position, l = this._pp || (this._pp = { x: p.x, y: p.y, z: p.z });
       const sp = Math.hypot(p.x - l.x, p.y - l.y, p.z - l.z) / Math.max(dt, 1e-3); l.x = p.x; l.y = p.y; l.z = p.z;

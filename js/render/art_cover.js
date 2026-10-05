@@ -12,9 +12,9 @@
     const rock = E.rgb(look.rock), rock2 = E.rgb(look.rock2 || look.rock);
     const dust = { desert: [196, 164, 112], tundra: [232, 238, 246], jungle: [74, 104, 52], urban: [150, 148, 144], volcanic: [58, 54, 52], ocean: [190, 182, 150], cratered: [150, 152, 158], gas: [110, 90, 130] }[biomeId] || [180, 160, 120];
     return {
-      rock, rock2, dust, bag: sh([158, 140, 100], biomeId === 'tundra' ? 1.1 : 1), concrete: biomeId === 'urban' ? [138, 138, 140] : sh([148, 144, 134], 1),
+      rock, rock2, dust, bag: sh([158, 140, 100], biomeId === 'tundra' ? 1.1 : 1), concrete: biomeId === 'urban' ? [110, 110, 114] : sh([148, 144, 134], 0.68),
       metal: [70, 76, 86], rust: [124, 74, 44], crate: biomeId === 'desert' ? [128, 108, 72] : [86, 98, 78], wood: [96, 70, 46], ice: [170, 208, 236], leaf: biomeId === 'tundra' ? [52, 88, 74] : [44, 104, 46],
-      cactus: [84, 128, 70], hazard: [222, 170, 40], char: [28, 26, 26],
+      cactus: [84, 128, 70], hazard: [186, 138, 34], char: [28, 26, 26],
     };
   }
 
@@ -58,7 +58,7 @@
       b.box(1, 0.16, 1, 0, 0.08, 0, burn(P.concrete, d), { sc: 1, mode: 2 });
       b.box(0.94, top - 0.16, 0.62, 0, 0.16 + (top - 0.16) / 2, 0, burn(sh(P.concrete, 1.06), d), { taper: [1, 0.78], sc: 1, mode: 2 });
       b.box(0.96, 0.08, 0.5, 0, top, 0, burn(P.metal, d), { sc: 1, mode: 1 });
-      for (let i = 0; i < 4; i++) b.box(0.11, top * 0.5, 0.64, -0.38 + i * 0.25, 0.2 + top * 0.25, 0, P.hazard, { rz: 0.5, sc: 1, mode: 0, taper: [1, 0.8] });
+      for (let i = 0; i < 4; i++) b.box(0.06, top * 0.4, 0.64, -0.38 + i * 0.25, 0.2 + top * 0.25, 0, P.hazard, { rz: 0.5, sc: 1, mode: 0, taper: [1, 0.8] });
       if (d >= 1) { crack(b, rng, 1, top, 0.62, 3 + d * 2, [20, 20, 22]); b.box(0.2, 0.2, 0.7, rng.f(-0.3, 0.3), top - 0.05, 0, [18, 18, 20], { mode: 0, sc: 1 }); }
       if (d === 2) { for (let i = 0; i < 4; i++) b.cyl(0.012, 0.012, 0.35, 4, rng.f(-0.4, 0.4), top + 0.14, rng.f(-0.1, 0.1), P.rust, { rx: rng.f(-0.4, 0.4), rz: rng.f(-0.3, 0.3), mode: 0, sc: 1 }); rubbleBits(b, rng, 6, P.concrete, 1.1, 1.2); }
     },
