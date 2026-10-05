@@ -201,8 +201,12 @@
     if (u.braceCd <= 0 && u.hitT < 1 && u.shield / Math.max(1, u.maxShield) < 0.12 && u.hp / u.maxHp < 0.5 && w.rng.next() < 0.5) brace(w, u);
     // fighters: launch cover when threatened or on a clock
     if (u.def.wing && u.launchCd <= 0 && u.sys.hangar.alive && (u.threat > 0 || w.tickN % 600 < 15)) launchWing(w, u);
-    // boarding: stage III, shields open on the approach
-    if (tg && stage === 3 && tg.def.role !== 'screen' && S.board && !u.retreat && w.rng.next() < 0.25) S.board(w, team, u, tg);
+    // boarding: send marines when the target is actually takeable (a downed
+    // shield arc on the approach), and prize a weakened or already-broken hull
+    if (tg && tg.def.role !== 'screen' && S.board && S.boardingReady && S.boardingReady(w, u, tg) && !u.retreat) {
+      const ripe = stage === 3 || tg.hp / tg.maxHp < 0.6 || !tg.sys.bridge.alive;
+      if (ripe && w.rng.next() < 0.5) S.board(w, team, u, tg);
+    }
   }
   function aiCapital(w, u, dt) {
     S.capTick(w, u, dt);

@@ -22,7 +22,11 @@
   const NODE_R = 7, STEP = 4.6, LOWG = 2.5, CEIL = 14;
   const ZONE_LZ = -0.2; // zone origin along the hull (fraction of length)
   const inDeck = (d, x, z) => Math.abs(x - d.cx) <= d.hx && Math.abs(z - d.cz) <= d.hz;
-  const ATT_NODE = ['bridge', 'bridge', 'shield', 'reactor', 'bridge', 'shield'];
+  // what the boarding party goes for: crack the shields first, then take the
+  // bridge; a couple always peel off toward the reactor.
+  const planAgainst = (ship) => ship.sys.shield.alive
+    ? ['shield', 'shield', 'bridge', 'shield', 'bridge', 'reactor']
+    : ['bridge', 'bridge', 'reactor', 'bridge', 'shield', 'reactor'];
 
   // ── placement: deck-local -> world, riding the ship ──────────
   function place(w, u) {
@@ -201,7 +205,8 @@
   }
   function startBoarding(w, op, ship) {
     op.status = 'active'; op.started = w.t;
-    for (let i = 0; i < op.surv; i++) spawnAboard(w, op, ship, op.team, MIX[i % MIX.length], ATT_NODE[i % ATT_NODE.length], 'att', i);
+    const plan = planAgainst(ship);
+    for (let i = 0; i < op.surv; i++) spawnAboard(w, op, ship, op.team, MIX[i % MIX.length], plan[i % plan.length], 'att', i);
     const crew = ship.def.crew, names = ['bridge', 'shield', 'reactor'];
     for (let i = 0; i < crew; i++) spawnAboard(w, op, ship, ship.team, i % 4 === 3 ? 'heavy' : 'trooper', names[i % 3], 'def', (i / 3) | 0);
     w.events.push({ type: 'boardingStart', team: op.team, tid: ship.id, n: op.surv, defenders: crew, pos: V.clone(ship.pos) });

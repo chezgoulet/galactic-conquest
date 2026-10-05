@@ -9,10 +9,13 @@
 (function (E) {
   'use strict';
   const TEAMS = ['aegis', 'verdant'];
+  // Difficulty is behavioural, not just aim jitter and damage: on easy the bots
+  // fight individually (no squad focus, little flanking, slower to react); on
+  // hard they coordinate, use cover tactics and press the objective.
   const DIFF = {
-    easy:   { aiErr: 0.075, enemyDmg: 0.55, enemyTickets: 0.85 },
-    normal: { aiErr: 0.06, enemyDmg: 0.8,  enemyTickets: 1 },
-    hard:   { aiErr: 0.045, enemyDmg: 1.0,  enemyTickets: 1.2 },
+    easy:   { aiErr: 0.075, enemyDmg: 0.55, enemyTickets: 0.85, coordinate: false, tactics: 0.25, reaction: 1.6, retreat: 0.35 },
+    normal: { aiErr: 0.06,  enemyDmg: 0.8,  enemyTickets: 1,    coordinate: true,  tactics: 0.6,  reaction: 1.0, retreat: 0.27 },
+    hard:   { aiErr: 0.045, enemyDmg: 1.0,  enemyTickets: 1.2,  coordinate: true,  tactics: 1.0,  reaction: 0.75, retreat: 0.22 },
   };
 
   class World {
@@ -32,7 +35,7 @@
       this.players = {};
       this.diff = opts.difficulty || 'normal';
       const D = DIFF[this.diff] || DIFF.normal;
-      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg };
+      this.cfg = { aiErr: D.aiErr, enemyDmg: D.enemyDmg, coordinate: D.coordinate, tactics: D.tactics, reaction: D.reaction, retreat: D.retreat };
       // per-side scale + campaign bonuses
       const sc = (f) => (opts.scale2 && opts.scale2[f]) || (f === this.human ? (opts.fleetScale || 1) : (opts.enemyScale || 1));
       const bon = (f) => (opts.bonus && opts.bonus[f]) || {};
