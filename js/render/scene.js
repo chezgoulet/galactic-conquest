@@ -96,14 +96,29 @@
     }
 
     // ── quality ──
-    applyQuality() {
+    applyQuality(light) {
       const Q = this.Q;
+      const cascades = Q.csm.n, csmChanged = cascades !== this._csmN;
+      this._csmN = cascades;
       this.makeShadows();
       this.resScale = Math.min(Q.res, Math.max(Q.resMin, this.resScale));
       this.post.P.bloom.strength = this.post.P.bloom.strength || 0.5;
       this.post.setScale(this.resScale);
       this.post.build();
-      this.scene.traverse(o => { if (o.material && (o.isMesh || o.isInstancedMesh)) o.material.needsUpdate = true; });
+      // Per-frame mode changes (DOF/motion blur) and the resolution governor never
+      // recompile materials now. Only a change in the shadow cascade count (a real
+      // tier change) needs the scene's shadow defines rebuilt — a rare, deliberate
+      // cost, not a mid-fight stall.
+      if (csmChanged && !light) this.scene.traverse(o => { if (o.material && (o.isMesh || o.isInstancedMesh)) o.material.needsUpdate = true; });
+    }
+    // Compile every material's pipeline up front (during the loading splash) so
+    // entering new visual states does not compile shaders mid-fight.
+    warm() {
+      const r = this.renderer;
+      try {
+        if (r.compileAsync) { this._warming = true; r.compileAsync(this.scene, this.camera).catch(() => {}).finally(() => { this._warming = false; this.warms = (this.warms || 0) + 1; }); }
+        else if (r.compile) { r.compile(this.scene, this.camera); this.warms = (this.warms || 0) + 1; }
+      } catch (e) { /* ignore */ }
     }
     setQuality(name) {
       this.auto = name === 'auto';
@@ -226,7 +241,9 @@
         if (sm > 0.05) { this._shine = this._shine || new (E.THREE.Color)(); this._shine.copy(a.groundColor).multiplyScalar(2); this.hemi.groundColor.copy(a.groundColor).lerp(this._shine, sm); this.hemi.color.copy(a.skyColor).lerp(new (E.THREE.Color)(0.02, 0.03, 0.07), sm); }
         else { this.hemi.color.copy(a.skyColor); this.hemi.groundColor.copy(a.groundColor); }
         this.scene.environmentIntensity = 0.75 * (0.24 + 0.76 * k) + 0.34 * sm * 0.6;
-        const key = alt > 1750 || airless ? 'space' : 'ground';
+        // hysteresis around the cloud/space boundary so a fighter hovering there
+        // does not thrash the environment (and its material refresh)
+        const key = (alt > 1900 || airless) ? 'space' : (alt < 1550 ? 'ground' : (this._envKey || 'ground'));
         if (key !== this._envKey && this._env[key]) { this._envKey = key; this.scene.environment = this._env[key]; E.Mat.setEnv(this._env[key]); }
       }
       // keep cascade frusta in step with FOV changes (ADS zoom)
@@ -236,7 +253,7 @@
       P.render();
       this.frames++;
       const now = performance.now();
-      if (this._lastT) { const d = now - this._lastT; this.frameMs += (Math.min(d, 200) - this.frameMs) * 0.08; }
+      if (this._lastT) { const d = now - this._lastT; this.frameMs += (Math.min(d, 200) - this.frameMs) * 0.08; if (d > (this._hitchMs || 0)) this._hitchMs = d; }
       this._lastT = now;
       this._renderMs = now - t0;
       if (this.dbg) this.updateDebug(now);
@@ -252,12 +269,12 @@
     }
     stats() {
       const i = this.renderer.info.render;
-      return { frameMs: +this.frameMs.toFixed(1), cpuMs: +(this._renderMs || 0).toFixed(1), drawCalls: i.drawCalls, triangles: i.triangles, backend: this.backend, tier: this.qualityName + (this.auto ? ' (auto)' : ''), resScale: +this.resScale.toFixed(2), size: this._W + 'x' + this._H, frames: this.frames };
+      return { frameMs: +this.frameMs.toFixed(1), cpuMs: +(this._renderMs || 0).toFixed(1), drawCalls: i.drawCalls, triangles: i.triangles, backend: this.backend, tier: this.qualityName + (this.auto ? ' (auto)' : ''), resScale: +this.resScale.toFixed(2), size: this._W + 'x' + this._H, frames: this.frames, postBuilds: this.post.builds || 0, warm: this.warms || 0 };
     }
     updateDebug(now) {
       if (now - this._dbgT < 250) return; this._dbgT = now;
-      const s = this.stats();
-      this.dbg.textContent = `frame  ${s.frameMs} ms (${(1000 / s.frameMs).toFixed(0)} fps)  cpu ${s.cpuMs} ms\ndraws  ${s.drawCalls}   tris ${s.triangles}\nbackend ${s.backend}   tier ${s.tier}\nres    ${s.size} x${s.resScale} (TAAU)`;
+      const s = this.stats(), hitch = Math.round(this._hitchMs || 0); this._hitchMs = 0;
+      this.dbg.textContent = `frame  ${s.frameMs} ms (${(1000 / s.frameMs).toFixed(0)} fps)  worst ${hitch} ms  cpu ${s.cpuMs} ms\ndraws  ${s.drawCalls}   tris ${s.triangles}\nbackend ${s.backend}   tier ${s.tier}\nres    ${s.size} x${s.resScale} (TAAU)   postBuilds ${s.postBuilds}`;
     }
 
     dispose() { this.post.dispose(); this.renderer.dispose(); if (this.dbg) this.dbg.remove(); }

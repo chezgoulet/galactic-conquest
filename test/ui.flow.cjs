@@ -80,6 +80,8 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); process.exitCode = 1
     await page.waitForFunction('window.__GC_BATTLE__ === true && GC.game && GC.game.world && GC.game.role === "sp"', null, { polling: 300 });
     ok(await page.evaluate('GC.game.world.units.some(u=>u.kind==="capital" && u.team===GC.game.team)'), 'battle started with the fleet in orbit');
     await page.waitForTimeout(1500); await shot('10b-battle-deploy.png');
+    const dep = await page.evaluate(() => { const l = document.querySelector('.h-layer.on'); return l ? { sw: l.scrollWidth, cw: l.clientWidth, wrap: !!l.querySelector('.d-wrap') } : null; });
+    ok(dep && dep.wrap && dep.sw <= dep.cw + 1, 'deploy screen fits without horizontal scroll ' + JSON.stringify(dep));
     // ── force a win (the test, not the UI, sets the winner) and damage the flagship ──
     await page.evaluate(() => {
       const g = GC.game, w = g.world, E = GC.E;

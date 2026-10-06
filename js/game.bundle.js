@@ -31,8 +31,11 @@
     add(delta) { this.acc += Math.min(delta, this.max); }
     // runs the fixed steps, returns the fractional alpha (0..1) to interpolate.
     pump(step) {
+      // Cap catch-up at 4 fixed steps: after a long frame (a GPU compile, a GC
+      // pause, a tab restore) the sim resynchronises instead of running a burst
+      // of steps that prolongs the stall. Time is dropped, not queued.
       let n = 0;
-      while (this.acc >= this.h - 1e-9) { this.acc -= this.h; step(this.h); if (++n > 200) { this.acc = 0; break; } }
+      while (this.acc >= this.h - 1e-9) { this.acc -= this.h; step(this.h); if (++n >= 4) { this.acc = 0; break; } }
       return this.acc / this.h;
     }
     reset() { this.acc = 0; }
@@ -11206,15 +11209,19 @@
       u.gain.value.set(N[0] * P.gain[0], N[1] * P.gain[1], N[2] * P.gain[2]);
       u.sharp.value = P.sharpen; u.shim.value = P.shimmer; u.vig.value = P.vignette; u.grain.value = P.grain; u.ca.value = P.aberration; u.mb.value = P.motionBlur;
       u.bloomS.value = P.bloom.strength; u.bloomR.value = P.bloom.radius; u.bloomT.value = P.bloom.threshold;
-      u.dofFocus.value = P.dof.focus; u.dofRange.value = P.dof.range; u.dofBokeh.value = P.dof.bokeh;
+      u.dofFocus.value = P.dof.focus; u.dofRange.value = P.dof.range;
+      u.dofBokeh.value = P.dof.on ? P.dof.bokeh : 0;   // DOF pass is always built; bokeh 0 = sharp (no rebuild on toggle)
       u.aoI.value = P.ao.intensity; u.ssrI.value = P.ssr.intensity;
       if (E.Atmo && E.Atmo.U) E.Atmo.U.shaft.value = P.shafts;
       if (this._sig && this._sig !== this.signature()) this.build();
     }
 
+    // The graph depends only on the quality tier and the depth convention — NOT on
+    // per-frame DOF / motion-blur toggles. Those are gated by uniforms, so switching
+    // between orbit and a unit (or mounting a fighter) never rebuilds the graph.
     signature() {
-      const Q = this.S.Q, P = this.P;
-      return [Q.name, P.dof.on ? 1 : 0, P.motionBlur > 0.001 && Q.motionBlur ? 1 : 0, this.S.renderer.reversedDepthBuffer ? 1 : 0].join('|');
+      const Q = this.S.Q;
+      return [Q.name, Q.dof ? 1 : 0, Q.motionBlur ? 1 : 0, this.S.renderer.reversedDepthBuffer ? 1 : 0].join('|');
     }
 
     setScale(s) {
@@ -11224,6 +11231,7 @@
     }
 
     build() {
+      this.builds = (this.builds || 0) + 1;   // count graph rebuilds (should be rare; surfaced in ?debug)
       const T = E.THREE, X = T.TSL, XX = T.TSLX, S = this.S, Q = S.Q, u = this.u, P = this.P;
       const { pass, mrt, output, velocity, normalView, metalness, roughness, vec2, vec3, vec4, float, uniform, uv, mix, pow, max, min, clamp,
         dot, smoothstep, length, Fn, convertToTexture, rtt, toneMapping, convertColorSpace, interleavedGradientNoise, screenCoordinate, fract, sin, abs, select } = X;
@@ -11269,10 +11277,10 @@
       let out;
       if (Q.taa) { const tn = XX.taau(beauty, depthN, velN, cam); tn.currentFrameWeight = scale >= 0.9 ? 0.11 : 0.07; tn.edgeDepthDiff = 0.0006; out = track(tn); }
       else out = beauty;
-      // ── depth of field ──
-      if (P.dof.on && Q.dof) out = track(XX.dof(out, sp.getViewZNode(), u.dofFocus, u.dofRange, u.dofBokeh));
-      // ── motion blur ──
-      if (P.motionBlur > 0.001 && Q.motionBlur) out = track(convertToTexture(XX.motionBlur(convertToTexture(out), velN.xy.mul(u.mb.mul(2.5)), X.int(Q.motionBlur))));
+      // ── depth of field (always present when the tier allows; u.dofBokeh 0 = off) ──
+      if (Q.dof) out = track(XX.dof(out, sp.getViewZNode(), u.dofFocus, u.dofRange, u.dofBokeh));
+      // ── motion blur (always present when the tier allows; u.mb 0 = off) ──
+      if (Q.motionBlur) out = track(convertToTexture(XX.motionBlur(convertToTexture(out), velN.xy.mul(u.mb.mul(2.5)), X.int(Q.motionBlur))));
       // ── bloom ──
       let bloomN = null;
       if (Q.bloom) { const b = track(XX.bloom(convertToTexture(out), u.bloomS, u.bloomR, u.bloomT)); bloomN = b; }
@@ -11619,6 +11627,9 @@
       S.gov(dt * 1000);
       const local = view.unit ? view.unit.id : 0;
       this.syncUnits(world, dt, t, local);
+      // compile every material's GPU pipeline once, on the first frame (behind the
+      // loading splash), so entering new visual states does not compile mid-fight
+      if (!this._warmed && S.frames >= 1) { this._warmed = true; if (S.warm) S.warm(); }
       this.updateDead(dt);
       for (let i = 0; i < this.posts.length; i++) E.Props.updatePost(this.posts[i], world.cps[i], t, dt);
       if (view.unit) { const r = this.models.get(view.unit.id); view.pos = r ? r : view.unit.pos; }
@@ -11763,14 +11774,29 @@
     }
 
     // ── quality ──
-    applyQuality() {
+    applyQuality(light) {
       const Q = this.Q;
+      const cascades = Q.csm.n, csmChanged = cascades !== this._csmN;
+      this._csmN = cascades;
       this.makeShadows();
       this.resScale = Math.min(Q.res, Math.max(Q.resMin, this.resScale));
       this.post.P.bloom.strength = this.post.P.bloom.strength || 0.5;
       this.post.setScale(this.resScale);
       this.post.build();
-      this.scene.traverse(o => { if (o.material && (o.isMesh || o.isInstancedMesh)) o.material.needsUpdate = true; });
+      // Per-frame mode changes (DOF/motion blur) and the resolution governor never
+      // recompile materials now. Only a change in the shadow cascade count (a real
+      // tier change) needs the scene's shadow defines rebuilt — a rare, deliberate
+      // cost, not a mid-fight stall.
+      if (csmChanged && !light) this.scene.traverse(o => { if (o.material && (o.isMesh || o.isInstancedMesh)) o.material.needsUpdate = true; });
+    }
+    // Compile every material's pipeline up front (during the loading splash) so
+    // entering new visual states does not compile shaders mid-fight.
+    warm() {
+      const r = this.renderer;
+      try {
+        if (r.compileAsync) { this._warming = true; r.compileAsync(this.scene, this.camera).catch(() => {}).finally(() => { this._warming = false; this.warms = (this.warms || 0) + 1; }); }
+        else if (r.compile) { r.compile(this.scene, this.camera); this.warms = (this.warms || 0) + 1; }
+      } catch (e) { /* ignore */ }
     }
     setQuality(name) {
       this.auto = name === 'auto';
@@ -11893,7 +11919,9 @@
         if (sm > 0.05) { this._shine = this._shine || new (E.THREE.Color)(); this._shine.copy(a.groundColor).multiplyScalar(2); this.hemi.groundColor.copy(a.groundColor).lerp(this._shine, sm); this.hemi.color.copy(a.skyColor).lerp(new (E.THREE.Color)(0.02, 0.03, 0.07), sm); }
         else { this.hemi.color.copy(a.skyColor); this.hemi.groundColor.copy(a.groundColor); }
         this.scene.environmentIntensity = 0.75 * (0.24 + 0.76 * k) + 0.34 * sm * 0.6;
-        const key = alt > 1750 || airless ? 'space' : 'ground';
+        // hysteresis around the cloud/space boundary so a fighter hovering there
+        // does not thrash the environment (and its material refresh)
+        const key = (alt > 1900 || airless) ? 'space' : (alt < 1550 ? 'ground' : (this._envKey || 'ground'));
         if (key !== this._envKey && this._env[key]) { this._envKey = key; this.scene.environment = this._env[key]; E.Mat.setEnv(this._env[key]); }
       }
       // keep cascade frusta in step with FOV changes (ADS zoom)
@@ -11903,7 +11931,7 @@
       P.render();
       this.frames++;
       const now = performance.now();
-      if (this._lastT) { const d = now - this._lastT; this.frameMs += (Math.min(d, 200) - this.frameMs) * 0.08; }
+      if (this._lastT) { const d = now - this._lastT; this.frameMs += (Math.min(d, 200) - this.frameMs) * 0.08; if (d > (this._hitchMs || 0)) this._hitchMs = d; }
       this._lastT = now;
       this._renderMs = now - t0;
       if (this.dbg) this.updateDebug(now);
@@ -11919,12 +11947,12 @@
     }
     stats() {
       const i = this.renderer.info.render;
-      return { frameMs: +this.frameMs.toFixed(1), cpuMs: +(this._renderMs || 0).toFixed(1), drawCalls: i.drawCalls, triangles: i.triangles, backend: this.backend, tier: this.qualityName + (this.auto ? ' (auto)' : ''), resScale: +this.resScale.toFixed(2), size: this._W + 'x' + this._H, frames: this.frames };
+      return { frameMs: +this.frameMs.toFixed(1), cpuMs: +(this._renderMs || 0).toFixed(1), drawCalls: i.drawCalls, triangles: i.triangles, backend: this.backend, tier: this.qualityName + (this.auto ? ' (auto)' : ''), resScale: +this.resScale.toFixed(2), size: this._W + 'x' + this._H, frames: this.frames, postBuilds: this.post.builds || 0, warm: this.warms || 0 };
     }
     updateDebug(now) {
       if (now - this._dbgT < 250) return; this._dbgT = now;
-      const s = this.stats();
-      this.dbg.textContent = `frame  ${s.frameMs} ms (${(1000 / s.frameMs).toFixed(0)} fps)  cpu ${s.cpuMs} ms\ndraws  ${s.drawCalls}   tris ${s.triangles}\nbackend ${s.backend}   tier ${s.tier}\nres    ${s.size} x${s.resScale} (TAAU)`;
+      const s = this.stats(), hitch = Math.round(this._hitchMs || 0); this._hitchMs = 0;
+      this.dbg.textContent = `frame  ${s.frameMs} ms (${(1000 / s.frameMs).toFixed(0)} fps)  worst ${hitch} ms  cpu ${s.cpuMs} ms\ndraws  ${s.drawCalls}   tris ${s.triangles}\nbackend ${s.backend}   tier ${s.tier}\nres    ${s.size} x${s.resScale} (TAAU)   postBuilds ${s.postBuilds}`;
     }
 
     dispose() { this.post.dispose(); this.renderer.dispose(); if (this.dbg) this.dbg.remove(); }
