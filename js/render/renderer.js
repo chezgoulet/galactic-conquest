@@ -215,6 +215,9 @@
       S.gov(dt * 1000);
       const local = view.unit ? view.unit.id : 0;
       this.syncUnits(world, dt, t, local);
+      // compile every material's GPU pipeline once, on the first frame (behind the
+      // loading splash), so entering new visual states does not compile mid-fight
+      if (!this._warmed && S.frames >= 1) { this._warmed = true; if (S.warm) S.warm(); }
       this.updateDead(dt);
       for (let i = 0; i < this.posts.length; i++) E.Props.updatePost(this.posts[i], world.cps[i], t, dt);
       if (view.unit) { const r = this.models.get(view.unit.id); view.pos = r ? r : view.unit.pos; }

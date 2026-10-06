@@ -79,15 +79,19 @@
       u.gain.value.set(N[0] * P.gain[0], N[1] * P.gain[1], N[2] * P.gain[2]);
       u.sharp.value = P.sharpen; u.shim.value = P.shimmer; u.vig.value = P.vignette; u.grain.value = P.grain; u.ca.value = P.aberration; u.mb.value = P.motionBlur;
       u.bloomS.value = P.bloom.strength; u.bloomR.value = P.bloom.radius; u.bloomT.value = P.bloom.threshold;
-      u.dofFocus.value = P.dof.focus; u.dofRange.value = P.dof.range; u.dofBokeh.value = P.dof.bokeh;
+      u.dofFocus.value = P.dof.focus; u.dofRange.value = P.dof.range;
+      u.dofBokeh.value = P.dof.on ? P.dof.bokeh : 0;   // DOF pass is always built; bokeh 0 = sharp (no rebuild on toggle)
       u.aoI.value = P.ao.intensity; u.ssrI.value = P.ssr.intensity;
       if (E.Atmo && E.Atmo.U) E.Atmo.U.shaft.value = P.shafts;
       if (this._sig && this._sig !== this.signature()) this.build();
     }
 
+    // The graph depends only on the quality tier and the depth convention — NOT on
+    // per-frame DOF / motion-blur toggles. Those are gated by uniforms, so switching
+    // between orbit and a unit (or mounting a fighter) never rebuilds the graph.
     signature() {
-      const Q = this.S.Q, P = this.P;
-      return [Q.name, P.dof.on ? 1 : 0, P.motionBlur > 0.001 && Q.motionBlur ? 1 : 0, this.S.renderer.reversedDepthBuffer ? 1 : 0].join('|');
+      const Q = this.S.Q;
+      return [Q.name, Q.dof ? 1 : 0, Q.motionBlur ? 1 : 0, this.S.renderer.reversedDepthBuffer ? 1 : 0].join('|');
     }
 
     setScale(s) {
@@ -97,6 +101,7 @@
     }
 
     build() {
+      this.builds = (this.builds || 0) + 1;   // count graph rebuilds (should be rare; surfaced in ?debug)
       const T = E.THREE, X = T.TSL, XX = T.TSLX, S = this.S, Q = S.Q, u = this.u, P = this.P;
       const { pass, mrt, output, velocity, normalView, metalness, roughness, vec2, vec3, vec4, float, uniform, uv, mix, pow, max, min, clamp,
         dot, smoothstep, length, Fn, convertToTexture, rtt, toneMapping, convertColorSpace, interleavedGradientNoise, screenCoordinate, fract, sin, abs, select } = X;
@@ -142,10 +147,10 @@
       let out;
       if (Q.taa) { const tn = XX.taau(beauty, depthN, velN, cam); tn.currentFrameWeight = scale >= 0.9 ? 0.11 : 0.07; tn.edgeDepthDiff = 0.0006; out = track(tn); }
       else out = beauty;
-      // ── depth of field ──
-      if (P.dof.on && Q.dof) out = track(XX.dof(out, sp.getViewZNode(), u.dofFocus, u.dofRange, u.dofBokeh));
-      // ── motion blur ──
-      if (P.motionBlur > 0.001 && Q.motionBlur) out = track(convertToTexture(XX.motionBlur(convertToTexture(out), velN.xy.mul(u.mb.mul(2.5)), X.int(Q.motionBlur))));
+      // ── depth of field (always present when the tier allows; u.dofBokeh 0 = off) ──
+      if (Q.dof) out = track(XX.dof(out, sp.getViewZNode(), u.dofFocus, u.dofRange, u.dofBokeh));
+      // ── motion blur (always present when the tier allows; u.mb 0 = off) ──
+      if (Q.motionBlur) out = track(convertToTexture(XX.motionBlur(convertToTexture(out), velN.xy.mul(u.mb.mul(2.5)), X.int(Q.motionBlur))));
       // ── bloom ──
       let bloomN = null;
       if (Q.bloom) { const b = track(XX.bloom(convertToTexture(out), u.bloomS, u.bloomR, u.bloomT)); bloomN = b; }
