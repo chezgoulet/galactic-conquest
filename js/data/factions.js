@@ -30,7 +30,10 @@
       ship: 'superiority', fighter: 'interdiction', ground: 'assault',
       weights: { capital: 1.2, fighter: 1.0, ground: 1.15, mobility: 0.8 },
     },
-    music: { mode: 'phrygian', root: 33, bpm: 104, motif: 21131, brass: 1.0, saw: 0.75, bell: 0.4 },
+    // hook: a 2-bar leitmotif [16th-step (0..31), scale degree, length] — the
+    // score repeats and develops it so the faction has a tune you can hum.
+    music: { mode: 'phrygian', root: 33, bpm: 104, motif: 21131, brass: 1.0, saw: 0.75, bell: 0.4,
+      hook: [[0, 0, 2], [2, 2, 2], [4, 4, 2], [6, 7, 2], [8, 4, 3], [12, 2, 2], [14, 0, 2], [16, 0, 2], [18, 4, 2], [20, 7, 2], [22, 4, 2], [24, 2, 4], [28, 0, 4]] },
     weapons: {
       main: { kind: 'railgun', dmg: 34, rate: 0.5, speed: 260, pierce: 1.0, color: '#ff8a2a', sfx: 'railgun' },
       side: { kind: 'pulse', dmg: 6, rate: 4.5, speed: 180, pierce: 0.2, color: '#ffd27a', sfx: 'pulse' },
@@ -66,7 +69,8 @@
       ship: 'ambush', fighter: 'swarm', ground: 'guerrilla',
       weights: { capital: 0.85, fighter: 1.25, ground: 1.0, mobility: 1.2 },
     },
-    music: { mode: 'dorian', root: 36, bpm: 92, motif: 77731, brass: 0.3, saw: 0.35, bell: 1.2 },
+    music: { mode: 'dorian', root: 36, bpm: 92, motif: 77731, brass: 0.3, saw: 0.35, bell: 1.2,
+      hook: [[0, 0, 1], [1, 2, 1], [2, 3, 2], [4, 2, 2], [6, 0, 2], [8, -2, 3], [11, 0, 1], [12, 2, 4], [16, 3, 2], [18, 4, 2], [20, 3, 2], [22, 2, 2], [24, 0, 2], [26, -3, 2], [28, 0, 4]] },
     weapons: {
       main: { kind: 'lance', dmg: 11, rate: 2.4, speed: 220, pierce: 0.3, color: '#7cff66', sfx: 'lance' },
       side: { kind: 'spore', dmg: 4, rate: 6, speed: 150, pierce: 0.15, color: '#a6ff8a', sfx: 'spore' },

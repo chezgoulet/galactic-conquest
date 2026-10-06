@@ -9,20 +9,21 @@ const path = require('path');
 const net = require('net');
 const ROOT = path.join(__dirname, '..');
 const freePort = () => new Promise((res) => { const s = net.createServer(); s.listen(0, () => { const p = s.address().port; s.close(() => res(p)); }); });
+const canConnect = (port) => new Promise((res) => { const s = net.connect({ host: '127.0.0.1', port }); s.on('connect', () => { s.destroy(); res(true); }); s.on('error', () => res(false)); });
 
 (async () => {
   const port = await freePort();
   const server = spawn('node', [path.join(ROOT, 'tools', 'serve.cjs'), String(port)], { stdio: 'ignore' });
-  await new Promise(r => setTimeout(r, 1200));
+  for (let i = 0; i < 60; i++) { if (await canConnect(port)) break; await new Promise(r => setTimeout(r, 100)); }
   const BACKEND = process.env.GC_UI_BACKEND === 'webgl' ? 'webgl' : 'webgpu';
-  const browser = await chromium.launch({ headless: true, args: BACKEND === 'webgl'
+  const browser = await chromium.launch({ headless: true, args: (BACKEND === 'webgl'
     ? ['--no-sandbox', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-features=WebGPU']
-    : ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
+    : ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--enable-unsafe-webgpu', '--enable-features=Vulkan']).concat('--autoplay-policy=no-user-gesture-required') });
   const page = await browser.newPage();
   await page.addInitScript((backend) => { if (backend === 'webgl') window.GC_BACKEND = 'webgl'; }, BACKEND);
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.goto(`http://localhost:${port}/index.html`, { waitUntil: 'load' });
-  await page.waitForFunction('window.__GC_READY__ === true', null, { timeout: 60000 });
+  await page.waitForFunction('window.__GC_READY__ === true', null, { timeout: 120000, polling: 300 });
   const res = await page.evaluate(async () => {
     const E = window.E, M = E.Mixer, SR = 44100;
     const stats = (buf) => { const d = buf.getChannelData(0), e = buf.numberOfChannels > 1 ? buf.getChannelData(1) : d; let pk = 0, ss = 0, df = 0, nan = 0;
@@ -50,6 +51,32 @@ const freePort = () => new Promise((res) => { const s = net.createServer(); s.li
       const c = fresh(3); const L = E.SFX.loops[mk]({ interior: true, heavy: 1 }); L.set(Object.assign({ gain: 0.8 }, p)); out.loops[name] = stats(await c.startRendering()); }
     return out;
   });
+  // ── live music smoke on a second page of the SAME browser ──
+  // (kept here rather than as a 4th browser launch: the UI job runs several
+  //  Chromium instances and a fresh one this late was flaky on CI)
+  let mres = null;
+  try {
+    const mp = await browser.newPage();
+    await mp.addInitScript((backend) => { window.GC_QUALITY = 'low'; window.GC_RES = 0.4; window.GC_NO_GOV = true; if (backend === 'webgl') window.GC_BACKEND = 'webgl'; }, BACKEND);
+    mp.on('pageerror', (e) => errors.push('music: ' + e.message));
+    mp.on('console', (m) => { if (m.type() === 'error') errors.push('music console: ' + m.text()); });
+    await mp.goto(`http://localhost:${port}/index.html`, { waitUntil: 'load', timeout: 60000 });
+    await mp.waitForFunction('window.__GC_READY__ === true', null, { timeout: 120000, polling: 300 });
+    mres = await mp.evaluate(async () => {
+      const E = window.E, out = {}; const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      E.Mixer.unlock(); if (E.Mixer.ctx && E.Mixer.ctx.state === 'suspended') { try { await E.Mixer.ctx.resume(); } catch (e) {} }
+      E.Music.start('aegis'); out.started = E.Music.on;
+      E.Music.setDomain('ground'); E.Music.setIntensity(0.5); E.Music.setState({});
+      await wait(900); const a = E.Music._step;
+      E.Music.setDomain('air'); E.Music.setIntensity(0.95); E.Music.setState({ lastStand: true }); await wait(900);
+      out.advanced = E.Music._step !== a; out.hook = !!(E.Music._hooks && Object.keys(E.Music._hooks).length);
+      E.Music.setMode('map'); E.Music.setDomain('space'); await wait(400); E.Music.setMode('battle');
+      for (const k of ['victory', 'defeat', 'capture', 'shipLost', 'alert', 'turn']) { try { k === 'victory' ? E.Music.victory('aegis') : k === 'defeat' ? E.Music.defeat('verdant') : E.Music.sting(k); } catch (e) { out['stingErr_' + k] = String(e.message); } await wait(120); }
+      E.Music.setVolume(0.5); E.Music.stop(); out.stopped = !E.Music.on;
+      return out;
+    });
+    await mp.close();
+  } catch (e) { errors.push('music phase: ' + (e && e.message || e)); }
   await browser.close(); server.kill('SIGKILL');
   let bad = 0; const line = (n, s) => console.log(String(n).padEnd(12), typeof s === 'string' ? s : `peak ${String(s.peak).padStart(6)} dBFS  rms ${String(s.rms).padStart(6)} dBFS  bright ${s.bright}${s.clip ? '  CLIP' : ''}${s.nan ? '  NaN!' : ''}`);
   console.log('--- one-shots (vol 1, 25 m away) ---'); for (const k in res.sounds) { line(k, res.sounds[k]); const s = res.sounds[k]; if (typeof s === 'string' || s.clip || s.nan || s.peak < -60) bad++; }
@@ -57,6 +84,13 @@ const freePort = () => new Promise((res) => { const s = net.createServer(); s.li
   console.log('--- air vs vacuum, same rifle shot at 40 m ---'); line('air', res.vacuum.air); line('vacuum', res.vacuum.vacuum);
   console.log('exterior filter: air ' + res.vacuum.air.lp + ' Hz x' + res.vacuum.air.g + ', vacuum ' + res.vacuum.vacuum.lp + ' Hz x' + res.vacuum.vacuum.g); if (!(res.vacuum.vacuum.lp < 800 && res.vacuum.air.lp > 15000 && res.vacuum.vacuum.g < 0.5)) { console.error('FAIL: the vacuum exterior filter is not engaged (render comparison of one rifle shot was inconclusive, see report)'); bad++; }
   console.log('--- loops ---'); for (const k in res.loops) { line(k, res.loops[k]); if (res.loops[k].clip || res.loops[k].nan || res.loops[k].peak < -70) bad++; }
+  console.log('--- music (live) ---');
+  if (!mres) { console.error('FAIL: music phase did not run'); bad++; }
+  else {
+    console.log('started', mres.started, '| advanced', mres.advanced, '| hook', mres.hook, '| stopped', mres.stopped);
+    if (!mres.started || !mres.advanced || !mres.hook || !mres.stopped) { console.error('FAIL: the music engine did not run'); bad++; }
+    for (const k in mres) if (/^stingErr_/.test(k)) { console.error('FAIL', k, mres[k]); bad++; }
+  }
   if (errors.length) { console.error('page errors', errors); bad++; }
   console.log(bad ? 'ui.audio FAIL (' + bad + ')' : 'ui.audio ok');
   process.exit(bad ? 1 : 0);

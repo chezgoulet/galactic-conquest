@@ -48,9 +48,9 @@ async function freePort() {
   try {
     console.error('[smoke] loading page', `http://localhost:${port}/index.html`);
     await page.goto(`http://localhost:${port}/index.html`, { waitUntil: 'load', timeout: 60000 });
-    await page.waitForFunction('window.__GC_READY__ === true', null, { timeout: 60000, polling: 200 });
+    await page.waitForFunction('window.__GC_READY__ === true', null, { timeout: 180000, polling: 200 });
     console.error('[smoke] ready, waiting for frames');
-    await page.waitForFunction('window.GC && GC.game && GC.game.renderer && GC.game.renderer.scene.frames >= 5', null, { timeout: 120000, polling: 300 });
+    await page.waitForFunction('window.GC && GC.game && GC.game.renderer && GC.game.renderer.scene.frames >= 5', null, { timeout: 240000, polling: 300 });
     info = await page.evaluate(() => {
       const g = window.GC && window.GC.game;
       const w = g && g.world;

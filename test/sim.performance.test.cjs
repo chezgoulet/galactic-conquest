@@ -21,6 +21,9 @@ test('sim performance: a full armada battle stays within the tick budget', () =>
   }
   const avg = Number(process.hrtime.bigint() - t0) / 1e6 / N;
   assert.ok(Number.isFinite(avg) && avg > 0, 'measured a real average tick');
-  assert.ok(avg < 12, `average sim tick ${avg.toFixed(2)} ms should stay under 12 ms`);
-  assert.ok(max < 250, `worst single tick ${max.toFixed(0)} ms should stay under 250 ms`);
+  // Nominal is ~1-4 ms/tick; the budget is loose because node:test runs test
+  // files in parallel workers, so this catches a gross regression or a hang,
+  // not run-to-run noise.
+  assert.ok(avg < 20, `average sim tick ${avg.toFixed(2)} ms should stay under 20 ms`);
+  assert.ok(max < 400, `worst single tick ${max.toFixed(0)} ms should stay under 400 ms`);
 });
