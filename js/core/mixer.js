@@ -11,7 +11,9 @@
     env: { dens: 1, vac: false, interior: false }, vol: { master: 0.8, music: 0.8, sfx: 0.9, ambience: 0.8, voice: 1, ui: 0.8 }, alertUntil: 0, noise: null, brown: null };
   const BUSES = ['music', 'weapons', 'impacts', 'ambience', 'voice', 'ui'];
   const WORLD = { weapons: 1, impacts: 1, ambience: 1 };
-  const GAIN = { music: 0.9, weapons: 0.62, impacts: 0.75, ambience: 0.5, voice: 0.7, ui: 0.6 };
+  // Percussive buses run hotter than the rest so single hits stay punchy and the
+  // limiter only catches the sum of a big fight (it used to flatten everything).
+  const GAIN = { music: 0.85, weapons: 0.95, impacts: 1.05, ambience: 0.55, voice: 0.85, ui: 0.75 };
   M.BUSES = BUSES;
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
@@ -25,8 +27,10 @@
     M.pre = c.createGain();
     M.master = c.createGain(); M.master.gain.value = M.vol.master;
     const lim = M.limiter = c.createDynamicsCompressor();
-    lim.threshold.value = -5; lim.knee.value = 3; lim.ratio.value = 20; lim.attack.value = 0.002; lim.release.value = 0.12;
-    M.out = c.createGain(); M.out.gain.value = 0.92;
+    // A gentler, faster limiter: catches the dense-fight sum but lets single
+    // transients through instead of squashing every shot to the same level.
+    lim.threshold.value = -1.5; lim.knee.value = 6; lim.ratio.value = 8; lim.attack.value = 0.003; lim.release.value = 0.1;
+    M.out = c.createGain(); M.out.gain.value = 0.86;
     M.pre.connect(M.master); M.master.connect(lim); lim.connect(M.out); M.out.connect(c.destination);
     M.meter = c.createAnalyser(); M.meter.fftSize = 2048; M.out.connect(M.meter);
     // shared noise buffers
